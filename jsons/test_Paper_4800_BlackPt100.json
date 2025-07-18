@@ -1,0 +1,50 @@
+{
+    "original_image_path": "F:\\DeepLearning\\NikePProject\\Images\\Newer_High_DPI\\test_Paper4800_BlackPt100_Sharpen1_R4_T1.tif",
+    "sub_images": [
+      {
+        "name": "blackStripe",
+        "bounding_box_pixels": {
+          "top_x": 17934.18189,
+          "top_y": -1337.37734,
+          "bottom_x": 20543.16392,
+          "bottom_y": -90112.52528
+        }
+      },
+      {
+        "name": "island-black-blue",
+        "bounding_box_pixels": {
+          "top_x": 20891.95831,
+          "top_y": -1588.50930,
+          "bottom_x": 31488.33185,
+          "bottom_y": -90154.38061
+        }
+      },
+      {
+        "name": "blueStripe",
+        "bounding_box_pixels": {
+          "top_x": 31509.25952,
+          "top_y": -1490.84687,
+          "bottom_x": 34126.52542,
+          "bottom_y": -90151.76465
+        }
+      },
+      {
+        "name": "island-blue-pink",
+        "bounding_box_pixels": {
+          "top_x": 34369.37351,
+          "top_y": -1421.08800,
+          "bottom_x": 44899.04013,
+          "bottom_y": -90115.14124
+        }
+      },
+      {
+        "name": "pinkStripe",
+        "bounding_box_pixels": {
+          "top_x": 45000.62649,
+          "top_y": -1644.31641,
+          "bottom_x": 47352.80865,
+          "bottom_y": -90020.96676
+        }
+      }
+    ]
+  }
