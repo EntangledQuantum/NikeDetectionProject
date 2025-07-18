@@ -11,6 +11,18 @@ A Python script for efficiently extracting regions from large TIFF files (25GB+)
 - **Command-line interface**: Easy to use from terminal/command prompt
 - **Flexible input**: Accepts JSON file path or JSON string directly
 
+```mermaid
+graph TD
+    A["Large TIFF File (25GB)"] --> B["Read JSON Config"]
+    B --> C["Parse Bounding Boxes"]
+    C --> D["Extract Regions"]
+    D --> E["Save as Separate TIFFs"]
+    E --> F["Output Folder"]
+    
+    style A fill:#f9f,stroke:#333,stroke-width:4px
+    style F fill:#9f9,stroke:#333,stroke-width:4px
+```
+  
 ## Installation
 
 ### 1. Create a conda environment (recommended)
