@@ -136,10 +136,14 @@ class DefectDetectionPipeline:
                 # Store results
                 if detector_results:
                     for detector_name, results in detector_results.items():
+                        # Clean defects for JSON serialization
+                        defects = results.get('defects', [])
+                        cleaned_defects = self._clean_defect_data(defects)
+                        
                         image_results['defects'][detector_name] = {
                             'defect_count': results.get('defect_count', 0),
                             'visualization_path': results.get('visualization_path'),
-                            'defects': results.get('defects', [])
+                            'defects': cleaned_defects
                         }
             else:
                 # Process normally for smaller non-TIFF images
@@ -151,10 +155,59 @@ class DefectDetectionPipeline:
             image_results['error'] = str(e)
         
         # Save results (JSON only)
-        with open(os.path.join(image_output_dir, f"{base_name}_results.json"), 'w') as f:
-            json.dump(image_results, f, indent=2)
+        try:
+            with open(os.path.join(image_output_dir, f"{base_name}_results.json"), 'w') as f:
+                json.dump(image_results, f, indent=2, default=self._json_serializer)
+        except Exception as e:
+            print(f"    Warning: Could not save JSON results: {e}")
+            # Try to save a simplified version
+            simplified_results = {
+                'image_name': image_results.get('image_name', 'unknown'),
+                'processing_time': image_results.get('processing_time', 0),
+                'defects': {name: {'defect_count': data.get('defect_count', 0)} 
+                           for name, data in image_results.get('defects', {}).items()}
+            }
+            try:
+                with open(os.path.join(image_output_dir, f"{base_name}_results_simplified.json"), 'w') as f:
+                    json.dump(simplified_results, f, indent=2)
+                print(f"    Saved simplified results instead")
+            except Exception as e2:
+                print(f"    Could not save even simplified results: {e2}")
         
         self.results_summary.append(image_results)
+    
+    def _json_serializer(self, obj):
+        """Custom JSON serializer for numpy arrays and other objects"""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, tuple):
+            return list(obj)
+        elif hasattr(obj, '__dict__'):
+            return obj.__dict__
+        else:
+            return str(obj)
+    
+    def _clean_defect_data(self, defects):
+        """Clean defect data to ensure JSON serialization"""
+        cleaned_defects = []
+        for defect in defects:
+            cleaned_defect = {}
+            for key, value in defect.items():
+                if isinstance(value, (np.ndarray, tuple)):
+                    if isinstance(value, np.ndarray):
+                        cleaned_defect[key] = value.tolist()
+                    else:
+                        cleaned_defect[key] = list(value)
+                elif isinstance(value, (np.integer, np.floating)):
+                    cleaned_defect[key] = float(value) if isinstance(value, np.floating) else int(value)
+                else:
+                    cleaned_defect[key] = value
+            cleaned_defects.append(cleaned_defect)
+        return cleaned_defects
     
     def _process_regular_image(self, image_path, output_dir, image_results):
         """Process regular-sized images"""
@@ -175,11 +228,14 @@ class DefectDetectionPipeline:
                 vis_path = os.path.join(output_dir, f"{detector_name}_visualization.jpg")
                 cv2.imwrite(vis_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 
+                # Clean defects for JSON serialization
+                cleaned_defects = self._clean_defect_data(defects)
+                
                 # Store results
                 image_results['defects'][detector_name] = {
                     'defect_count': len(defects),
                     'visualization_path': vis_path,
-                    'defects': defects
+                    'defects': cleaned_defects
                 }
                 
             except Exception as e:
@@ -356,7 +412,7 @@ class DefectDetectionPipeline:
                     } for detector in self.detectors.keys()
                 },
                 'detailed_results': self.results_summary
-            }, f, indent=2)
+            }, f, indent=2, default=self._json_serializer)
         
         print(f"Detailed results saved to: {summary_json_path}")
 
