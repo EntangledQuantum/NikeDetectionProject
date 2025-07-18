@@ -8,63 +8,6 @@ from skimage.filters import threshold_otsu
 from scipy import ndimage
 from collections import defaultdict
 
-def split_image_vertically(image_path, output_dir=None):
-    """
-    Splits an image vertically and saves the left half.
-    
-    Args:
-        image_path: Path to the input image
-        output_dir: Directory to save the left half image (default: creates 'vertical_halves' in image directory)
-        
-    Returns:
-        Path to the left half image if successful, None otherwise
-    """
-    if not os.path.exists(image_path):
-        print(f"Error: The file '{image_path}' was not found.")
-        return None
-    
-    # If no output directory specified, create it in the same directory as the input image
-    if output_dir is None:
-        image_dir = os.path.dirname(image_path)
-        output_dir = os.path.join(image_dir, "vertical_halves")
-    
-    # Create output directory if it doesn't exist
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        print(f"Created directory: {output_dir}")
-    
-    # Generate output filename
-    base_name = os.path.basename(image_path)
-    file_name, ext = os.path.splitext(base_name)
-    left_half_path = os.path.join(output_dir, f"{file_name}_left_half{ext}")
-    
-    # Check if left half already exists
-    if os.path.exists(left_half_path):
-        print(f"Left half already exists at: {left_half_path}")
-        return left_half_path
-    
-    # Read the image
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"Error: Could not read image from {image_path}")
-        return None
-    
-    # Get dimensions
-    height, width, _ = img.shape
-    
-    # Calculate the midpoint
-    mid_width = width // 2
-    
-    # Extract the left half
-    left_half = img[:, :mid_width]
-    
-    # Save the left half
-    cv2.imwrite(left_half_path, left_half, [cv2.IMWRITE_PNG_COMPRESSION, 0])
-    print(f"Saved left half of image to: {left_half_path}")
-    print(f"Left half dimensions: {left_half.shape[1]}x{left_half.shape[0]}")
-    
-    return left_half_path
-
 def split_image(image_path, num_splits=50, output_dir=None):
     """
     Splits an image into a specified number of equal parts (e.g., 50).
@@ -72,12 +15,12 @@ def split_image(image_path, num_splits=50, output_dir=None):
     """
     if not os.path.exists(image_path):
         print(f"Error: The file '{image_path}' was not found.")
-        return None, None, None
+        return None, None
 
     img = cv2.imread(image_path)
     if img is None:
         print(f"Error: Could not read image from {image_path}")
-        return None, None, None
+        return None, None
 
     img_height, img_width, _ = img.shape
     
@@ -123,7 +66,7 @@ def split_image(image_path, num_splits=50, output_dir=None):
             split_files.append((out_path, (x0, y0)))
             
     print(f"Split image into {len(split_files)} parts in '{output_dir}'")
-    return output_dir, split_files, img
+    return output_dir, split_files
 
 
 def detect_overspray(image):
@@ -620,59 +563,38 @@ def comprehensive_defect_detection(image_path, window_size=20, output_path="resu
     return all_defects, output_image
 
 
-def run_defect_analysis(input_path, output_result_path, analysis_window_size=20, split_large_image=True):
-    """
-    Runs the complete defect analysis pipeline on a given input image or directory.
-
-    Args:
-        input_path (str): Path to the input image file or directory.
-        output_result_path (str): Path to save the final output image with defects.
-                                  Can be either:
-                                  - A complete file path (e.g., '/path/to/output.png')
-                                  - A directory path (e.g., '/path/to/output_dir/')
-                                  If a directory is provided, the output filename will be auto-generated.
-                                  If split_large_image is False, this is always treated as an output directory.
-        analysis_window_size (int, optional): Size of the analysis window for visualization. Defaults to 20.
-        split_large_image (bool, optional): Whether to split a large image into smaller parts for processing.
-                                            If False, input_path is treated as a directory of images.
-                                            Defaults to True.
+def main():
+    # Hardcoded inputs
+    input_path = "C:/Users/kshik/Desktop/Nike/data/test_InkUp_1200DPI_WithSharpen1.png"
+    analysis_window_size = 20
+    output_result_path = "C:/Users/kshik/Desktop/Nike/data/output_test_InkUp_1200DPI_WithSharpen1.png"
     
-    Returns:
-        list: A list of all detected defect dictionaries.
-    """
+    # --- Configuration ---
+    # Set to False to use input_path as a directory of pre-split images
+    # If False, ensure `input_path` points to a directory.
+    split_large_image = True 
+
     all_defects = []
     
     # --- Image Processing ---
     if split_large_image:
         if not os.path.isfile(input_path):
             print(f"Error: Input path '{input_path}' is not a file. Cannot split.")
-            return []
+            return
 
-        # NEW: First split the image vertically and get the left half
-        print(f"\n=== Step 1: Splitting image vertically to get left half ===")
-        left_half_path = split_image_vertically(input_path)
+        # 1. Split the large image
+        _, split_files_with_offsets = split_image(input_path, num_splits=50)
         
-        if left_half_path is None:
-            print("Failed to get left half of the image.")
-            return []
-        
-        print(f"\n=== Step 2: Splitting left half into 50 parts ===")
-        # 1. Split the left half image
-        _, split_files_with_offsets, left_half_image = split_image(left_half_path, num_splits=50)
-        
-        if not split_files_with_offsets or left_half_image is None:
+        if not split_files_with_offsets:
             print("Image splitting failed.")
-            return []
+            return
 
-        # 2. Prepare image for drawing defects (use left half for visualization)
-        output_image = left_half_image.copy()
+        # 2. Load original image for drawing defects
+        original_image = cv2.imread(input_path)
+        output_image = original_image.copy()
         
-        print(f"\n=== Step 3: Processing each split for defect detection ===")
         # 3. Process each split image
-        for idx, (img_path, offset) in enumerate(split_files_with_offsets):
-            if idx % 10 == 0:
-                print(f"Processing split {idx+1}/{len(split_files_with_offsets)}...")
-            
+        for img_path, offset in split_files_with_offsets:
             defects, updated_image = comprehensive_defect_detection(
                 img_path,
                 analysis_window_size,
@@ -684,40 +606,14 @@ def run_defect_analysis(input_path, output_result_path, analysis_window_size=20,
                 output_image = updated_image # Keep the image with the latest drawings
         
         # 4. Save the final composite image
-        if output_image is not None:
-            # Handle case where output_result_path is a directory
-            if os.path.isdir(output_result_path):
-                base_name = os.path.basename(left_half_path)
-                file_name, ext = os.path.splitext(base_name)
-                output_file_path = os.path.join(output_result_path, f"{file_name}_defects{ext}")
-            else:
-                # output_result_path is already a full file path
-                output_file_path = output_result_path
-                # Ensure the directory exists
-                output_dir = os.path.dirname(output_file_path)
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                    print(f"Created output directory: {output_dir}")
-            
-            cv2.imwrite(output_file_path, output_image)
-            print(f"\nFinal analysis result with all defects saved to: '{output_file_path}'")
-        else:
-            print("\nProcessing completed, but no output image was generated.")
+        cv2.imwrite(output_result_path, output_image)
+        print(f"\nFinal analysis result with all defects saved to: '{output_result_path}'")
 
     else: # Process a directory of images (pre-split or individual)
         if not os.path.isdir(input_path):
             print(f"Error: Input path '{input_path}' is not a directory.")
             print("To process a single image without splitting, please point to its directory and set split_large_image=False")
-            return []
-
-        # Use output_result_path as the output directory
-        output_dir = output_result_path
-        if os.path.splitext(output_dir)[1]: # If it has a file extension, use its directory
-            output_dir = os.path.dirname(output_dir)
-
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-            print(f"Created output directory: {output_dir}")
+            return
 
         image_files = [os.path.join(input_path, f) for f in os.listdir(input_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
@@ -727,7 +623,7 @@ def run_defect_analysis(input_path, output_result_path, analysis_window_size=20,
             # When processing a directory, we can't map to a single original image.
             # So, we'll save a separate output for each input image.
             base, ext = os.path.splitext(os.path.basename(img_path))
-            single_output_path = os.path.join(output_dir, f"{base}_defects{ext}")
+            single_output_path = os.path.join(os.path.dirname(img_path), f"{base}_defects{ext}")
 
             defects, output_image = comprehensive_defect_detection(
                 img_path,
@@ -754,38 +650,6 @@ def run_defect_analysis(input_path, output_result_path, analysis_window_size=20,
             print(f"  - {defect_type.title()}: {count}")
     else:
         print("\nScan complete. No defects were found matching the criteria.")
-    
-    return all_defects
-
-
-def main():
-    # Hardcoded inputs for standalone execution
-    input_path = "F:\\DeepLearning\\NikePProject\\Images\\test_InkUp_1200DPI_WithSharpen1.png"
-    output_result_path = "F:\\DeepLearning\\NikePProject\\output_left_half_defects.png"
-    
-    # --- Configuration ---
-    # Set to True to split a single large image.
-    # Set to False to process a directory of images.
-    # If False, ensure `input_path` points to a directory.
-    split_large_image = True 
-
-    print(f"Starting defect analysis for: {input_path}")
-    print(f"This will process only the LEFT HALF of the image")
-    print(f"Left half will be saved in 'vertical_halves' folder")
-    print(f"Split images will be saved in a subfolder based on the left half filename")
-    
-    defects = run_defect_analysis(
-        input_path, 
-        output_result_path, 
-        analysis_window_size=20,
-        split_large_image=split_large_image
-    )
-    
-    if defects:
-        print(f"\nAnalysis finished. Found {len(defects)} total defects in the left half of the image.")
-    else:
-        print("\nAnalysis finished. No defects found in the left half of the image.")
-
 
 if __name__ == "__main__":
     main()
