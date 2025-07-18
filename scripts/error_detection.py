@@ -3,24 +3,184 @@ import cv2
 import numpy as np
 import os
 import math
+import argparse
+import sys
+from pathlib import Path
 from skimage import feature, measure, morphology
 from skimage.filters import threshold_otsu
 from scipy import ndimage
 from collections import defaultdict
+from PIL import Image
+import tifffile
+from tqdm import tqdm
 
-def split_image(image_path, num_splits=50, output_dir=None):
+def read_image_file(image_path: str, input_type: str | None = None) -> np.ndarray | None:
     """
-    Splits an image into a specified number of equal parts (e.g., 50).
-    Saves the split images into a directory.
+    Reads an image file supporting both regular formats (PNG, JPG) and TIFF files.
+    Preserves full resolution and metadata for TIFF files.
+    
+    Args:
+        image_path: Path to the input image
+        input_type: Pre-detected input type ('tiff' or 'image'), if available
+        
+    Returns:
+        np.ndarray | None: Loaded image in BGR format (compatible with OpenCV), or None if failed
     """
     if not os.path.exists(image_path):
         print(f"Error: The file '{image_path}' was not found.")
-        return None, None
-
+        return None
+    
+    # Use pre-detected type if available, otherwise check extension
+    if input_type is None:
+        file_ext = os.path.splitext(image_path)[1].lower()
+        is_tiff = file_ext in ['.tiff', '.tif']
+    else:
+        is_tiff = input_type == 'tiff'
+    
+    if is_tiff:
+        try:
+            with tifffile.TiffFile(image_path) as tif:
+                page = tif.pages[0]
+                
+                # Try memory mapping for large files first
+                if hasattr(page, 'is_memmappable') and page.is_memmappable:
+                    img = page.asarray(out='memmap')
+                else:
+                    img = page.asarray()
+                
+                # Handle different TIFF formats and bit depths
+                if len(img.shape) == 2:  # Grayscale
+                    if img.dtype != np.uint8:
+                        img_float = img.astype(np.float32)
+                        img = ((img_float - img_float.min()) * (255.0 / (img_float.max() - img_float.min()))).astype(np.uint8)
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                elif len(img.shape) == 3:
+                    if img.shape[2] == 3:  # RGB
+                        if img.dtype != np.uint8:
+                            img_float = img.astype(np.float32)
+                            img = np.zeros_like(img_float, dtype=np.uint8)
+                            for c in range(3):
+                                channel = img_float[:,:,c]
+                                img[:,:,c] = ((channel - channel.min()) * (255.0 / (channel.max() - channel.min()))).astype(np.uint8)
+                        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    elif img.shape[2] == 4:  # RGBA
+                        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                
+                print(f"Successfully loaded TIFF: {os.path.basename(image_path)}")
+                print(f"- Dimensions: {img.shape}")
+                print(f"- Original dtype: {page.dtype}")
+                return img
+            
+        except Exception as e:
+            print(f"Error reading TIFF file {image_path} with tifffile: {e}")
+            print("Trying with OpenCV...")
+    
+    # Fall back to OpenCV for regular formats or if TIFF failed
     img = cv2.imread(image_path)
     if img is None:
         print(f"Error: Could not read image from {image_path}")
-        return None, None
+        return None
+        
+    return img
+
+def save_image(image: np.ndarray, output_path: str, original_path: str | None = None) -> bool:
+    """Saves image with quality preservation."""
+    try:
+        if output_path.lower().endswith(('.tiff', '.tif')):
+            # Save as TIFF with original metadata
+            tifffile.imwrite(
+                output_path,
+                image,
+                compression=None  # No compression
+            )
+        else:
+            # For PNG output, use maximum quality
+            cv2.imwrite(output_path, image, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+        return True
+    except Exception as e:
+        print(f"Error saving image: {e}")
+        return False
+
+def split_image_vertically(image_path: str, output_dir: str | None = None) -> str | None:
+    """
+    Splits an image vertically and saves the left half.
+    
+    Args:
+        image_path: Path to the input image
+        output_dir: Directory to save the left half image (default: creates 'vertical_halves' in image directory)
+        
+    Returns:
+        Path to the left half image if successful, None otherwise
+    """
+    if not os.path.exists(image_path):
+        print(f"Error: The file '{image_path}' was not found.")
+        return None
+    
+    # If no output directory specified, create it in the same directory as the input image
+    if output_dir is None:
+        image_dir = os.path.dirname(image_path)
+        output_dir = os.path.join(image_dir, "vertical_halves")
+    
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"Created directory: {output_dir}")
+    
+    # Generate output filename
+    base_name = os.path.basename(image_path)
+    file_name, ext = os.path.splitext(base_name)
+    left_half_path = os.path.join(output_dir, f"{file_name}_left_half{ext}")
+    
+    # Check if left half already exists
+    if os.path.exists(left_half_path):
+        print(f"Left half already exists at: {left_half_path}")
+        return left_half_path
+    
+    # Read the image (supports TIFF and other formats)
+    img = read_image_file(image_path)
+    if img is None:
+        print(f"Error: Could not read image from {image_path}")
+        return None
+    
+    # Get dimensions
+    height, width, _ = img.shape
+    
+    # Calculate the midpoint
+    mid_width = width // 2
+    
+    # Extract the left half
+    left_half = img[:, :mid_width]
+    
+    # Save the left half using save_image
+    if save_image(left_half, left_half_path, image_path):
+        print(f"Saved left half of image to: {left_half_path}")
+        print(f"Left half dimensions: {left_half.shape[1]}x{left_half.shape[0]}")
+        return left_half_path
+    else:
+        print(f"Failed to save left half to: {left_half_path}")
+        return None
+
+def split_image(image_path: str, num_splits: int = 50, output_dir: str | None = None) -> tuple[str | None, list]:
+    """
+    Splits an image into a specified number of equal parts (e.g., 50).
+    Saves the split images into a directory.
+    
+    Args:
+        image_path: Path to the input image
+        num_splits: Number of parts to split into
+        output_dir: Directory to save split images (optional)
+        
+    Returns:
+        Tuple of (split_directory_path, list of (split_file_path, offset))
+    """
+    if not os.path.exists(image_path):
+        print(f"Error: The file '{image_path}' was not found.")
+        return None, []
+
+    img = read_image_file(image_path)
+    if img is None:
+        print(f"Error: Could not read image from {image_path}")
+        return None, []
 
     img_height, img_width, _ = img.shape
     
@@ -28,7 +188,7 @@ def split_image(image_path, num_splits=50, output_dir=None):
     if output_dir is None:
         base_name = os.path.basename(image_path)
         file_name, _ = os.path.splitext(base_name)
-        output_dir = os.path.join(os.path.dirname(image_path), file_name)
+        output_dir = os.path.join(os.path.dirname(image_path), f"split_{file_name}")
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -61,9 +221,11 @@ def split_image(image_path, num_splits=50, output_dir=None):
             tile = img[y0:y1, x0:x1]
             
             out_path = os.path.join(output_dir, f"split_{r}_{c}.png")
-            # Save without compression
-            cv2.imwrite(out_path, tile, [cv2.IMWRITE_PNG_COMPRESSION, 0])
-            split_files.append((out_path, (x0, y0)))
+            # Save without compression using save_image
+            if save_image(tile, out_path, image_path):
+                split_files.append((out_path, (x0, y0)))
+            else:
+                print(f"Warning: Failed to save split {r}_{c}")
             
     print(f"Split image into {len(split_files)} parts in '{output_dir}'")
     return output_dir, split_files
@@ -486,7 +648,7 @@ def comprehensive_defect_detection(image_path, window_size=20, output_path="resu
         print(f"Error: The file '{image_path}' was not found.")
         return [], None
 
-    image = cv2.imread(image_path)
+    image = read_image_file(image_path)
     if image is None:
         print(f"Error: Could not read the image from '{image_path}'. Check the file format.")
         return [], None
@@ -563,82 +725,255 @@ def comprehensive_defect_detection(image_path, window_size=20, output_path="resu
     return all_defects, output_image
 
 
-def main():
-    # Hardcoded inputs
-    input_path = "C:/Users/kshik/Desktop/Nike/data/test_InkUp_1200DPI_WithSharpen1.png"
-    analysis_window_size = 20
-    output_result_path = "C:/Users/kshik/Desktop/Nike/data/output_test_InkUp_1200DPI_WithSharpen1.png"
+def detect_input_type(input_path):
+    """
+    Detects the input type based on file extension.
     
-    # --- Configuration ---
-    # Set to False to use input_path as a directory of pre-split images
-    # If False, ensure `input_path` points to a directory.
-    split_large_image = True 
+    Args:
+        input_path: Path to the input file
+        
+    Returns:
+        Tuple of (input_type, is_valid) where:
+        - input_type: 'tiff', 'image', 'directory', or 'unknown'
+        - is_valid: Boolean indicating if the input is valid
+    """
+    if not os.path.exists(input_path):
+        return 'unknown', False
+    
+    if os.path.isdir(input_path):
+        return 'directory', True
+    
+    if os.path.isfile(input_path):
+        file_ext = os.path.splitext(input_path)[1].lower()
+        
+        if file_ext in ['.tiff', '.tif']:
+            return 'tiff', True
+        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.webp']:
+            return 'image', True
+        else:
+            return 'unknown', False
+    
+    return 'unknown', False
 
+
+def main(input_path: str, split_large_image: bool = True, analysis_window_size: int = 20) -> None:
+    """
+    Main function to process images for defect detection.
+    
+    Args:
+        input_path: Path to input image, TIFF file, or directory containing images.
+        split_large_image: Whether to split large images for processing, regardless of format.
+        analysis_window_size: Size of the window for defect analysis.
+    """
+    if not os.path.exists(input_path):
+        print(f"Error: Input path '{input_path}' does not exist.")
+        return
+    
+    # --- Input Type Detection ---
+    input_type, is_valid = detect_input_type(input_path)
+    
+    if not is_valid:
+        print(f"Error: Unsupported file format. Please provide:")
+        print("  - TIFF files (.tiff, .tif)")
+        print("  - Image files (.png, .jpg, .jpeg, .bmp, .webp)")
+        print("  - Directory containing image files")
+        return
+    
+    print(f"Detected input type: {input_type}")
+    print(f"Processing: {input_path}")
+    print(f"Split large image mode: {'enabled' if split_large_image else 'disabled'}")
+    
     all_defects = []
+    failed_files = []
+    successful_files = []
     
-    # --- Image Processing ---
-    if split_large_image:
-        if not os.path.isfile(input_path):
-            print(f"Error: Input path '{input_path}' is not a file. Cannot split.")
-            return
-
-        # 1. Split the large image
-        _, split_files_with_offsets = split_image(input_path, num_splits=50)
+    # --- Handle Directory Input ---
+    if input_type == 'directory':
+        # Create output directory with prefix
+        input_dir_name = os.path.basename(os.path.abspath(input_path))
+        output_dir = os.path.join(
+            os.path.dirname(os.path.abspath(input_path)),
+            f"output_{input_dir_name}"
+        )
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"Output directory: {output_dir}")
         
-        if not split_files_with_offsets:
-            print("Image splitting failed.")
-            return
-
-        # 2. Load original image for drawing defects
-        original_image = cv2.imread(input_path)
-        output_image = original_image.copy()
+        # Get all supported image files in directory (ignore subdirectories)
+        image_files = []
+        for file in os.listdir(input_path):
+            file_path = os.path.join(input_path, file)
+            if os.path.isfile(file_path) and file.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.webp')):
+                image_files.append(file_path)
         
-        # 3. Process each split image
-        for img_path, offset in split_files_with_offsets:
-            defects, updated_image = comprehensive_defect_detection(
-                img_path,
-                analysis_window_size,
-                original_image_for_drawing=output_image,
-                offset=offset
-            )
-            all_defects.extend(defects)
-            if updated_image is not None:
-                output_image = updated_image # Keep the image with the latest drawings
-        
-        # 4. Save the final composite image
-        cv2.imwrite(output_result_path, output_image)
-        print(f"\nFinal analysis result with all defects saved to: '{output_result_path}'")
-
-    else: # Process a directory of images (pre-split or individual)
-        if not os.path.isdir(input_path):
-            print(f"Error: Input path '{input_path}' is not a directory.")
-            print("To process a single image without splitting, please point to its directory and set split_large_image=False")
+        if not image_files:
+            print(f"No supported image files found in: {input_path}")
+            print("Supported formats: .png, .jpg, .jpeg, .tiff, .tif, .bmp, .webp")
             return
-
-        image_files = [os.path.join(input_path, f) for f in os.listdir(input_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-
-        print(f"Found {len(image_files)} images to process in '{input_path}'")
-
-        for img_path in image_files:
-            # When processing a directory, we can't map to a single original image.
-            # So, we'll save a separate output for each input image.
-            base, ext = os.path.splitext(os.path.basename(img_path))
-            single_output_path = os.path.join(os.path.dirname(img_path), f"{base}_defects{ext}")
-
-            defects, output_image = comprehensive_defect_detection(
-                img_path,
-                analysis_window_size,
-                output_path=single_output_path
-            )
-            all_defects.extend(defects) # Still aggregate defect count
+        
+        print(f"Found {len(image_files)} images to process")
+        
+        # Process each image file
+        for img_path in tqdm(image_files, desc="Processing images"):
+            try:
+                file_type, _ = detect_input_type(img_path)
+                file_name = os.path.basename(img_path)
+                print(f"\nProcessing {file_type} file: {file_name}")
+                
+                # Generate output path with prefix
+                base_name, _ = os.path.splitext(file_name)
+                output_file_path = os.path.join(output_dir, f"output_{base_name}.png")
+                
+                # Check if we should process in chunks
+                is_large = process_large_image_in_chunks(img_path)
+                if is_large:
+                    print(f"Large image detected, using memory-efficient processing")
+                
+                if split_large_image:
+                    # Process with splitting
+                    split_dir, split_files_with_offsets = split_image(img_path, num_splits=50)
+                    
+                    if split_dir: # Only proceed if splitting was successful
+                        # Load original image for drawing defects
+                        original_image = read_image_file(img_path, file_type)
+                        if original_image is not None:
+                            output_image = original_image.copy()
+                            
+                            # Process each split
+                            for split_path, offset in split_files_with_offsets:
+                                defects, updated_image = comprehensive_defect_detection(
+                                    split_path,
+                                    analysis_window_size,
+                                    original_image_for_drawing=output_image,
+                                    offset=offset
+                                )
+                                all_defects.extend(defects)
+                                if updated_image is not None:
+                                    output_image = updated_image
+                            
+                            # Save result
+                            if save_image(output_image, output_file_path, img_path):
+                                print(f"Saved: {output_file_path}")
+                                successful_files.append(file_name)
+                            else:
+                                print(f"Failed to save: {output_file_path}")
+                                failed_files.append((file_name, "Failed to save output"))
+                            
+                            # Cleanup temporary files
+                            cleanup_temp_files(split_files_with_offsets)
+                            if split_dir:
+                                cleanup_split_directory(split_dir)
+                else:
+                    # Process without splitting
+                    defects, output_image = comprehensive_defect_detection(
+                        img_path,
+                        analysis_window_size
+                    )
+                    all_defects.extend(defects)
+                    
+                    if output_image is not None:
+                        if save_image(output_image, output_file_path, img_path):
+                            print(f"Saved: {output_file_path}")
+                            successful_files.append(file_name)
+                        else:
+                            print(f"Failed to save: {output_file_path}")
+                            failed_files.append((file_name, "Failed to save output"))
             
-            if output_image is not None:
-                 cv2.imwrite(single_output_path, output_image)
-                 print(f"Saved defect analysis for '{img_path}' to '{single_output_path}'")
-
+            except Exception as e:
+                print(f"Error processing {file_name}: {str(e)}")
+                failed_files.append((file_name, str(e)))
+                continue
+    
+    # --- Handle Single File Input ---
+    else:
+        try:
+            # Generate output path for single file
+            input_dir = os.path.dirname(os.path.abspath(input_path))
+            file_name = os.path.basename(input_path)
+            base_name, _ = os.path.splitext(file_name)
+            output_file_path = os.path.join(input_dir, f"output_{base_name}.png")
+            
+            # Check if we should process in chunks
+            is_large = process_large_image_in_chunks(input_path)
+            if is_large:
+                print(f"Large image detected, using memory-efficient processing")
+            
+            if split_large_image:
+                print(f"Processing {input_type} file with splitting...")
+                
+                # Split the image
+                split_dir, split_files_with_offsets = split_image(input_path, num_splits=50)
+                
+                if not split_dir: # Check if splitting failed
+                    print("Image splitting failed.")
+                    return
+                
+                # Load original image for drawing defects
+                original_image = read_image_file(input_path, input_type)
+                if original_image is None:
+                    print("Could not load original image for defect visualization.")
+                    return
+                
+                output_image = original_image.copy()
+                
+                # Process each split image
+                print(f"Processing {len(split_files_with_offsets)} image segments...")
+                for img_path, offset in split_files_with_offsets:
+                    defects, updated_image = comprehensive_defect_detection(
+                        img_path,
+                        analysis_window_size,
+                        original_image_for_drawing=output_image,
+                        offset=offset
+                    )
+                    all_defects.extend(defects)
+                    if updated_image is not None:
+                        output_image = updated_image
+                
+                # Save the final result
+                if save_image(output_image, output_file_path, input_path):
+                    print(f"Final analysis result saved to: {output_file_path}")
+                    successful_files.append(file_name)
+                else:
+                    print(f"Failed to save: {output_file_path}")
+                    failed_files.append((file_name, "Failed to save output"))
+                
+                # Cleanup temporary files
+                cleanup_temp_files(split_files_with_offsets)
+                if split_dir:
+                    cleanup_split_directory(split_dir)
+            
+            else:
+                print(f"Processing {input_type} file without splitting...")
+                
+                # Process without splitting
+                defects, output_image = comprehensive_defect_detection(
+                    input_path,
+                    analysis_window_size
+                )
+                all_defects.extend(defects)
+                
+                if output_image is not None:
+                    if save_image(output_image, output_file_path, input_path):
+                        print(f"Analysis result saved to: {output_file_path}")
+                        successful_files.append(file_name)
+                    else:
+                        print(f"Failed to save: {output_file_path}")
+                        failed_files.append((file_name, "Failed to save output"))
+        
+        except Exception as e:
+            print(f"Error processing {file_name}: {str(e)}")
+            failed_files.append((file_name, str(e)))
+    
     # --- Final Report ---
+    print(f"\n=== Processing Summary ===")
+    print(f"Successfully processed: {len(successful_files)} files")
+    if failed_files:
+        print(f"Failed to process: {len(failed_files)} files")
+        print("\nFailed files:")
+        for filename, error in failed_files:
+            print(f"  - {filename}: {error}")
+    
     if all_defects:
-        print(f"\nScan complete. Found {len(all_defects)} total defective area(s).")
+        print(f"\nFound {len(all_defects)} total defective area(s).")
         
         # Group by defect type for final summary
         defect_summary = defaultdict(int)
@@ -649,7 +984,96 @@ def main():
         for defect_type, count in defect_summary.items():
             print(f"  - {defect_type.title()}: {count}")
     else:
-        print("\nScan complete. No defects were found matching the criteria.")
+        print("\nNo defects were found matching the criteria.")
+
+
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Nike Defect Detection - Analyze TIFF and image files for manufacturing defects",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Process a single TIFF file with splitting
+  python error_detection.py /path/to/image.tiff
+
+  # Process a single image without splitting
+  python error_detection.py /path/to/image.png --no-split
+
+  # Process all images in a directory
+  python error_detection.py /path/to/images/
+
+  # Process with custom window size
+  python error_detection.py /path/to/image.tiff --window-size 30
+        """
+    )
+    
+    parser.add_argument(
+        'input_path',
+        help='Path to input image file, TIFF file, or directory containing images'
+    )
+    
+    parser.add_argument(
+        '--no-split',
+        action='store_true',
+        help='Process images without splitting them into segments (default: split large images)'
+    )
+    
+    parser.add_argument(
+        '--window-size',
+        type=int,
+        default=20,
+        help='Size of analysis window for defect detection (default: 20)'
+    )
+    
+    return parser.parse_args()
+
+
+def cleanup_temp_files(split_files: list) -> None:
+    """Clean up temporary split files after processing."""
+    for file_path, _ in split_files:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"Warning: Could not remove temporary file {file_path}: {e}")
+
+def cleanup_split_directory(split_dir: str) -> None:
+    """Remove the entire split directory and its contents."""
+    try:
+        import shutil
+        if os.path.exists(split_dir):
+            shutil.rmtree(split_dir)
+            print(f"Cleaned up temporary directory: {split_dir}")
+    except Exception as e:
+        print(f"Warning: Could not remove temporary directory {split_dir}: {e}")
+
+def process_large_image_in_chunks(image_path: str, chunk_size: int = 1024) -> bool:
+    """Check if image should be processed in chunks based on size."""
+    try:
+        with tifffile.TiffFile(image_path) as tif:
+            page = tif.pages[0]
+            height, width = page.shape[:2]
+            # If image is larger than 10000x10000 pixels, consider it large
+            return height > 10000 or width > 10000
+    except:
+        return False
 
 if __name__ == "__main__":
-    main()
+    args = parse_arguments()
+    
+    # Convert --no-split to split_large_image boolean
+    split_large_image = not args.no_split
+    
+    try:
+        main(
+            input_path=args.input_path,
+            split_large_image=split_large_image,
+            analysis_window_size=args.window_size
+        )
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        sys.exit(1)
