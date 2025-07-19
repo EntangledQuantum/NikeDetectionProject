@@ -1,335 +1,475 @@
 """
-Debris Detection Algorithm
-Detects foreign particles on sheets including pre-print and post-print debris
+Debris Defect Detection Algorithm
+Detects foreign particles like dirt, fibers on sheets
 
-Author: Assistant
+Author: Koushik and Assistant
 Date: 2024
+Version: 2.0 - Complete rewrite for colored prints
 """
 
 import cv2
 import numpy as np
+from scipy import ndimage, signal
+from skimage import morphology, measure, filters, feature, color
 import matplotlib.pyplot as plt
-from scipy import ndimage
-from skimage import morphology, measure, filters, feature
-import os
-from tqdm import tqdm
+from typing import Tuple, List, Dict, Any
 
 
 class DebrisDetector:
-    """Detects debris defects - foreign particle regions with characteristic patterns"""
+    """
+    Detects debris defects characterized by:
+    - Dark spots with possible blank rings (pre-print debris)
+    - Dark fibers on colored prints
+    - Post-print debris particles
+    Works on colored images without grayscale conversion
+    """
     
-    def __init__(self, halo_threshold=30, region_size_range=(100, 2000),
-                 contrast_threshold=40, kernel_size=12):
+    def __init__(self,
+                 dark_threshold: float = 0.3,
+                 min_debris_size: int = 20,
+                 max_debris_size: int = 2000,
+                 fiber_min_length: int = 30,
+                 halo_detection: bool = True,
+                 color_contrast_threshold: float = 0.4):
         """
         Args:
-            halo_threshold: Minimum intensity difference for halo detection
-            region_size_range: Min and max size for debris regions
-            contrast_threshold: Minimum contrast for debris detection
-            kernel_size: Size of morphological kernel for region analysis
+            dark_threshold: Threshold for dark region detection
+            min_debris_size: Minimum area for debris particles
+            max_debris_size: Maximum area for debris particles
+            fiber_min_length: Minimum length for fiber detection
+            halo_detection: Whether to detect halos around debris
+            color_contrast_threshold: Threshold for color contrast
         """
-        self.halo_threshold = halo_threshold
-        self.region_size_range = region_size_range
-        self.contrast_threshold = contrast_threshold
-        self.kernel_size = kernel_size
+        self.dark_threshold = dark_threshold
+        self.min_debris_size = min_debris_size
+        self.max_debris_size = max_debris_size
+        self.fiber_min_length = fiber_min_length
+        self.halo_detection = halo_detection
+        self.color_contrast_threshold = color_contrast_threshold
+    
+    def detect(self, image: np.ndarray) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+        """
+        Main detection method - works on colored images
         
-    def preprocess_image(self, image):
-        """Preprocess image for debris detection"""
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image.copy()
+        Args:
+            image: Input image (BGR format expected)
             
-        # Apply median filter to reduce noise
-        denoised = cv2.medianBlur(gray, 5)
-        
-        # Enhance contrast
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(denoised)
-        
-        return gray, denoised, enhanced
-    
-    def detect_dark_spots_with_halos(self, image):
-        """Detect dark spots with bright halos (pre-print debris)"""
-        # Find dark spots
-        _, dark_thresh = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
-        # Use enhanced morphological operations to group debris better
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (12, 12))
-        cleaned = cv2.morphologyEx(dark_thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, 
-                                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (6, 6)))
-        
-        # Label dark regions
-        labeled = measure.label(cleaned)
-        props = measure.regionprops(labeled, intensity_image=image)
-        
-        debris_with_halos = []
-        halo_mask = np.zeros_like(image)
-        
-        for prop in props:
-            if self.region_size_range[0] <= prop.area <= self.region_size_range[1]:
-                # Check for halo around dark spot
-                y, x = prop.centroid
-                
-                # Create ring mask around the spot
-                radius_inner = int(np.sqrt(prop.area / np.pi))
-                radius_outer = int(radius_inner * 2.5)
-                
-                # Create masks
-                y_grid, x_grid = np.ogrid[:image.shape[0], :image.shape[1]]
-                inner_mask = (x_grid - x)**2 + (y_grid - y)**2 <= radius_inner**2
-                outer_mask = (x_grid - x)**2 + (y_grid - y)**2 <= radius_outer**2
-                ring_mask = outer_mask & ~inner_mask
-                
-                # Calculate intensities
-                if np.any(ring_mask):
-                    ring_mean = np.mean(image[ring_mask])
-                    spot_mean = prop.mean_intensity
-                    
-                    # Check if ring is brighter than spot
-                    if ring_mean - spot_mean > self.halo_threshold:
-                        debris_with_halos.append({
-                            'centroid': (int(x), int(y)),
-                            'area': prop.area,
-                            'bbox': prop.bbox,
-                            'spot_intensity': spot_mean,
-                            'halo_intensity': ring_mean,
-                            'type': 'pre-print'
-                        })
-                        
-                        # Add to mask
-                        coords = prop.coords
-                        halo_mask[coords[:, 0], coords[:, 1]] = 255
-                        
-        return halo_mask, debris_with_halos
-    
-    def detect_surface_particles(self, image):
-        """Detect surface particles (post-print debris)"""
-        # Use gradient information to find particles
-        grad_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
-        gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
-        
-        # Threshold gradient to find edges
-        grad_thresh = gradient_magnitude > np.percentile(gradient_magnitude, 90)
-        
-        # Fill regions
-        filled = ndimage.binary_fill_holes(grad_thresh)
-        
-        # Remove large regions (likely not particles)
-        labeled = measure.label(filled)
-        props = measure.regionprops(labeled, intensity_image=image)
-        
-        surface_particles = []
-        particle_mask = np.zeros_like(image)
-        
-        for prop in props:
-            if self.region_size_range[0] <= prop.area <= self.region_size_range[1]:
-                # Check contrast with surroundings
-                y, x = prop.centroid
-                
-                # Get bounding box with margin
-                minr, minc, maxr, maxc = prop.bbox
-                margin = 10
-                minr = max(0, minr - margin)
-                minc = max(0, minc - margin)
-                maxr = min(image.shape[0], maxr + margin)
-                maxc = min(image.shape[1], maxc + margin)
-                
-                # Calculate contrast
-                roi = image[minr:maxr, minc:maxc]
-                particle_mean = prop.mean_intensity
-                surrounding_mean = np.mean(roi) 
-                
-                contrast = abs(particle_mean - surrounding_mean)
-                
-                if contrast > self.contrast_threshold:
-                    surface_particles.append({
-                        'centroid': (int(x), int(y)),
-                        'area': prop.area,
-                        'bbox': prop.bbox,
-                        'contrast': contrast,
-                        'type': 'post-print'
-                    })
-                    
-                    coords = prop.coords
-                    particle_mask[coords[:, 0], coords[:, 1]] = 255
-                    
-        return particle_mask, surface_particles
-    
-    def detect_fiber_like_debris(self, image):
-        """Detect elongated fiber-like debris"""
-        # Edge detection
-        edges = feature.canny(image, sigma=2)
-        
-        # Hough line detection for fibers
-        lines = cv2.HoughLinesP(edges.astype(np.uint8), 1, np.pi/180, 
-                               threshold=30, minLineLength=20, maxLineGap=5)
-        
-        fiber_mask = np.zeros_like(image)
-        fibers = []
-        
-        if lines is not None:
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                length = np.sqrt((x2-x1)**2 + (y2-y1)**2)
-                
-                if length > 30:  # Minimum fiber length
-                    # Check if it's actually a fiber (not just an edge)
-                    # Sample points along the line
-                    num_samples = int(length)
-                    xs = np.linspace(x1, x2, num_samples)
-                    ys = np.linspace(y1, y2, num_samples)
-                    
-                    # Check consistency of darkness along the line
-                    values = []
-                    for i in range(len(xs)):
-                        if 0 <= int(ys[i]) < image.shape[0] and 0 <= int(xs[i]) < image.shape[1]:
-                            values.append(image[int(ys[i]), int(xs[i])])
-                    
-                    if values and np.std(values) < 30:  # Consistent darkness
-                        fibers.append({
-                            'start': (x1, y1),
-                            'end': (x2, y2),
-                            'length': length,
-                            'type': 'fiber'
-                        })
-                        
-                        cv2.line(fiber_mask, (x1, y1), (x2, y2), 255, 2)
-                        
-        return fiber_mask, fibers
-    
-    def detect(self, image):
-        """Main detection method"""
-        # Preprocess
-        gray, denoised, enhanced = self.preprocess_image(image)
+        Returns:
+            Tuple of (visualization, defects list)
+        """
+        # Ensure we have a color image
+        if len(image.shape) == 2:
+            # If grayscale, convert to BGR for consistency
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         
         # Detect different types of debris
-        halo_mask, debris_with_halos = self.detect_dark_spots_with_halos(enhanced)
-        particle_mask, debris_without_halos = self.detect_surface_particles(denoised)
-        fiber_mask, fibers = self.detect_fiber_like_debris(enhanced)
+        dark_spots = self._detect_dark_spots(image)
+        fibers = self._detect_fibers(image)
+        color_anomalies = self._detect_color_anomalies(image)
         
-        # Combine all debris
-        combined_mask = cv2.bitwise_or(halo_mask, particle_mask)
-        combined_mask = cv2.bitwise_or(combined_mask, fiber_mask)
+        # Combine all detections
+        all_debris = self._combine_detections(dark_spots, fibers, color_anomalies, image.shape[:2])
+        
+        # Analyze debris characteristics
+        debris_regions = self._analyze_debris_regions(all_debris, image)
+        
+        # Create defects list
+        defects = self._create_defect_list(debris_regions)
         
         # Create visualization
-        visualization = self.create_visualization(
-            image, halo_mask, particle_mask, fiber_mask,
-            debris_with_halos, debris_without_halos, fibers
-        )
+        visualization = self._create_visualization(image, debris_regions)
         
-        # Combine all defects
-        all_defects = []
-        for debris in debris_with_halos:
-            all_defects.append({
-                'type': 'debris_with_halo',
-                'location': debris.get('centroid', (0, 0)),
-                'size': debris.get('area', 0),
-                'halo_strength': debris.get('halo_intensity', 0) - debris.get('spot_intensity', 0)
-            })
-        for debris in debris_without_halos:
-            all_defects.append({
-                'type': 'post_print_debris',
-                'location': debris.get('centroid', (0, 0)),
-                'size': debris.get('area', 0)
-            })
-        for fiber in fibers:
-            all_defects.append({
-                'type': 'fiber',
-                'location': fiber.get('start', (0, 0)),  # Use start point as location
-                'end_point': fiber.get('end', (0, 0)),
-                'length': fiber.get('length', 0)
-            })
-        
-        # Return tuple format (visualization, defects)
-        return visualization, all_defects
+        return visualization, defects
     
-    def create_visualization(self, original, halo_mask, particle_mask, 
-                           fiber_mask, halo_debris, particles, fibers):
-        """Create visualization marking debris areas - NO TEXT, JUST REGIONS"""
-        if len(original.shape) == 2:
-            vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
-        else:
-            vis = original.copy()
+    def _detect_dark_spots(self, image: np.ndarray) -> List[Dict[str, Any]]:
+        """Detect dark spots on colored background"""
+        # Convert to LAB color space for better color separation
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l_channel = lab[:, :, 0]  # Lightness channel
+        
+        # Find dark regions
+        # Adaptive threshold to handle varying background colors
+        mean_lightness = np.mean(l_channel)
+        dark_threshold = mean_lightness * self.dark_threshold
+        
+        # Create mask of dark regions
+        dark_mask = l_channel < dark_threshold
+        
+        # Apply morphological operations to clean up
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        dark_mask = cv2.morphologyEx(dark_mask.astype(np.uint8) * 255, 
+                                    cv2.MORPH_OPEN, kernel)
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Find connected components
+        labeled = measure.label(dark_mask > 0)
+        props = measure.regionprops(labeled, intensity_image=l_channel)
+        
+        dark_spots = []
+        for prop in props:
+            if self.min_debris_size <= prop.area <= self.max_debris_size:
+                # Check if it's really darker than surroundings
+                y, x = prop.centroid
+                y, x = int(y), int(x)
+                
+                # Get surrounding region
+                margin = 20
+                y_min = max(0, y - margin)
+                y_max = min(image.shape[0], y + margin)
+                x_min = max(0, x - margin)
+                x_max = min(image.shape[1], x + margin)
+                
+                surrounding_roi = l_channel[y_min:y_max, x_min:x_max]
+                spot_mean = prop.mean_intensity
+                surrounding_mean = np.mean(surrounding_roi)
+                
+                if spot_mean < surrounding_mean * (1 - self.color_contrast_threshold):
+                    # Check for halo if enabled
+                    has_halo = False
+                    halo_strength = 0
+                    
+                    if self.halo_detection:
+                        has_halo, halo_strength = self._check_for_halo(
+                            labeled == prop.label, l_channel, prop
+                        )
+                    
+                    dark_spots.append({
+                        'type': 'dark_spot',
+                        'centroid': prop.centroid,
+                        'area': prop.area,
+                        'bbox': prop.bbox,
+                        'intensity': spot_mean,
+                        'contrast': (surrounding_mean - spot_mean) / surrounding_mean,
+                        'has_halo': has_halo,
+                        'halo_strength': halo_strength,
+                        'coords': prop.coords
+                    })
+        
+        return dark_spots
+    
+    def _detect_fibers(self, image: np.ndarray) -> List[Dict[str, Any]]:
+        """Detect fiber-like structures"""
+        # Use multiple color channels to detect fibers
+        fibers_all = []
+        
+        # Process each color channel
+        for i, channel_name in enumerate(['blue', 'green', 'red']):
+            channel = image[:, :, i]
             
-        # Create overlay - mark ALL debris areas in yellow
+            # Enhance edges
+            enhanced = cv2.bilateralFilter(channel, 9, 50, 50)
+            
+            # Detect edges
+            edges = cv2.Canny(enhanced, 30, 90)
+            
+            # Use morphological operations to connect fiber segments
+            kernel_line = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
+            connected_h = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_line, iterations=2)
+            
+            kernel_line = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
+            connected_v = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_line, iterations=2)
+            
+            connected = cv2.bitwise_or(connected_h, connected_v)
+            
+            # Skeletonize to get fiber centerlines
+            skeleton = morphology.skeletonize(connected > 0)
+            
+            # Find connected components
+            labeled = measure.label(skeleton)
+            props = measure.regionprops(labeled)
+            
+            for prop in props:
+                # Check if it's elongated (fiber-like)
+                if prop.area >= self.fiber_min_length:
+                    # Calculate elongation
+                    if prop.minor_axis_length > 0:
+                        elongation = prop.major_axis_length / prop.minor_axis_length
+                    else:
+                        elongation = prop.major_axis_length
+                    
+                    if elongation > 3:  # Fiber should be elongated
+                        # Check darkness relative to surroundings
+                        fiber_mask = labeled == prop.label
+                        fiber_mean = np.mean(channel[fiber_mask])
+                        
+                        # Dilate to get surrounding area
+                        dilated = cv2.dilate(fiber_mask.astype(np.uint8) * 255, 
+                                           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+                        surrounding_mask = (dilated > 0) & (~fiber_mask)
+                        
+                        if np.any(surrounding_mask):
+                            surrounding_mean = np.mean(channel[surrounding_mask])
+                            
+                            if fiber_mean < surrounding_mean * (1 - self.color_contrast_threshold):
+                                fibers_all.append({
+                                    'type': 'fiber',
+                                    'channel': channel_name,
+                                    'centroid': prop.centroid,
+                                    'area': prop.area,
+                                    'length': prop.major_axis_length,
+                                    'width': prop.minor_axis_length,
+                                    'orientation': prop.orientation,
+                                    'elongation': elongation,
+                                    'bbox': prop.bbox,
+                                    'coords': prop.coords
+                                })
+        
+        # Merge overlapping fibers from different channels
+        fibers = self._merge_overlapping_fibers(fibers_all)
+        
+        return fibers
+    
+    def _detect_color_anomalies(self, image: np.ndarray) -> List[Dict[str, Any]]:
+        """Detect color anomalies that might indicate debris"""
+        # Convert to HSV for better color analysis
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        
+        # Calculate local color statistics
+        window_size = 31
+        kernel = np.ones((window_size, window_size), dtype=np.float32) / (window_size ** 2)
+        
+        # Calculate local mean for each channel
+        local_mean_h = cv2.filter2D(hsv[:, :, 0].astype(np.float32), -1, kernel)
+        local_mean_s = cv2.filter2D(hsv[:, :, 1].astype(np.float32), -1, kernel)
+        local_mean_v = cv2.filter2D(hsv[:, :, 2].astype(np.float32), -1, kernel)
+        
+        # Calculate deviations
+        dev_h = np.abs(hsv[:, :, 0].astype(np.float32) - local_mean_h)
+        dev_s = np.abs(hsv[:, :, 1].astype(np.float32) - local_mean_s)
+        dev_v = np.abs(hsv[:, :, 2].astype(np.float32) - local_mean_v)
+        
+        # Normalize deviations
+        dev_h = dev_h / (np.std(dev_h) + 1e-6)
+        dev_s = dev_s / (np.std(dev_s) + 1e-6)
+        dev_v = dev_v / (np.std(dev_v) + 1e-6)
+        
+        # Combined anomaly score
+        anomaly_score = np.sqrt(dev_h**2 + dev_s**2 + dev_v**2)
+        
+        # Threshold to get anomalous regions
+        anomaly_threshold = np.percentile(anomaly_score, 98)
+        anomaly_mask = anomaly_score > anomaly_threshold
+        
+        # Clean up
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        anomaly_mask = cv2.morphologyEx(anomaly_mask.astype(np.uint8) * 255,
+                                       cv2.MORPH_OPEN, kernel)
+        anomaly_mask = cv2.morphologyEx(anomaly_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Find regions
+        labeled = measure.label(anomaly_mask > 0)
+        props = measure.regionprops(labeled, intensity_image=anomaly_score)
+        
+        anomalies = []
+        for prop in props:
+            if self.min_debris_size <= prop.area <= self.max_debris_size:
+                anomalies.append({
+                    'type': 'color_anomaly',
+                    'centroid': prop.centroid,
+                    'area': prop.area,
+                    'bbox': prop.bbox,
+                    'anomaly_score': prop.mean_intensity,
+                    'coords': prop.coords
+                })
+        
+        return anomalies
+    
+    def _check_for_halo(self, debris_mask: np.ndarray, l_channel: np.ndarray, 
+                       prop: Any) -> Tuple[bool, float]:
+        """Check if debris has a bright halo around it"""
+        # Create ring mask around debris
+        dilated = cv2.dilate(debris_mask.astype(np.uint8) * 255,
+                           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)))
+        ring_mask = (dilated > 0) & (~debris_mask)
+        
+        if np.any(ring_mask):
+            # Compare intensities
+            debris_mean = prop.mean_intensity
+            ring_mean = np.mean(l_channel[ring_mask])
+            
+            # Halo should be brighter than both debris and normal background
+            if ring_mean > debris_mean * 1.3:
+                # Get wider surrounding to compare with
+                dilated_wide = cv2.dilate(dilated,
+                                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)))
+                outer_ring = (dilated_wide > 0) & (~(dilated > 0))
+                
+                if np.any(outer_ring):
+                    outer_mean = np.mean(l_channel[outer_ring])
+                    if ring_mean > outer_mean * 1.1:
+                        halo_strength = (ring_mean - debris_mean) / debris_mean
+                        return True, halo_strength
+        
+        return False, 0
+    
+    def _merge_overlapping_fibers(self, fibers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge fibers detected in different channels that overlap"""
+        if len(fibers) <= 1:
+            return fibers
+        
+        merged = []
+        used = set()
+        
+        for i, fiber1 in enumerate(fibers):
+            if i in used:
+                continue
+            
+            # Check for overlaps with other fibers
+            overlapping = [fiber1]
+            
+            for j, fiber2 in enumerate(fibers[i+1:], i+1):
+                if j in used:
+                    continue
+                
+                # Check bounding box overlap
+                bbox1 = fiber1['bbox']
+                bbox2 = fiber2['bbox']
+                
+                # Calculate intersection
+                y_overlap = max(0, min(bbox1[2], bbox2[2]) - max(bbox1[0], bbox2[0]))
+                x_overlap = max(0, min(bbox1[3], bbox2[3]) - max(bbox1[1], bbox2[1]))
+                
+                if y_overlap > 0 and x_overlap > 0:
+                    # Check actual pixel overlap
+                    overlap_area = y_overlap * x_overlap
+                    min_area = min(fiber1['area'], fiber2['area'])
+                    
+                    if overlap_area > 0.3 * min_area:
+                        overlapping.append(fiber2)
+                        used.add(j)
+            
+            # Merge overlapping fibers
+            if len(overlapping) > 1:
+                # Take the longest fiber as representative
+                longest = max(overlapping, key=lambda f: f.get('length', f['area']))
+                merged.append(longest)
+            else:
+                merged.append(fiber1)
+        
+        return merged
+    
+    def _combine_detections(self, dark_spots: List[Dict[str, Any]], 
+                          fibers: List[Dict[str, Any]], 
+                          anomalies: List[Dict[str, Any]], 
+                          image_shape: Tuple[int, int]) -> np.ndarray:
+        """Combine all debris detections into a single mask"""
+        combined_mask = np.zeros(image_shape, dtype=np.uint8)
+        
+        # Add dark spots
+        for spot in dark_spots:
+            coords = spot['coords']
+            combined_mask[coords[:, 0], coords[:, 1]] = 255
+        
+        # Add fibers
+        for fiber in fibers:
+            coords = fiber['coords']
+            combined_mask[coords[:, 0], coords[:, 1]] = 255
+        
+        # Add anomalies
+        for anomaly in anomalies:
+            coords = anomaly['coords']
+            combined_mask[coords[:, 0], coords[:, 1]] = 255
+        
+        return combined_mask
+    
+    def _analyze_debris_regions(self, combined_mask: np.ndarray, 
+                              image: np.ndarray) -> List[Dict[str, Any]]:
+        """Analyze and classify debris regions"""
+        labeled = measure.label(combined_mask > 0)
+        props = measure.regionprops(labeled)
+        
+        debris_regions = []
+        
+        for prop in props:
+            # Classify debris type based on shape and characteristics
+            debris_type = self._classify_debris(prop)
+            
+            # Calculate color statistics
+            region_mask = labeled == prop.label
+            region_pixels = image[region_mask]
+            
+            color_mean = np.mean(region_pixels, axis=0)
+            color_std = np.std(region_pixels, axis=0)
+            
+            debris_regions.append({
+                'label': prop.label,
+                'type': debris_type,
+                'centroid': prop.centroid,
+                'area': prop.area,
+                'bbox': prop.bbox,
+                'eccentricity': prop.eccentricity,
+                'solidity': prop.solidity,
+                'color_mean': color_mean,
+                'color_std': color_std,
+                'coords': prop.coords
+            })
+        
+        return debris_regions
+    
+    def _classify_debris(self, prop: Any) -> str:
+        """Classify debris based on shape characteristics"""
+        # High eccentricity and low solidity suggests fiber
+        if prop.eccentricity > 0.9 and prop.solidity < 0.5:
+            return 'fiber'
+        
+        # Circular shape suggests particle
+        if prop.eccentricity < 0.5 and prop.solidity > 0.8:
+            return 'particle'
+        
+        # Large irregular shape
+        if prop.area > 500 and prop.solidity < 0.7:
+            return 'irregular_debris'
+        
+        # Default
+        return 'debris'
+    
+    def _create_defect_list(self, debris_regions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Create detailed defect list"""
+        defects = []
+        
+        for debris in debris_regions:
+            defects.append({
+                'type': 'debris',
+                'subtype': debris['type'],
+                'location': (int(debris['centroid'][1]), int(debris['centroid'][0])),
+                'area': debris['area'],
+                'bbox': debris['bbox'],
+                'eccentricity': float(debris['eccentricity']),
+                'solidity': float(debris['solidity']),
+                'color_bgr': debris['color_mean'].tolist(),
+                'color_std': debris['color_std'].tolist()
+            })
+        
+        return defects
+    
+    def _create_visualization(self, original: np.ndarray, 
+                            debris_regions: List[Dict[str, Any]]) -> np.ndarray:
+        """Create visualization highlighting debris"""
+        vis = original.copy()
+        
+        # Create overlay
         overlay = vis.copy()
         
-        # Mark ALL types of debris in yellow (dirt, fibers, particles, etc.)
-        overlay[halo_mask > 0] = [0, 255, 255]      # Yellow for debris with halos
-        overlay[particle_mask > 0] = [0, 255, 255]  # Yellow for surface particles  
-        overlay[fiber_mask > 0] = [0, 255, 255]     # Yellow for fibers
-        
-        # Blend with original to show the ENTIRE affected areas
-        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
+        # Color code by debris type
+        for debris in debris_regions:
+            coords = debris['coords']
             
-        return result
-
-
-def process_single_image(image_path, output_dir, detector):
-    """Process a single image for debris detection"""
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"Error: Could not read image {image_path}")
-        return None
-    
-    # Detect debris
-    results = detector.detect(image)
-    
-    # Save results
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
-    
-    # Save visualization
-    vis_path = os.path.join(output_dir, f"{base_name}_debris_detection.jpg")
-    cv2.imwrite(vis_path, results['visualization'])
-    
-    # Save masks
-    mask_path = os.path.join(output_dir, f"{base_name}_debris_mask.png")
-    cv2.imwrite(mask_path, results['defect_mask'])
-    
-    return results
-
-
-def main():
-    """Example usage of debris detection"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Detect debris on printed materials')
-    parser.add_argument('input', help='Input image or directory path')
-    parser.add_argument('--output', '-o', default='output', help='Output directory')
-    parser.add_argument('--halo-threshold', type=int, default=30,
-                       help='Minimum intensity difference for halo detection')
-    parser.add_argument('--min-size', type=int, default=10,
-                       help='Minimum particle size')
-    parser.add_argument('--max-size', type=int, default=500,
-                       help='Maximum particle size')
-    
-    args = parser.parse_args()
-    
-    # Create output directory
-    os.makedirs(args.output, exist_ok=True)
-    
-    # Initialize detector
-    detector = DebrisDetector(
-        halo_threshold=args.halo_threshold,
-        particle_size_range=(args.min_size, args.max_size)
-    )
-    
-    # Process images
-    if os.path.isfile(args.input):
-        results = process_single_image(args.input, args.output, detector)
-        if results:
-            print(f"Detected {len(results['debris'])} debris particles")
-            print(f"Detected {len(results['fibers'])} fibers")
-    else:
-        image_files = [f for f in os.listdir(args.input) 
-                      if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp'))]
+            if debris['type'] == 'fiber':
+                overlay[coords[:, 0], coords[:, 1]] = [0, 255, 255]  # Yellow for fibers
+            elif debris['type'] == 'particle':
+                overlay[coords[:, 0], coords[:, 1]] = [0, 0, 255]  # Red for particles
+            elif debris['type'] == 'irregular_debris':
+                overlay[coords[:, 0], coords[:, 1]] = [255, 0, 255]  # Magenta for irregular
+            else:
+                overlay[coords[:, 0], coords[:, 1]] = [255, 0, 0]  # Blue for other
         
-        for img_file in tqdm(image_files, desc="Processing images"):
-            img_path = os.path.join(args.input, img_file)
-            process_single_image(img_path, args.output, detector)
-
-
-if __name__ == "__main__":
-    main() 
+        # Blend with original
+        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
+        
+        # Draw bounding boxes for clarity
+        for debris in debris_regions:
+            minr, minc, maxr, maxc = debris['bbox']
+            color = [0, 255, 0]  # Green boxes
+            cv2.rectangle(result, (minc, minr), (maxc, maxr), color, 1)
+        
+        return result 

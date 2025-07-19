@@ -25,7 +25,9 @@ from enum import Enum
 # Import detection modules
 from surface_treatment_detection import SurfaceTreatmentDetector
 from debris_detection import DebrisDetector
-from window_processor import WindowProcessor
+from smudge_detection import SmudgeDetector
+from void_detection import VoidDetector
+from head_calibration_detection import HeadCalibrationDetector
 
 
 class ImageType(Enum):
@@ -41,10 +43,6 @@ class ProcessingConfig:
     output_base_dir: str = "output"
     sensitivity: str = 'medium'
     generate_report: bool = False
-    window_size: int = 2048
-    overlap: int = 256
-    max_workers: int = 1
-    large_file_threshold: int = 20 * 1024 * 1024  # 20MB
 
 
 @dataclass
@@ -137,6 +135,51 @@ class ImageTypeClassifier:
             return ImageType.UNKNOWN
 
 
+class TiffImageLoader:
+    """Handles efficient loading of large TIFF files"""
+    
+    @staticmethod
+    def load_tiff_image(image_path: str) -> np.ndarray:
+        """Load TIFF image efficiently, handling large files"""
+        try:
+            # Try using tifffile for better TIFF support
+            import tifffile
+            image = tifffile.imread(image_path)
+            
+            # Convert to BGR format if needed
+            if len(image.shape) == 2:
+                # Grayscale to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 1:
+                # Single channel to BGR
+                image = cv2.cvtColor(image.squeeze(), cv2.COLOR_GRAY2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 3:
+                # RGB to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            elif len(image.shape) == 3 and image.shape[2] == 4:
+                # RGBA to BGR
+                image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+            
+            return image
+            
+        except ImportError:
+            print("    tifffile not available, using OpenCV...")
+            # Fallback to OpenCV
+            return cv2.imread(image_path)
+        except Exception as e:
+            print(f"    Error loading with tifffile: {e}, trying OpenCV...")
+            # Fallback to OpenCV
+            return cv2.imread(image_path)
+    
+    @staticmethod
+    def load_image(image_path: str) -> np.ndarray:
+        """Load any image format efficiently"""
+        if image_path.lower().endswith(('.tif', '.tiff')):
+            return TiffImageLoader.load_tiff_image(image_path)
+        else:
+            return cv2.imread(image_path)
+
+
 class DetectorFactory:
     """Factory for creating appropriate detectors based on sensitivity"""
     
@@ -145,45 +188,94 @@ class DetectorFactory:
         """Create surface treatment detector with appropriate settings"""
         if sensitivity == 'low':
             return SurfaceTreatmentDetector(
-                contrast_threshold=70, 
-                void_size_threshold=200, 
-                coalescence_threshold=400, 
-                kernel_size=15
+                uniformity_threshold=0.8,
+                porosity_threshold=0.2,
+                brightness_variation_threshold=0.4,
+                min_head_coverage=0.5
             )
         elif sensitivity == 'high':
             return SurfaceTreatmentDetector(
-                contrast_threshold=30, 
-                void_size_threshold=70, 
-                coalescence_threshold=150, 
-                kernel_size=18
+                uniformity_threshold=0.6,
+                porosity_threshold=0.1,
+                brightness_variation_threshold=0.2,
+                min_head_coverage=0.3
             )
         else:  # medium
-            return SurfaceTreatmentDetector(
-                void_size_threshold=150, 
-                coalescence_threshold=300, 
-                kernel_size=12
-            )
+            return SurfaceTreatmentDetector()  # Use defaults
     
     @staticmethod
     def create_debris_detector(sensitivity: str) -> DebrisDetector:
         """Create debris detector with appropriate settings"""
         if sensitivity == 'low':
             return DebrisDetector(
-                halo_threshold=40, 
-                region_size_range=(150, 1500), 
-                kernel_size=18
+                dark_threshold=0.4,
+                min_debris_size=50,
+                max_debris_size=1500,
+                fiber_min_length=50
             )
         elif sensitivity == 'high':
             return DebrisDetector(
-                halo_threshold=18, 
-                region_size_range=(50, 4500), 
-                kernel_size=22
+                dark_threshold=0.2,
+                min_debris_size=10,
+                max_debris_size=3000,
+                fiber_min_length=20
             )
         else:  # medium
-            return DebrisDetector(
-                region_size_range=(100, 1200), 
-                kernel_size=15
+            return DebrisDetector()  # Use defaults
+    
+    @staticmethod
+    def create_smudge_detector(sensitivity: str) -> SmudgeDetector:
+        """Create smudge detector with appropriate settings"""
+        if sensitivity == 'low':
+            return SmudgeDetector(
+                coherence_threshold=0.5,
+                min_smudge_area=800
             )
+        elif sensitivity == 'high':
+            return SmudgeDetector(
+                coherence_threshold=0.3,
+                min_smudge_area=300
+            )
+        else:  # medium
+            return SmudgeDetector()  # Use defaults
+    
+    @staticmethod
+    def create_void_detector(sensitivity: str) -> VoidDetector:
+        """Create void detector with appropriate settings"""
+        if sensitivity == 'low':
+            return VoidDetector(
+                min_void_size=20,
+                max_void_size=300,
+                circularity_threshold=0.7,
+                contrast_threshold=0.4
+            )
+        elif sensitivity == 'high':
+            return VoidDetector(
+                min_void_size=5,
+                max_void_size=800,
+                circularity_threshold=0.5,
+                contrast_threshold=0.2
+            )
+        else:  # medium
+            return VoidDetector()  # Use defaults
+    
+    @staticmethod
+    def create_head_calibration_detector(sensitivity: str) -> HeadCalibrationDetector:
+        """Create head calibration detector with appropriate settings"""
+        if sensitivity == 'low':
+            return HeadCalibrationDetector(
+                edge_threshold=0.8,
+                alignment_tolerance=8,
+                min_edge_length=150
+            )
+        elif sensitivity == 'high':
+            return HeadCalibrationDetector(
+                edge_threshold=0.6,
+                alignment_tolerance=3,
+                min_edge_length=50
+            )
+        else:  # medium
+            return HeadCalibrationDetector()  # Use defaults
 
 
 class DetectionStrategy(ABC):
@@ -204,12 +296,15 @@ class StripeDetectionStrategy(DetectionStrategy):
     """Detection strategy for stripe images"""
     
     def get_required_detectors(self) -> List[str]:
-        return ['surface_treatment', 'debris']
+        return ['surface_treatment']  # , 'debris', 'smudge', 'void', 'head_calibration']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
             'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'debris': DetectorFactory.create_debris_detector(sensitivity)
+            # 'debris': DetectorFactory.create_debris_detector(sensitivity),
+            # 'smudge': DetectorFactory.create_smudge_detector(sensitivity),
+            # 'void': DetectorFactory.create_void_detector(sensitivity),
+            # 'head_calibration': DetectorFactory.create_head_calibration_detector(sensitivity)
         }
 
 
@@ -229,13 +324,16 @@ class UnknownDetectionStrategy(DetectionStrategy):
     """Detection strategy for unknown image types"""
     
     def get_required_detectors(self) -> List[str]:
-        # Only run safe detectors for unknown types
-        return ['surface_treatment', 'debris']
+        # Run all stripe detectors for unknown types
+        return ['surface_treatment', 'debris', 'smudge', 'void', 'head_calibration']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
             'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'debris': DetectorFactory.create_debris_detector(sensitivity)
+            'debris': DetectorFactory.create_debris_detector(sensitivity),
+            'smudge': DetectorFactory.create_smudge_detector(sensitivity),
+            'void': DetectorFactory.create_void_detector(sensitivity),
+            'head_calibration': DetectorFactory.create_head_calibration_detector(sensitivity)
         }
 
 
@@ -260,11 +358,6 @@ class SingleImageProcessor:
     
     def __init__(self, config: ProcessingConfig):
         self.config = config
-        self.window_processor = WindowProcessor(
-            window_size=config.window_size,
-            overlap=config.overlap,
-            max_workers=config.max_workers
-        )
     
     def process_image(self, image_path: str, output_dir: str) -> ImageResult:
         """Process a single image through appropriate detectors"""
@@ -298,84 +391,37 @@ class SingleImageProcessor:
         # Create detectors
         detectors = strategy.create_detectors(self.config.sensitivity)
         
-        # Process based on file size
+        # Get file size for reporting
         file_size = os.path.getsize(image_path)
-        if file_size > self.config.large_file_threshold or image_path.lower().endswith(('.tif', '.tiff')):
-            return self._process_large_image(image_path, image_output_dir, detectors, 
-                                           image_type, base_name, file_size)
-        else:
-            return self._process_regular_image(image_path, image_output_dir, detectors, 
-                                             image_type, base_name, file_size)
-    
-    def _process_large_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
-                           image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
-        """Process large images using windowed approach"""
-        print(f"    Large/TIFF image (size: {file_size/(1024*1024):.1f}MB), using windowed processing...")
+        print(f"    Image size: {file_size/(1024*1024):.1f}MB")
         
-        try:
-            detector_results = self.window_processor.process_image_windowed(
-                image_path, detectors, output_dir
-            )
-            
-            detections = {}
-            if detector_results:
-                for detector_name, results in detector_results.items():
-                    defects = results.get('defects', [])
-                    cleaned_defects = self._clean_defect_data(defects)
-                    
-                    detections[detector_name] = DetectionResult(
-                        defect_count=results.get('defect_count', 0),
-                        visualization_path=results.get('visualization_path'),
-                        defects=cleaned_defects
-                    )
-            
-            return ImageResult(
-                image_name=base_name,
-                image_path=image_path,
-                image_type=image_type,
-                processing_time=datetime.now().isoformat(),
-                file_size_mb=file_size / (1024 * 1024),
-                detectors_used=list(detectors.keys()),
-                detections=detections
-            )
-            
-        except Exception as e:
-            return ImageResult(
-                image_name=base_name,
-                image_path=image_path,
-                image_type=image_type,
-                processing_time=datetime.now().isoformat(),
-                file_size_mb=file_size / (1024 * 1024),
-                detectors_used=[],
-                detections={},
-                error=str(e)
-            )
+        # Process the image (always use full image processing)
+        return self._process_image(image_path, image_output_dir, detectors, 
+                                 image_type, base_name, file_size)
     
-    def _process_regular_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
-                             image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
-        """Process regular-sized images"""
-        print(f"    Regular image (size: {file_size/(1024*1024):.1f}MB), using normal processing...")
-        
+    def _process_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
+                      image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
+        """Process image using full image processing"""
         detections = {}
         
         for detector_name, detector in detectors.items():
             print(f"    Running {detector_name} detection...")
             try:
-                # Preprocess based on detector type
-                if detector_name == 'surface_treatment':
-                    original, gray, enhanced = ImagePreprocessor.preprocess_for_surface_treatment(image_path)
-                    result_img, defects = detector.detect(enhanced)
-                elif detector_name == 'debris':
-                    original, gray, denoised, enhanced = ImagePreprocessor.preprocess_for_debris(image_path)
-                    result_img, defects = detector.detect(enhanced)
-                else:
-                    # Fallback to original image loading
-                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
-                    result_img, defects = detector.detect(original)
+                # Load the image efficiently (handles TIFF files properly)
+                original = TiffImageLoader.load_image(image_path)
+                if original is None:
+                    raise ValueError(f"Could not read image: {image_path}")
+                
+                print(f"      Image loaded: {original.shape} pixels")
+                
+                # All detectors now accept BGR images and handle preprocessing internally
+                result_img, defects = detector.detect(original, image_path=image_path)
                 
                 # Save visualization
                 vis_path = os.path.join(output_dir, f"{detector_name}_visualization.jpg")
                 cv2.imwrite(vis_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                
+                print(f"      Found {len(defects)} defects")
                 
                 # Clean defects for JSON serialization
                 cleaned_defects = self._clean_defect_data(defects)
@@ -388,6 +434,8 @@ class SingleImageProcessor:
                 
             except Exception as e:
                 print(f"    Error in {detector_name} detection: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 detections[detector_name] = DetectionResult(
                     defect_count=0,
                     visualization_path=None,
@@ -500,7 +548,7 @@ class ResultsSaver:
             'successful_images': 0,
             'failed_images': 0,
             'total_processing_time': 0,
-            'average_file_size_mb': 0
+            'average_file_size_mb': 0.0
         }
         
         total_file_size = 0
@@ -523,7 +571,7 @@ class ResultsSaver:
                 if detection.defect_count > 0:
                     defect_statistics[detector_name]['affected_images'] += 1
         
-        processing_summary['average_file_size_mb'] = total_file_size / len(results) if results else 0
+        processing_summary['average_file_size_mb'] = float(total_file_size / len(results)) if results else 0.0
         
         return {
             'image_type_distribution': image_type_distribution,
@@ -701,9 +749,9 @@ def main():
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
-    print(f"  - Stripe images: Surface Treatment, Debris")
-    print(f"  - Island images: (Overspray disabled)")
-    print(f"  - Unknown images: Surface Treatment, Debris")
+    print(f"  - Stripe images: Surface Treatment, Debris, Smudge, Void, Head Calibration")
+    print(f"  - Island images: (Currently no detectors)")
+    print(f"  - Unknown images: Surface Treatment, Debris, Smudge, Void, Head Calibration")
     print("=" * 60)
     
     pipeline.process_folder(args.input_folder)
