@@ -31,6 +31,7 @@ class LineDefectDetector:
         self.debug = debug
         self.step_size = kernel_size  # Horizontal step to avoid overlap
         print("Sensitivity: ", sensitivity)
+        
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
             self.kernel_size = 15
@@ -38,14 +39,23 @@ class LineDefectDetector:
             self.min_gap_size = 5
             self.step_size = 15
             self.line_threshold = 0.25  # Require 25% pixels for a valid line (aggressive)
+            self.strong_line_threshold = 0.40  # Require 40% pixels to change Y position
+            self.max_y_drift = 8  # Maximum Y drift per step
+            self.stability_weight = 0.7  # Weight for previous position (higher = more stable)
         elif sensitivity == 'low':
             self.kernel_size = 35
             self.search_range = 10
             self.min_gap_size = 30
-            self.step_size = 20
+            self.step_size = 25
             self.line_threshold = 0.25  # Only 5% pixels needed (lenient)
+            self.strong_line_threshold = 0.35  # Require 35% pixels to change Y position
+            self.max_y_drift = 12  # Maximum Y drift per step
+            self.stability_weight = 0.6  # Weight for previous position
         else:  # medium
             self.line_threshold = 0.10  # 10% pixels needed (balanced)
+            self.strong_line_threshold = 0.20  # Require 20% pixels to change Y position
+            self.max_y_drift = 10  # Maximum Y drift per step
+            self.stability_weight = 0.65  # Weight for previous position
     
     def scan_for_lines(self, binary_image):
         """Scan image to find all horizontal lines"""
@@ -141,9 +151,29 @@ class LineDefectDetector:
                 # Calculate centroid of line pixels in kernel to follow the line
                 y_indices, x_indices = np.where(kernel_region > 0)
                 if len(y_indices) > 0:
-                    # Update Y position to follow line
+                    # Calculate new Y position from line centroid
                     local_y_center = np.mean(y_indices)
-                    y = y1 + int(local_y_center)
+                    new_y = y1 + int(local_y_center)
+                    
+                    # Check if we have enough strong pixels to justify changing Y position
+                    strong_pixels = white_pixels / total_pixels
+                    if strong_pixels >= self.strong_line_threshold:
+                        # Strong line signal - allow Y position change but limit drift
+                        y_drift = abs(new_y - previous_y)
+                        if y_drift <= self.max_y_drift:
+                            # Apply weighted average for stability
+                            y = int(self.stability_weight * previous_y + (1 - self.stability_weight) * new_y)
+                        else:
+                            # Too much drift - stay at previous position
+                            y = previous_y
+                            if self.debug:
+                                print(f"Prevented large Y drift: {y_drift} pixels at X={x}")
+                    else:
+                        # Weak line signal - stay at previous Y position to avoid drift
+                        y = previous_y
+                        if self.debug:
+                            print(f"Weak line signal ({strong_pixels:.2%}) - maintaining Y position at X={x}")
+                    
                     previous_y = y  # Update last known good position
                     
                     # If we were in a gap, record it
