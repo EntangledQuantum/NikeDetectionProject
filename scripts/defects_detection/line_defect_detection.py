@@ -43,10 +43,10 @@ class LineDefectDetector:
             self.max_y_drift = 8  # Maximum Y drift per step
             self.stability_weight = 0.7  # Weight for previous position (higher = more stable)
         elif sensitivity == 'low':
-            self.kernel_size = 35
+            self.kernel_size = 50
             self.search_range = 10
             self.min_gap_size = 30
-            self.step_size = 25
+            self.step_size = 20
             self.line_threshold = 0.25  # Only 5% pixels needed (lenient)
             self.strong_line_threshold = 0.35  # Require 35% pixels to change Y position
             self.max_y_drift = 12  # Maximum Y drift per step
@@ -64,52 +64,17 @@ class LineDefectDetector:
         
         y = self.kernel_size // 2
         while y < height - self.kernel_size // 2:
-            # Check if there's a line at this Y position
-            x = self.kernel_size // 2
-            found_line = False
-            line_bottom_y = y  # Track where the line actually is
+            # Simply add this Y position as a line to scan
+            line_starts.append(y)
             
-            # Scan horizontally at this Y level
-            while x < width - self.kernel_size // 2 and not found_line:
-                # Extract kernel region
-                y1 = y - self.kernel_size // 2
-                y2 = y + self.kernel_size // 2
-                x1 = x - self.kernel_size // 2
-                x2 = x + self.kernel_size // 2
-                
-                kernel_region = binary_image[y1:y2, x1:x2]
-                
-                # Check if there's a line - use sensitivity-based threshold
-                white_pixels = np.sum(kernel_region > 0)
-                total_pixels = self.kernel_size * self.kernel_size
-                
-                if white_pixels > total_pixels * self.line_threshold:  # Use sensitivity-based threshold
-                    # Found a line at this Y position
-                    found_line = True
-                    
-                    # Find the actual bottom of the line within the kernel
-                    y_indices, _ = np.where(kernel_region > 0)
-                    if len(y_indices) > 0:
-                        # Get the maximum Y (bottom) of the line in the kernel
-                        max_y_in_kernel = np.max(y_indices)
-                        line_bottom_y = y1 + max_y_in_kernel
-                        line_center_y = y1 + int(np.mean(y_indices))
-                        line_starts.append(line_center_y)
-                        
-                        if self.debug:
-                            print(f"Found line at Y={line_center_y}, bottom at Y={line_bottom_y}")
-                
-                x += self.step_size  # Move by step size to check next position
+            if self.debug:
+                print(f"Will scan line at Y={y}")
             
-            if found_line:
-                # Next scan should start below this line
-                y = line_bottom_y + self.kernel_size
-            else:
-                # No line found, move down by kernel size
-                y += self.kernel_size
+            # Move down by kernel size to next scan line
+            y += self.kernel_size
         
         if self.debug:
-            print(f"Total lines detected: {len(line_starts)}")
+            print(f"Total scan lines: {len(line_starts)}")
             print(f"Line detection threshold: {self.line_threshold * 100:.1f}% of pixels required")
         
         return line_starts
@@ -120,13 +85,13 @@ class LineDefectDetector:
         kernel_states = []  # For debug visualization
         defects = []
         
-        # Starting position
-        x = self.kernel_size // 2
+        # Starting position - start from the very left edge
+        x = 0  # Start from left edge instead of kernel_size // 2
         y = start_y
         gap_start = None
         previous_y = y  # Keep track of last known good Y position
         consecutive_missing = 0  # Count consecutive missing kernels
-        max_consecutive_missing = 5  # Hardcoded limit
+        max_consecutive_missing = 30  # Hardcoded limit
         ever_found_line = False  # Track if we ever found a line
         
         while x < width - self.kernel_size // 2:
