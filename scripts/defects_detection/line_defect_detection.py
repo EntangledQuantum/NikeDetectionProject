@@ -53,6 +53,7 @@ class LineDefectDetector:
             # Check if there's a line at this Y position
             x = self.kernel_size // 2
             found_line = False
+            line_bottom_y = y  # Track where the line actually is
             
             # Scan horizontally at this Y level
             while x < width - self.kernel_size // 2 and not found_line:
@@ -71,14 +72,27 @@ class LineDefectDetector:
                 if white_pixels > total_pixels * 0.1:  # 10% threshold
                     # Found a line at this Y position
                     found_line = True
-                    line_starts.append(y)
-                    if self.debug:
-                        print(f"Found line at Y={y}")
+                    
+                    # Find the actual bottom of the line within the kernel
+                    y_indices, _ = np.where(kernel_region > 0)
+                    if len(y_indices) > 0:
+                        # Get the maximum Y (bottom) of the line in the kernel
+                        max_y_in_kernel = np.max(y_indices)
+                        line_bottom_y = y1 + max_y_in_kernel
+                        line_center_y = y1 + int(np.mean(y_indices))
+                        line_starts.append(line_center_y)
+                        
+                        if self.debug:
+                            print(f"Found line at Y={line_center_y}, bottom at Y={line_bottom_y}")
                 
                 x += self.kernel_size  # Move by kernel size to check next position
             
-            # Move down by kernel size to avoid overlap with previous scan
-            y += self.kernel_size
+            if found_line:
+                # Next scan should start below this line
+                y = line_bottom_y + self.kernel_size
+            else:
+                # No line found, move down by kernel size
+                y += self.kernel_size
         
         if self.debug:
             print(f"Total lines detected: {len(line_starts)}")
@@ -96,6 +110,8 @@ class LineDefectDetector:
         y = start_y
         gap_start = None
         previous_y = y  # Keep track of last known good Y position
+        consecutive_missing = 0  # Count consecutive missing kernels
+        max_consecutive_missing = 5  # Hardcoded limit
         
         while x < width - self.kernel_size // 2:
             # Extract kernel region
@@ -112,6 +128,9 @@ class LineDefectDetector:
             has_line = white_pixels > total_pixels * 0.1  # 10% threshold
             
             if has_line:
+                # Reset consecutive missing counter
+                consecutive_missing = 0
+                
                 # Calculate centroid of line pixels in kernel to follow the line
                 y_indices, x_indices = np.where(kernel_region > 0)
                 if len(y_indices) > 0:
@@ -164,9 +183,19 @@ class LineDefectDetector:
                             y = test_y
                             found = True
                             previous_y = y
+                            consecutive_missing = 0  # Reset counter
                             break
                 
                 if not found:
+                    # Increment consecutive missing counter
+                    consecutive_missing += 1
+                    
+                    # Check if we've exceeded the limit
+                    if consecutive_missing >= max_consecutive_missing:
+                        if self.debug:
+                            print(f"Line tracking terminated at X={x} after {consecutive_missing} consecutive missing kernels")
+                        break  # Terminate this line tracking
+                    
                     # Mark start of gap if not already in one
                     if gap_start is None:
                         gap_start = x
