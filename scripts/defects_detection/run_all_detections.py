@@ -25,7 +25,7 @@ from enum import Enum
 # Import detection modules
 from surface_treatment_detection import SurfaceTreatmentDetector
 from debris_detection import DebrisDetector
-from window_processor import WindowProcessor
+from line_defect_detection import LineDefectDetector
 
 
 class ImageType(Enum):
@@ -184,6 +184,11 @@ class DetectorFactory:
                 region_size_range=(100, 1200), 
                 kernel_size=15
             )
+    
+    @staticmethod
+    def create_line_defect_detector(sensitivity: str) -> LineDefectDetector:
+        """Create line defect detector with appropriate settings"""
+        return LineDefectDetector(sensitivity=sensitivity)
 
 
 class DetectionStrategy(ABC):
@@ -217,12 +222,14 @@ class IslandDetectionStrategy(DetectionStrategy):
     """Detection strategy for island images"""
     
     def get_required_detectors(self) -> List[str]:
-        # Overspray is disabled as requested
-        return []
+        # Only run line defect detector for island images
+        return ['line_defect']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        # Return empty dict since overspray is disabled
-        return {}
+        # Return line defect detector for island images
+        return {
+            'line_defect': DetectorFactory.create_line_defect_detector(sensitivity)
+        }
 
 
 class UnknownDetectionStrategy(DetectionStrategy):
@@ -260,11 +267,6 @@ class SingleImageProcessor:
     
     def __init__(self, config: ProcessingConfig):
         self.config = config
-        self.window_processor = WindowProcessor(
-            window_size=config.window_size,
-            overlap=config.overlap,
-            max_workers=config.max_workers
-        )
     
     def process_image(self, image_path: str, output_dir: str) -> ImageResult:
         """Process a single image through appropriate detectors"""
@@ -298,63 +300,15 @@ class SingleImageProcessor:
         # Create detectors
         detectors = strategy.create_detectors(self.config.sensitivity)
         
-        # Process based on file size
+        # Always process as full image
         file_size = os.path.getsize(image_path)
-        if file_size > self.config.large_file_threshold or image_path.lower().endswith(('.tif', '.tiff')):
-            return self._process_large_image(image_path, image_output_dir, detectors, 
-                                           image_type, base_name, file_size)
-        else:
-            return self._process_regular_image(image_path, image_output_dir, detectors, 
-                                             image_type, base_name, file_size)
+        return self._process_full_image(image_path, image_output_dir, detectors, 
+                                       image_type, base_name, file_size)
     
-    def _process_large_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
-                           image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
-        """Process large images using windowed approach"""
-        print(f"    Large/TIFF image (size: {file_size/(1024*1024):.1f}MB), using windowed processing...")
-        
-        try:
-            detector_results = self.window_processor.process_image_windowed(
-                image_path, detectors, output_dir
-            )
-            
-            detections = {}
-            if detector_results:
-                for detector_name, results in detector_results.items():
-                    defects = results.get('defects', [])
-                    cleaned_defects = self._clean_defect_data(defects)
-                    
-                    detections[detector_name] = DetectionResult(
-                        defect_count=results.get('defect_count', 0),
-                        visualization_path=results.get('visualization_path'),
-                        defects=cleaned_defects
-                    )
-            
-            return ImageResult(
-                image_name=base_name,
-                image_path=image_path,
-                image_type=image_type,
-                processing_time=datetime.now().isoformat(),
-                file_size_mb=file_size / (1024 * 1024),
-                detectors_used=list(detectors.keys()),
-                detections=detections
-            )
-            
-        except Exception as e:
-            return ImageResult(
-                image_name=base_name,
-                image_path=image_path,
-                image_type=image_type,
-                processing_time=datetime.now().isoformat(),
-                file_size_mb=file_size / (1024 * 1024),
-                detectors_used=[],
-                detections={},
-                error=str(e)
-            )
-    
-    def _process_regular_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
+    def _process_full_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
                              image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
-        """Process regular-sized images"""
-        print(f"    Regular image (size: {file_size/(1024*1024):.1f}MB), using normal processing...")
+        """Process full-sized images"""
+        print(f"    Full image (size: {file_size/(1024*1024):.1f}MB), using normal processing...")
         
         detections = {}
         
