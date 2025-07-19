@@ -310,17 +310,23 @@ class LineDefectDetector:
             result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
             return result
         
-        # Draw defects (only when not in debug mode)
+        # Draw defects when not in debug mode - only show missing line areas
         for defect in defects:
             if defect['type'] == 'missing_line':
                 x1 = defect['start_x']
                 x2 = defect['end_x']
                 y = defect['y']
                 
-                # Draw rectangle for missing line
-                cv2.rectangle(overlay, (x1, y - 15), (x2, y + 15), (0, 0, 255), -1)
+                # Draw filled red rectangle overlay for missing line segment
+                # Make it thick enough to be clearly visible
+                thickness = 20  # Thickness of the missing line indicator
+                cv2.rectangle(overlay, 
+                            (x1, y - thickness), 
+                            (x2, y + thickness), 
+                            (0, 0, 255),  # Red color
+                            -1)  # Filled rectangle
         
-        # Blend with original
-        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
+        # Blend with original to create overlay effect
+        result = cv2.addWeighted(vis, 0.5, overlay, 0.5, 0)
         
         return result 
