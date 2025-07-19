@@ -30,6 +30,7 @@ class LineDefectDetector:
         self.min_gap_size = min_gap_size
         self.debug = debug
         self.step_size = kernel_size  # Horizontal step to avoid overlap
+        self.frozen_slope_weight = 0.6 # Weight for frozen slope helps maintain the line trajectory
         print("Sensitivity: ", sensitivity)
         
         # Adjust parameters based on sensitivity
@@ -140,7 +141,7 @@ class LineDefectDetector:
                             y_changes = [y_positions[i+1] - y_positions[i] for i in range(len(y_positions)-1)]
                             trajectory_slope = np.mean(y_changes)
                             # Update frozen slope to 30% of current average
-                            frozen_slope = trajectory_slope * 0.6
+                            frozen_slope = trajectory_slope * self.frozen_slope_weight
                         
                         if self.debug:
                             print(f"Line detected at X={x}: Y={y}, avg_slope={trajectory_slope:.2f}, frozen_slope={frozen_slope:.2f}")
@@ -171,7 +172,7 @@ class LineDefectDetector:
                         if len(y_positions) >= 2:
                             y_changes = [y_positions[i+1] - y_positions[i] for i in range(len(y_positions)-1)]
                             trajectory_slope = np.mean(y_changes)
-                            frozen_slope = trajectory_slope * 0.3
+                            frozen_slope = trajectory_slope * self.frozen_slope_weight
                     
                     # Check for overlap with previous scans for EVERY kernel placement
                     if previous_scan_means:
@@ -242,7 +243,7 @@ class LineDefectDetector:
                         previous_y = y
                         
                         if self.debug:
-                            print(f"Applying frozen slope at X={x}: Y={y} (30% slope={frozen_slope:.2f})")
+                            print(f"Applying frozen slope at X={x}: Y={y} (frozen_slope={frozen_slope:.2f})")
                     else:
                         # No trajectory yet - stay at previous position
                         y = previous_y
