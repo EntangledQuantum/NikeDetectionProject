@@ -33,6 +33,9 @@ class LineDefectDetector:
         self.frozen_slope_weight = 0.6 # Weight for frozen slope helps maintain the line trajectory
         print("Sensitivity: ", sensitivity)
         
+        # Jagged line detection threshold - Y position delta between consecutive kernels
+        self.jagged_threshold = kernel_size // 3  # Default threshold based on kernel size
+        
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
             self.kernel_size = 15
@@ -43,6 +46,7 @@ class LineDefectDetector:
             self.strong_line_threshold = 0.40  # Require 40% pixels to change Y position
             self.max_y_drift = 8  # Maximum Y drift per step
             self.stability_weight = 0.7  # Weight for previous position (higher = more stable)
+            self.jagged_threshold = 5  # More sensitive to jagged lines
         elif sensitivity == 'low':
             self.kernel_size = 50
             self.search_range = 10  
@@ -52,11 +56,13 @@ class LineDefectDetector:
             self.strong_line_threshold = 0.05  # Require 35% pixels to change Y position
             self.max_y_drift = 0.1  # Maximum Y drift per step
             self.stability_weight = 0.7  # Weight for previous position
+            self.jagged_threshold = 3  # Less sensitive to jagged lines
         else:  # medium
             self.line_threshold = 0.10  # 10% pixels needed (balanced)
             self.strong_line_threshold = 0.20  # Require 20% pixels to change Y position
             self.max_y_drift = 10  # Maximum Y drift per step
             self.stability_weight = 0.65  # Weight for previous position
+            self.jagged_threshold = 8  # Moderate sensitivity to jagged lines
     
     def scan_for_lines(self, binary_image):
         """Scan image to find all horizontal lines"""
@@ -99,6 +105,9 @@ class LineDefectDetector:
         y_positions = []  # Store Y positions for trajectory calculation
         trajectory_slope = 0  # Average Y change per step
         frozen_slope = 0  # Frozen slope to use during missing segments (30% of average)
+        
+        # Track Y position for jagged line detection
+        last_kernel_y = y  # Y position of the previous kernel
         
         while x < width - self.kernel_size // 2:
             # Extract kernel region
@@ -174,6 +183,13 @@ class LineDefectDetector:
                             trajectory_slope = np.mean(y_changes)
                             frozen_slope = trajectory_slope * self.frozen_slope_weight
                     
+                    # Check for jagged line (high Y delta between consecutive kernels)
+                    y_delta = abs(y - last_kernel_y)
+                    is_jagged = y_delta > self.jagged_threshold
+                    
+                    if is_jagged and self.debug:
+                        print(f"Jagged line detected at X={x}: Y delta={y_delta} > threshold={self.jagged_threshold}")
+                    
                     # Check for overlap with previous scans for EVERY kernel placement
                     if previous_scan_means:
                         for prev_mean in previous_scan_means:
@@ -196,13 +212,28 @@ class LineDefectDetector:
                             })
                         gap_start = None
                     
-                    # Record kernel state for debug (green box)
+                    # Record jagged line defect if detected
+                    if is_jagged:
+                        defects.append({
+                            'type': 'jagged_line',
+                            'x': x,
+                            'y': y,
+                            'location': (x, y),
+                            'y_delta': int(y_delta),
+                            'threshold': self.jagged_threshold
+                        })
+                    
+                    # Record kernel state for debug (green box for normal line, yellow for jagged)
                     kernel_states.append({
                         'x': x,
                         'y': y,
                         'has_line': True,
+                        'is_jagged': is_jagged,
                         'bbox': (x1, y1, x2, y2)
                     })
+                    
+                    # Update last kernel Y position
+                    last_kernel_y = y
             else:
                 # No line found - try searching vertically
                 found = False
@@ -261,6 +292,7 @@ class LineDefectDetector:
                             'x': x,
                             'y': y,
                             'has_line': False,
+                            'is_jagged': False,  # Missing line, not jagged
                             'bbox': (x1, y - self.kernel_size // 2, x2, y + self.kernel_size // 2)
                         })
                 else:
@@ -269,8 +301,12 @@ class LineDefectDetector:
                         'x': x,
                         'y': y,
                         'has_line': True,
+                        'is_jagged': False,  # Not jagged since we just found the line
                         'bbox': (x1, y - self.kernel_size // 2, x2, y + self.kernel_size // 2)
                     })
+                    
+                    # Update last kernel Y position
+                    last_kernel_y = y
             
             # Move to next position horizontally by step size to avoid overlap
             x += self.step_size
@@ -357,8 +393,14 @@ class LineDefectDetector:
                 x2 = min(vis.shape[1], x2)
                 y2 = min(vis.shape[0], y2)
                 
-                # Draw kernel box (red if no line, green if line found)
-                color = (0, 255, 0) if state['has_line'] else (0, 0, 255)
+                # Draw kernel box with appropriate color
+                if state.get('is_jagged', False):
+                    color = (0, 255, 255)  # Yellow for jagged lines
+                elif state['has_line']:
+                    color = (0, 255, 0)  # Green for normal lines
+                else:
+                    color = (0, 0, 255)  # Red for missing lines
+                
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 1)
                 
                 # Draw centroid as red dot
@@ -368,7 +410,7 @@ class LineDefectDetector:
             result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
             return result
         
-        # Draw defects when not in debug mode - only show missing line areas
+        # Draw defects when not in debug mode
         for defect in defects:
             if defect['type'] == 'missing_line':
                 x1 = defect['start_x']
@@ -382,6 +424,17 @@ class LineDefectDetector:
                             (x1, y - thickness), 
                             (x2, y + thickness), 
                             (0, 0, 255),  # Red color
+                            -1)  # Filled rectangle
+            elif defect['type'] == 'jagged_line':
+                x = defect['x']
+                y = defect['y']
+                
+                # Draw filled yellow rectangle overlay for jagged line segment
+                thickness = 15  # Thickness of the jagged line indicator
+                cv2.rectangle(overlay, 
+                            (x - self.kernel_size//2, y - thickness), 
+                            (x + self.kernel_size//2, y + thickness), 
+                            (0, 255, 255),  # Yellow color
                             -1)  # Filled rectangle
         
         # Blend with original to create overlay effect

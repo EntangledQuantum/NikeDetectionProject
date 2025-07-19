@@ -189,7 +189,7 @@ class DetectorFactory:
     def create_line_defect_detector(sensitivity: str) -> LineDefectDetector:
         """Create line defect detector with appropriate settings"""
         # Enable debug mode for high sensitivity to see detected lines
-        debug = True
+        debug = False
         return LineDefectDetector(sensitivity=sensitivity, debug=debug)
 
 
