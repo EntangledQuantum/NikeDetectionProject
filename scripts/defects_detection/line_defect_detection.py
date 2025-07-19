@@ -37,11 +37,15 @@ class LineDefectDetector:
             self.search_range = 15
             self.min_gap_size = 5
             self.step_size = 15
+            self.line_threshold = 0.25  # Require 25% pixels for a valid line (aggressive)
         elif sensitivity == 'low':
-            self.kernel_size = 25
-            self.search_range = 8
-            self.min_gap_size = 20
-            self.step_size = 25
+            self.kernel_size = 60
+            self.search_range = 10
+            self.min_gap_size = 30
+            self.step_size = 60
+            self.line_threshold = 0.20  # Only 5% pixels needed (lenient)
+        else:  # medium
+            self.line_threshold = 0.10  # 10% pixels needed (balanced)
     
     def scan_for_lines(self, binary_image):
         """Scan image to find all horizontal lines"""
@@ -65,11 +69,11 @@ class LineDefectDetector:
                 
                 kernel_region = binary_image[y1:y2, x1:x2]
                 
-                # Check if there's a line - at least 10% of pixels should be white
+                # Check if there's a line - use sensitivity-based threshold
                 white_pixels = np.sum(kernel_region > 0)
                 total_pixels = self.kernel_size * self.kernel_size
                 
-                if white_pixels > total_pixels * 0.1:  # 10% threshold
+                if white_pixels > total_pixels * self.line_threshold:  # Use sensitivity-based threshold
                     # Found a line at this Y position
                     found_line = True
                     
@@ -96,6 +100,7 @@ class LineDefectDetector:
         
         if self.debug:
             print(f"Total lines detected: {len(line_starts)}")
+            print(f"Line detection threshold: {self.line_threshold * 100:.1f}% of pixels required")
         
         return line_starts
     
@@ -123,10 +128,10 @@ class LineDefectDetector:
             
             kernel_region = binary_image[y1:y2, x1:x2]
             
-            # Check if there's line in kernel - count white pixels
+            # Check if there's line in kernel - use sensitivity-based threshold
             white_pixels = np.sum(kernel_region > 0)
             total_pixels = (y2 - y1) * (x2 - x1)
-            has_line = white_pixels > total_pixels * 0.1  # 10% threshold
+            has_line = white_pixels > total_pixels * self.line_threshold  # Use sensitivity-based threshold
             
             if has_line:
                 # We found a line!
@@ -180,7 +185,7 @@ class LineDefectDetector:
                             max_pixels = white_pixels
                             best_y = test_y
                         
-                        if white_pixels > (self.kernel_size * self.kernel_size) * 0.1:
+                        if white_pixels > (self.kernel_size * self.kernel_size) * self.line_threshold:
                             # Found line at different Y
                             y = test_y
                             found = True
@@ -193,17 +198,12 @@ class LineDefectDetector:
                     # Increment consecutive missing counter
                     consecutive_missing += 1
                     
-                    # Check if we've exceeded the limit
-                    if consecutive_missing >= max_consecutive_missing:
-                        # If we never found a line, this was a false detection
-                        if not ever_found_line:
-                            if self.debug:
-                                print(f"False line detection at Y={start_y} - no line found in first {consecutive_missing} kernels")
-                            return [], []  # Return empty results
-                        else:
-                            if self.debug:
-                                print(f"Line tracking terminated at X={x} after {consecutive_missing} consecutive missing kernels")
-                            break  # Terminate this line tracking
+                    # Check if we've exceeded the limit AND never found a line
+                    if consecutive_missing >= max_consecutive_missing and not ever_found_line:
+                        # This was a false detection - no line exists here
+                        if self.debug:
+                            print(f"False line detection at Y={start_y} - no line found in first {consecutive_missing} kernels")
+                        return [], []  # Return empty results
                     
                     # Only record states and gaps if we've found a line before
                     if ever_found_line:
