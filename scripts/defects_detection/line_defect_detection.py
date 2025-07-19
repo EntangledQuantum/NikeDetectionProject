@@ -16,17 +16,19 @@ class LineDefectDetector:
     """Detects line defects - missing segments and jagged/zig-zag patterns"""
     
     def __init__(self, min_gap_size=10, angle_tolerance=30, 
-                 vertical_deviation_threshold=15, sensitivity='medium'):
+                 vertical_deviation_threshold=15, sensitivity='medium', debug=False):
         """
         Args:
             min_gap_size: Minimum gap size to consider as defect
             angle_tolerance: Maximum angle deviation from horizontal (degrees)
             vertical_deviation_threshold: Max vertical deviation for jagged detection
             sensitivity: Detection sensitivity level
+            debug: Whether to draw debug lines showing detected line slopes
         """
         self.min_gap_size = min_gap_size
         self.angle_tolerance = angle_tolerance
         self.vertical_deviation_threshold = vertical_deviation_threshold
+        self.debug = debug
         
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
@@ -212,17 +214,31 @@ class LineDefectDetector:
         
         # Analyze each line group for defects
         all_defects = []
+        line_parameters = []  # Store line parameters for debug drawing
+        
         for line_group in line_groups:
             line_defects = self.analyze_line_continuity(labels, line_group, binary.shape)
             all_defects.extend(line_defects)
+            
+            # Store line parameters for debug visualization
+            if len(line_group) > 0:
+                x_coords = [seg['centroid'][0] for seg in line_group]
+                y_coords = [seg['centroid'][1] for seg in line_group]
+                if len(x_coords) > 1:
+                    coeffs = np.polyfit(x_coords, y_coords, 1)
+                    line_parameters.append({
+                        'slope': coeffs[0],
+                        'intercept': coeffs[1],
+                        'x_range': (min(x_coords), max(x_coords))
+                    })
         
         # Create visualization
-        visualization = self.create_visualization(image, all_defects)
+        visualization = self.create_visualization(image, all_defects, line_parameters)
         
         # Return tuple format (visualization, defects)
         return visualization, all_defects
     
-    def create_visualization(self, original, defects):
+    def create_visualization(self, original, defects, line_parameters=None):
         """Create visualization with detected defects highlighted"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
@@ -232,46 +248,43 @@ class LineDefectDetector:
         # Create overlay
         overlay = vis.copy()
         
+        # Draw debug lines if enabled
+        if self.debug and line_parameters:
+            for line_params in line_parameters:
+                slope = line_params['slope']
+                intercept = line_params['intercept']
+                x1, x2 = line_params['x_range']
+                
+                # Calculate y values at x boundaries
+                y1 = int(slope * x1 + intercept)
+                y2 = int(slope * x2 + intercept)
+                
+                # Draw the detected line in green
+                cv2.line(overlay, (int(x1), y1), (int(x2), y2), (0, 255, 0), 2)
+            
+            # In debug mode, only show the lines
+            result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+            return result
+        
+        # Draw defects (only when not in debug mode)
         for defect in defects:
             if defect['type'] == 'missing_line':
-                # Draw rectangle that follows the line slope
+                # Simple horizontal rectangles for now
                 x1 = defect['start_x']
                 x2 = defect['end_x']
                 
-                # Calculate Y positions at x1 and x2 using the line equation
+                # Get Y position from the stored slope and intercept
                 if 'slope' in defect and 'intercept' in defect:
                     slope = defect['slope']
                     intercept = defect['intercept']
-                    y1 = int(slope * x1 + intercept)
-                    y2 = int(slope * x2 + intercept)
+                    # Calculate Y at the center of the gap
+                    center_x = (x1 + x2) // 2
+                    center_y = int(slope * center_x + intercept)
                 else:
-                    # Fallback to center location
-                    y1 = y2 = defect['location'][1]
+                    center_y = defect['location'][1]
                 
-                # Draw a parallelogram that follows the slope
-                # Calculate perpendicular offset for thickness
-                thickness = 15
-                if abs(slope) > 0.001:
-                    # Perpendicular slope is -1/slope
-                    perp_slope = -1.0 / slope
-                    # Normalize to get unit perpendicular vector
-                    length = np.sqrt(1 + perp_slope * perp_slope)
-                    dx = thickness / length
-                    dy = perp_slope * thickness / length
-                else:
-                    # Nearly horizontal line
-                    dx = 0
-                    dy = thickness
-                
-                # Four corners of the parallelogram
-                pts = np.array([
-                    [int(x1 - dx), int(y1 - dy)],
-                    [int(x2 - dx), int(y2 - dy)],
-                    [int(x2 + dx), int(y2 + dy)],
-                    [int(x1 + dx), int(y1 + dy)]
-                ], np.int32)
-                
-                cv2.fillPoly(overlay, [pts], (0, 0, 255))
+                # Draw simple rectangle centered on the line
+                cv2.rectangle(overlay, (x1, center_y - 15), (x2, center_y + 15), (0, 0, 255), -1)
                 
             elif defect['type'] == 'jagged_line':
                 # Draw yellow region for jagged/zig-zag sections

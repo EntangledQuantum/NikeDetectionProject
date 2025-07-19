@@ -188,7 +188,9 @@ class DetectorFactory:
     @staticmethod
     def create_line_defect_detector(sensitivity: str) -> LineDefectDetector:
         """Create line defect detector with appropriate settings"""
-        return LineDefectDetector(sensitivity=sensitivity)
+        # Enable debug mode for high sensitivity to see detected lines
+        debug = True
+        return LineDefectDetector(sensitivity=sensitivity, debug=debug)
 
 
 class DetectionStrategy(ABC):
