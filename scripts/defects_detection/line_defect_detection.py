@@ -112,6 +112,7 @@ class LineDefectDetector:
         previous_y = y  # Keep track of last known good Y position
         consecutive_missing = 0  # Count consecutive missing kernels
         max_consecutive_missing = 5  # Hardcoded limit
+        ever_found_line = False  # Track if we ever found a line
         
         while x < width - self.kernel_size // 2:
             # Extract kernel region
@@ -128,8 +129,9 @@ class LineDefectDetector:
             has_line = white_pixels > total_pixels * 0.1  # 10% threshold
             
             if has_line:
-                # Reset consecutive missing counter
-                consecutive_missing = 0
+                # We found a line!
+                ever_found_line = True
+                consecutive_missing = 0  # Reset counter
                 
                 # Calculate centroid of line pixels in kernel to follow the line
                 y_indices, x_indices = np.where(kernel_region > 0)
@@ -182,6 +184,7 @@ class LineDefectDetector:
                             # Found line at different Y
                             y = test_y
                             found = True
+                            ever_found_line = True
                             previous_y = y
                             consecutive_missing = 0  # Reset counter
                             break
@@ -192,23 +195,39 @@ class LineDefectDetector:
                     
                     # Check if we've exceeded the limit
                     if consecutive_missing >= max_consecutive_missing:
-                        if self.debug:
-                            print(f"Line tracking terminated at X={x} after {consecutive_missing} consecutive missing kernels")
-                        break  # Terminate this line tracking
+                        # If we never found a line, this was a false detection
+                        if not ever_found_line:
+                            if self.debug:
+                                print(f"False line detection at Y={start_y} - no line found in first {consecutive_missing} kernels")
+                            return [], []  # Return empty results
+                        else:
+                            if self.debug:
+                                print(f"Line tracking terminated at X={x} after {consecutive_missing} consecutive missing kernels")
+                            break  # Terminate this line tracking
                     
-                    # Mark start of gap if not already in one
-                    if gap_start is None:
-                        gap_start = x
-                    # Keep Y at previous position for red box
-                    y = previous_y
-                
-                # Record kernel state (red box if no line)
-                kernel_states.append({
-                    'x': x,
-                    'y': y,  # Use previous_y to maintain position
-                    'has_line': found,
-                    'bbox': (x1, y - self.kernel_size // 2, x2, y + self.kernel_size // 2)
-                })
+                    # Only record states and gaps if we've found a line before
+                    if ever_found_line:
+                        # Mark start of gap if not already in one
+                        if gap_start is None:
+                            gap_start = x
+                        # Keep Y at previous position for red box
+                        y = previous_y
+                        
+                        # Record kernel state for missing line (red box)
+                        kernel_states.append({
+                            'x': x,
+                            'y': y,
+                            'has_line': False,
+                            'bbox': (x1, y - self.kernel_size // 2, x2, y + self.kernel_size // 2)
+                        })
+                else:
+                    # Found line after searching - record green box
+                    kernel_states.append({
+                        'x': x,
+                        'y': y,
+                        'has_line': True,
+                        'bbox': (x1, y - self.kernel_size // 2, x2, y + self.kernel_size // 2)
+                    })
             
             # Move to next position horizontally by kernel size to avoid overlap
             x += self.kernel_size
