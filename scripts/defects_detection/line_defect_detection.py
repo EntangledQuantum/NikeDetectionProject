@@ -107,7 +107,7 @@ class LineDefectDetector:
             x2 = min(width, x + self.kernel_size // 2)
             
             kernel_region = binary_image[y1:y2, x1:x2]
-            
+             
             # Check if there's line in kernel - use sensitivity-based threshold
             white_pixels = np.sum(kernel_region > 0)
             total_pixels = (y2 - y1) * (x2 - x1)
