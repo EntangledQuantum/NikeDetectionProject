@@ -207,42 +207,23 @@ class SurfaceTreatmentDetector:
         return visualization, all_defects
     
     def create_visualization(self, original, drop_mask, void_mask, drops, voids):
-        """Create visualization with detected defects highlighted"""
+        """Create visualization marking areas with NO INK - NO TEXT, JUST REGIONS"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
             vis = original.copy()
             
-        # Create overlay
+        # Create overlay - mark ENTIRE problem areas
         overlay = vis.copy()
         
-        # Highlight high contrast drops in blue
-        overlay[drop_mask > 0] = [255, 0, 0]
+        # Mark areas with NO INK (voids) in green - this is the main surface treatment issue
+        overlay[void_mask > 0] = [0, 255, 0]  # Green for areas with no ink
         
-        # Highlight voids in yellow
-        overlay[void_mask > 0] = [0, 255, 255]
+        # Mark irregular high-contrast drops in green as well (they indicate surface energy problems)
+        overlay[drop_mask > 0] = [0, 255, 0]  # Green for irregular drops
         
-        # Blend with original
-        result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
-        
-        # Mark drops
-        for drop in drops:
-            y, x = drop['centroid']
-            cv2.drawContours(result, [np.array([[
-                drop['bbox'][1], drop['bbox'][0],
-                drop['bbox'][3], drop['bbox'][2]
-            ]]).reshape((-1, 1, 2))], -1, (0, 0, 255), 2)
-            cv2.putText(result, 'D', 
-                       (int(x) - 5, int(y) + 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-            
-        # Mark voids
-        for void in voids:
-            y, x = void['centroid']
-            cv2.circle(result, (int(x), int(y)), 15, (0, 255, 255), 2)
-            cv2.putText(result, 'V', 
-                       (int(x) - 5, int(y) + 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        # Blend with original to show the ENTIRE affected areas
+        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
             
         return result
 

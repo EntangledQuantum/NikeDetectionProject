@@ -511,7 +511,7 @@ class WindowProcessor:
         return unique_defects
     
     def _draw_defect_on_visualization(self, visualization, defect, detector_name, scale_factor):
-        """Draw a defect on the visualization canvas with clear, visible marks"""
+        """Draw defect regions - NO TEXT, JUST COLORED AREAS"""
         try:
             # Scale coordinates safely
             def scale_point(point):
@@ -521,52 +521,28 @@ class WindowProcessor:
                     return (x, y)
                 return (0, 0)
             
-            # CLEAR color scheme - bright, distinct colors
+            # Color scheme matching individual detectors
             colors = {
-                'overspray': (0, 0, 255),        # Bright Red
-                'surface_treatment': (0, 255, 0), # Bright Green  
-                'debris': (255, 255, 0)          # Bright Yellow (Cyan)
+                'overspray': (0, 0, 255),        # Red
+                'surface_treatment': (0, 255, 0), # Green  
+                'debris': (0, 255, 255)          # Yellow
             }
             
             color = colors.get(detector_name, (128, 128, 128))
             
-            # Draw with MUCH MORE VISIBLE marks
+            # Draw simple filled regions - NO TEXT, NO BORDERS
             if 'location' in defect:
-                # Point defect - draw larger circles with borders
+                # Point defect - draw filled circle
                 center = scale_point(defect['location'])
                 radius = max(8, min(20, int(defect.get('size', 10) * scale_factor)))
-                
-                # Draw filled circle
                 cv2.circle(visualization, center, radius, color, -1)
-                # Draw black border for visibility
-                cv2.circle(visualization, center, radius, (0, 0, 0), 2)
-                
-                # Add text label
-                label = detector_name[0].upper()  # First letter
-                cv2.putText(visualization, label, 
-                           (center[0] - 5, center[1] + 5),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
                 
             elif 'start_point' in defect and 'end_point' in defect:
-                # Line defect - draw thicker lines
+                # Line defect - draw thick line
                 start = scale_point(defect['start_point'])
                 end = scale_point(defect['end_point'])
                 thickness = max(3, min(8, int(defect.get('width', 4) * scale_factor)))
-                
-                # Draw line with black border
-                cv2.line(visualization, start, end, (0, 0, 0), thickness + 2)
                 cv2.line(visualization, start, end, color, thickness)
-                
-            elif 'position' in defect and detector_name == 'banding':
-                # Banding defect - draw thicker lines
-                if defect.get('type') == 'horizontal_banding':
-                    y = max(0, min(int(defect['position'] * scale_factor), visualization.shape[0] - 1))
-                    cv2.line(visualization, (0, y), (visualization.shape[1], y), (0, 0, 0), 4)
-                    cv2.line(visualization, (0, y), (visualization.shape[1], y), color, 2)
-                else:
-                    x = max(0, min(int(defect['position'] * scale_factor), visualization.shape[1] - 1))
-                    cv2.line(visualization, (x, 0), (x, visualization.shape[0]), (0, 0, 0), 4)
-                    cv2.line(visualization, (x, 0), (x, visualization.shape[0]), color, 2)
                     
         except Exception as e:
             print(f"    Warning: Could not draw defect for {detector_name}: {e}") 

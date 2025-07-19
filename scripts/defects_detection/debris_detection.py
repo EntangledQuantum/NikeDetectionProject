@@ -245,50 +245,22 @@ class DebrisDetector:
     
     def create_visualization(self, original, halo_mask, particle_mask, 
                            fiber_mask, halo_debris, particles, fibers):
-        """Create visualization with detected debris highlighted"""
+        """Create visualization marking debris areas - NO TEXT, JUST REGIONS"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
             vis = original.copy()
             
-        # Create overlay
+        # Create overlay - mark ALL debris areas in yellow
         overlay = vis.copy()
         
-        # Highlight pre-print debris (with halos) in red
-        overlay[halo_mask > 0] = [0, 0, 255]
+        # Mark ALL types of debris in yellow (dirt, fibers, particles, etc.)
+        overlay[halo_mask > 0] = [0, 255, 255]      # Yellow for debris with halos
+        overlay[particle_mask > 0] = [0, 255, 255]  # Yellow for surface particles  
+        overlay[fiber_mask > 0] = [0, 255, 255]     # Yellow for fibers
         
-        # Highlight post-print particles in green
-        overlay[particle_mask > 0] = [0, 255, 0]
-        
-        # Highlight fibers in blue
-        overlay[fiber_mask > 0] = [255, 0, 0]
-        
-        # Blend with original
-        result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
-        
-        # Mark pre-print debris
-        for debris in halo_debris:
-            cv2.circle(result, debris['centroid'], 15, (0, 0, 255), 2)
-            cv2.putText(result, 'H', 
-                       (debris['centroid'][0] - 5, debris['centroid'][1] + 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-            
-        # Mark post-print particles
-        for particle in particles:
-            cv2.rectangle(result, 
-                         (particle['bbox'][1], particle['bbox'][0]),
-                         (particle['bbox'][3], particle['bbox'][2]),
-                         (0, 255, 0), 2)
-            cv2.putText(result, 'P', 
-                       (particle['centroid'][0] - 5, particle['centroid'][1] + 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            
-        # Mark fibers
-        for fiber in fibers:
-            cv2.line(result, fiber['start'], fiber['end'], (255, 0, 0), 3)
-            cv2.putText(result, 'F', 
-                       fiber['start'],
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        # Blend with original to show the ENTIRE affected areas
+        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
             
         return result
 

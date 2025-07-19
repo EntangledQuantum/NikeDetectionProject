@@ -149,34 +149,18 @@ class OversprayDetector:
         return visualization, overspray_regions
     
     def create_visualization(self, original, mask, regions):
-        """Create visualization with detected overspray regions highlighted"""
+        """Create visualization with detected overspray regions highlighted - NO TEXT, JUST REGIONS"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
             vis = original.copy()
             
-        # Create overlay
+        # Create overlay - mark ENTIRE overspray regions in red
         overlay = vis.copy()
+        overlay[mask > 0] = [0, 0, 255]  # Red for overspray regions
         
-        # Highlight overspray regions in red
-        overlay[mask > 0] = [0, 0, 255]
-        
-        # Blend with original
-        result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
-        
-        # Draw larger markers for detected regions
-        for region in regions:
-            # Draw a larger circle to mark the region center
-            cv2.circle(result, region['centroid'], 20, (0, 255, 0), 3)
-            
-            # Draw bounding box
-            minr, minc, maxr, maxc = region['bbox']
-            cv2.rectangle(result, (minc, minr), (maxc, maxr), (0, 255, 0), 2)
-            
-            # Add label
-            cv2.putText(result, f'O-{region["area"]}px', 
-                       (region['centroid'][0] - 20, region['centroid'][1] - 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        # Blend with original to show the ENTIRE affected areas
+        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
             
         return result
 
