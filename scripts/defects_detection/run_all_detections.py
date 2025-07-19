@@ -50,11 +50,11 @@ class DefectDetectionPipeline:
                 'debris': DebrisDetector(halo_threshold=40, region_size_range=(150, 1500), kernel_size=18)
             }
         elif self.sensitivity == 'high':
-            # Aggressive detection
+            # Enhanced detection with moderate bump - better coverage without over-detection
             detectors = {
-                'overspray': OversprayDetector(region_size_range=(50, 800), proximity_threshold=70, kernel_size=15),
-                'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=30, void_size_threshold=100, coalescence_threshold=250, kernel_size=12),
-                'debris': DebrisDetector(halo_threshold=20, region_size_range=(80, 1200), kernel_size=15)
+                'overspray': OversprayDetector(region_size_range=(30, 3500), proximity_threshold=120, kernel_size=25),
+                'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=30, void_size_threshold=70, coalescence_threshold=150, kernel_size=18),
+                'debris': DebrisDetector(halo_threshold=18, region_size_range=(50, 4500), kernel_size=22)
             }
         else:  # medium (default)
             detectors = {

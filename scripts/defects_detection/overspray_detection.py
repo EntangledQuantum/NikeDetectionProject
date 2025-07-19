@@ -75,13 +75,17 @@ class OversprayDetector:
         # Subtract main regions to get potential overspray
         potential_overspray = cv2.subtract(all_printed, main_regions)
         
-        # Use morphological operations to group nearby scattered dots into regions
+        # Use enhanced morphological operations to group scattered areas better
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.kernel_size, self.kernel_size))
         
-        # Close small gaps to group scattered dots
-        closed = cv2.morphologyEx(potential_overspray, cv2.MORPH_CLOSE, kernel, iterations=2)
+        # Close gaps to group scattered dots with moderate enhancement
+        closed = cv2.morphologyEx(potential_overspray, cv2.MORPH_CLOSE, kernel, iterations=3)
         
-        # Open to remove very small noise
+        # Use enhanced additional closing to connect nearby areas
+        large_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.kernel_size+8, self.kernel_size+8))
+        closed = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, large_kernel, iterations=2)
+        
+        # Open to remove small noise
         opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, 
                                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
         
@@ -107,13 +111,13 @@ class OversprayDetector:
                 
                 # Check if region is within proximity threshold
                 if dist_transform[int(y), int(x)] <= self.proximity_threshold:
-                    # Expand the region slightly for better visibility
+                    # Expand the region with slight bump for better visibility
                     expanded_coords = []
                     for coord in prop.coords:
                         y_coord, x_coord = coord
-                        # Add surrounding pixels
-                        for dy in range(-3, 4):
-                            for dx in range(-3, 4):
+                        # Add surrounding pixels with enhanced expansion
+                        for dy in range(-5, 6):
+                            for dx in range(-5, 6):
                                 new_y = max(0, min(image.shape[0]-1, y_coord + dy))
                                 new_x = max(0, min(image.shape[1]-1, x_coord + dx))
                                 expanded_coords.append([new_y, new_x])

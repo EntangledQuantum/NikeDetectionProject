@@ -53,9 +53,11 @@ class DebrisDetector:
         # Find dark spots
         _, dark_thresh = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
-        # Clean up small noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        cleaned = cv2.morphologyEx(dark_thresh, cv2.MORPH_OPEN, kernel)
+        # Use enhanced morphological operations to group debris better
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (12, 12))
+        cleaned = cv2.morphologyEx(dark_thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, 
+                                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (6, 6)))
         
         # Label dark regions
         labeled = measure.label(cleaned)

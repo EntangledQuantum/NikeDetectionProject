@@ -63,8 +63,13 @@ class SurfaceTreatmentDetector:
         # High contrast regions
         high_contrast = local_std > self.contrast_threshold
         
-        # Clean up and label regions
-        cleaned = morphology.remove_small_objects(high_contrast, min_size=30)
+        # Use enhanced morphological operations - moderate grouping
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (12, 12))
+        high_contrast_uint8 = high_contrast.astype(np.uint8) * 255
+        closed = cv2.morphologyEx(high_contrast_uint8, cv2.MORPH_CLOSE, kernel, iterations=2)
+        
+        # Clean up and label regions with PROPER threshold
+        cleaned = morphology.remove_small_objects(closed.astype(bool), min_size=self.coalescence_threshold)
         labeled = measure.label(cleaned)
         props = measure.regionprops(labeled, intensity_image=image)
         
@@ -102,14 +107,18 @@ class SurfaceTreatmentDetector:
         if np.mean(global_thresh) > 127:
             global_thresh = cv2.bitwise_not(global_thresh)
             
-        # Dilate to get expected coverage
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        expected_coverage = cv2.dilate(global_thresh, kernel, iterations=2)
+        # Dilate moderately to get expected coverage with slight bump
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (12, 12))
+        expected_coverage = cv2.dilate(global_thresh, kernel, iterations=3)
         
         # Find voids within expected coverage
         potential_voids = cv2.bitwise_and(adaptive_thresh, expected_coverage)
         
-        # Clean up small regions
+        # Use moderate morphological closing - connect nearby areas
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (16, 16))
+        potential_voids = cv2.morphologyEx(potential_voids, cv2.MORPH_CLOSE, close_kernel, iterations=2)
+        
+        # Clean up small regions (but keep threshold low to catch large areas)
         cleaned_voids = morphology.remove_small_objects(
             potential_voids.astype(bool), 
             min_size=self.void_size_threshold
