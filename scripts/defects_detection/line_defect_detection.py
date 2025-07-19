@@ -79,7 +79,7 @@ class LineDefectDetector:
         
         return line_starts
     
-    def track_line(self, binary_image, start_y):
+    def track_line(self, binary_image, start_y, previous_scan_means):
         """Track a single line across the image using kernel"""
         height, width = binary_image.shape
         kernel_states = []  # For debug visualization
@@ -93,6 +93,14 @@ class LineDefectDetector:
         consecutive_missing = 0  # Count consecutive missing kernels
         max_consecutive_missing = 30  # Hardcoded limit
         ever_found_line = False  # Track if we ever found a line
+        
+        # Check for overlap with previous scans
+        if previous_scan_means:
+            mean_y = np.mean(previous_scan_means)
+            if abs(y - mean_y) < self.kernel_size: # Allow some overlap, but not too much
+                if self.debug:
+                    print(f"Line at Y={y} overlaps with previous scan mean Y={mean_y:.1f}. Terminating entire scan.")
+                return [], [] # Return empty results - entire line is invalid due to overlap
         
         while x < width - self.kernel_size // 2:
             # Extract kernel region
@@ -127,7 +135,25 @@ class LineDefectDetector:
                         y_drift = abs(new_y - previous_y)
                         if y_drift <= self.max_y_drift:
                             # Apply weighted average for stability
-                            y = int(self.stability_weight * previous_y + (1 - self.stability_weight) * new_y)
+                            potential_y = int(self.stability_weight * previous_y + (1 - self.stability_weight) * new_y)
+                            
+                            # Check if new Y position would overlap with previous scans
+                            overlaps_previous = False
+                            if previous_scan_means:
+                                for prev_mean in previous_scan_means:
+                                    if abs(potential_y - prev_mean) < self.kernel_size * 0.7:  # 70% overlap threshold
+                                        overlaps_previous = True
+                                        if self.debug:
+                                            print(f"Terminating at X={x}: Y={potential_y} would overlap with previous scan mean Y={prev_mean:.1f}")
+                                        break
+                            
+                            if overlaps_previous:
+                                # Terminate this line scan due to overlap - return empty results
+                                if self.debug:
+                                    print(f"Line scan terminated due to overlap - returning empty results")
+                                return [], []  # Return empty results just like false line detection
+                            else:
+                                y = potential_y
                         else:
                             # Too much drift - stay at previous position
                             y = previous_y
@@ -255,15 +281,30 @@ class LineDefectDetector:
         # Track each line
         all_defects = []
         all_kernel_states = []
+        previous_scan_means = []  # Store mean Y positions of previous scans
         
         for i, start_y in enumerate(line_positions):
             if self.debug:
                 print(f"Tracking line {i+1} starting at Y={start_y}")
             
-            kernel_states, defects = self.track_line(binary, start_y)
-            all_defects.extend(defects)
-            if self.debug:
-                all_kernel_states.extend(kernel_states)
+            kernel_states, defects = self.track_line(binary, start_y, previous_scan_means)
+            
+            # Only add results if tracking was successful (not empty due to overlap)
+            if kernel_states or defects:
+                all_defects.extend(defects)
+                if self.debug:
+                    all_kernel_states.extend(kernel_states)
+                
+                # Calculate mean Y position of this scan for overlap detection
+                if kernel_states:
+                    y_positions = [state['y'] for state in kernel_states]
+                    mean_y = np.mean(y_positions)
+                    previous_scan_means.append(mean_y)
+                    if self.debug:
+                        print(f"Line {i+1} mean Y: {mean_y:.1f}")
+            else:
+                if self.debug:
+                    print(f"Line {i+1} terminated due to overlap with previous scan")
         
         # Create visualization
         visualization = self.create_visualization(image, all_defects, all_kernel_states)
