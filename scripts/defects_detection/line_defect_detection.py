@@ -43,14 +43,14 @@ class LineDefectDetector:
             self.max_y_drift = 8  # Maximum Y drift per step
             self.stability_weight = 0.7  # Weight for previous position (higher = more stable)
         elif sensitivity == 'low':
-            self.kernel_size = 40
+            self.kernel_size = 50
             self.search_range = 10  
             self.min_gap_size = 30
-            self.step_size = 25
-            self.line_threshold = 0.25  # Only 5% pixels needed (lenient)
-            self.strong_line_threshold = 0.25  # Require 35% pixels to change Y position
-            self.max_y_drift = 12  # Maximum Y drift per step
-            self.stability_weight = 0.6  # Weight for previous position
+            self.step_size = 45
+            self.line_threshold = 0.20 # Only 5% pixels needed (lenient)
+            self.strong_line_threshold = 0.05  # Require 35% pixels to change Y position
+            self.max_y_drift = 0.1  # Maximum Y drift per step
+            self.stability_weight = 0.7  # Weight for previous position
         else:  # medium
             self.line_threshold = 0.10  # 10% pixels needed (balanced)
             self.strong_line_threshold = 0.20  # Require 20% pixels to change Y position
@@ -94,14 +94,6 @@ class LineDefectDetector:
         max_consecutive_missing = 30  # Hardcoded limit
         ever_found_line = False  # Track if we ever found a line
         
-        # Check for overlap with previous scans
-        if previous_scan_means:
-            mean_y = np.mean(previous_scan_means)
-            if abs(y - mean_y) < self.kernel_size: # Allow some overlap, but not too much
-                if self.debug:
-                    print(f"Line at Y={y} overlaps with previous scan mean Y={mean_y:.1f}. Terminating entire scan.")
-                return [], [] # Return empty results - entire line is invalid due to overlap
-        
         while x < width - self.kernel_size // 2:
             # Extract kernel region
             y1 = max(0, y - self.kernel_size // 2)
@@ -124,48 +116,47 @@ class LineDefectDetector:
                 # Calculate centroid of line pixels in kernel to follow the line
                 y_indices, x_indices = np.where(kernel_region > 0)
                 if len(y_indices) > 0:
-                    # Calculate new Y position from line centroid
+                    # Calculate new Y position from line centroid - this should be the center of the line
                     local_y_center = np.mean(y_indices)
                     new_y = y1 + int(local_y_center)
                     
-                    # Check if we have enough strong pixels to justify changing Y position
-                    strong_pixels = white_pixels / total_pixels
-                    if strong_pixels >= self.strong_line_threshold:
-                        # Strong line signal - allow Y position change but limit drift
-                        y_drift = abs(new_y - previous_y)
-                        if y_drift <= self.max_y_drift:
-                            # Apply weighted average for stability
-                            potential_y = int(self.stability_weight * previous_y + (1 - self.stability_weight) * new_y)
-                            
-                            # Check if new Y position would overlap with previous scans
-                            overlaps_previous = False
-                            if previous_scan_means:
-                                for prev_mean in previous_scan_means:
-                                    if abs(potential_y - prev_mean) < self.kernel_size * 0.7:  # 70% overlap threshold
-                                        overlaps_previous = True
-                                        if self.debug:
-                                            print(f"Terminating at X={x}: Y={potential_y} would overlap with previous scan mean Y={prev_mean:.1f}")
-                                        break
-                            
-                            if overlaps_previous:
-                                # Terminate this line scan due to overlap - return empty results
-                                if self.debug:
-                                    print(f"Line scan terminated due to overlap - returning empty results")
-                                return [], []  # Return empty results just like false line detection
+                    # Always try to center on the line if we have enough pixels
+                    if white_pixels > total_pixels * self.line_threshold:
+                        # We have a clear line - center the kernel on it
+                        y = new_y
+                        previous_y = y
+                        
+                        if self.debug:
+                            print(f"Centering kernel at X={x}: Y={y} (line centroid)")
+                    else:
+                        # Weak signal - apply stability logic
+                        strong_pixels = white_pixels / total_pixels
+                        if strong_pixels >= self.strong_line_threshold:
+                            # Strong enough signal - allow Y position change but limit drift
+                            y_drift = abs(new_y - previous_y)
+                            if y_drift <= self.max_y_drift:
+                                # Apply weighted average for stability
+                                y = int(self.stability_weight * previous_y + (1 - self.stability_weight) * new_y)
                             else:
-                                y = potential_y
+                                # Too much drift - stay at previous position
+                                y = previous_y
+                                if self.debug:
+                                    print(f"Prevented large Y drift: {y_drift} pixels at X={x}")
                         else:
-                            # Too much drift - stay at previous position
+                            # Very weak signal - stay at previous Y position
                             y = previous_y
                             if self.debug:
-                                print(f"Prevented large Y drift: {y_drift} pixels at X={x}")
-                    else:
-                        # Weak line signal - stay at previous Y position to avoid drift
-                        y = previous_y
-                        if self.debug:
-                            print(f"Weak line signal ({strong_pixels:.2%}) - maintaining Y position at X={x}")
+                                print(f"Weak line signal ({strong_pixels:.2%}) - maintaining Y position at X={x}")
+                        
+                        previous_y = y  # Update last known good position
                     
-                    previous_y = y  # Update last known good position
+                    # Check for overlap with previous scans for EVERY kernel placement
+                    if previous_scan_means:
+                        for prev_mean in previous_scan_means:
+                            if abs(y - prev_mean) < self.kernel_size * 0.7:  # 70% overlap threshold
+                                if self.debug:
+                                    print(f"Kernel at X={x}, Y={y} approaching previous scan mean Y={prev_mean:.1f}. Terminating entire line.")
+                                return [], []  # Terminate entire line scan
                     
                     # If we were in a gap, record it
                     if gap_start is not None:
