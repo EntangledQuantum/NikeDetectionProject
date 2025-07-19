@@ -414,20 +414,14 @@ class WindowProcessor:
             colors = {
                 'overspray': (0, 0, 255),        # Bright Red
                 'surface_treatment': (0, 255, 0), # Bright Green  
-                'debris': (255, 255, 0),         # Bright Yellow
-                'edge_defect': (255, 0, 255),    # Bright Magenta
-                'banding': (0, 165, 255),        # Bright Orange
-                'streak': (255, 255, 255)        # White
+                'debris': (255, 255, 0)          # Bright Yellow
             }
             
             # Descriptions
             descriptions = {
-                'overspray': 'Scattered ink dots outside printed areas',
-                'surface_treatment': 'Poor surface energy causing ink issues',
-                'debris': 'Foreign particles and contamination',
-                'edge_defect': 'Irregular edges and boundaries',
-                'banding': 'Periodic horizontal/vertical patterns',
-                'streak': 'Linear marks and streaks'
+                'overspray': 'Ink scattered outside intended areas, appearing as dots trailing printed regions',
+                'surface_treatment': 'Poor surface energy causing ink to combine into irregular drops, leaving areas with no ink',
+                'debris': 'Foreign particles (dirt, fibers, etc.) causing dark spots with blank rings or contamination'
             }
             
             # Title
@@ -531,10 +525,7 @@ class WindowProcessor:
             colors = {
                 'overspray': (0, 0, 255),        # Bright Red
                 'surface_treatment': (0, 255, 0), # Bright Green  
-                'debris': (255, 255, 0),         # Bright Yellow (Cyan)
-                'edge_defect': (255, 0, 255),    # Bright Magenta
-                'banding': (0, 165, 255),        # Bright Orange
-                'streak': (255, 255, 255)        # White
+                'debris': (255, 255, 0)          # Bright Yellow (Cyan)
             }
             
             color = colors.get(detector_name, (128, 128, 128))

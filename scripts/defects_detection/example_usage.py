@@ -11,9 +11,6 @@ import cv2
 from overspray_detection import OversprayDetector
 from surface_treatment_detection import SurfaceTreatmentDetector
 from debris_detection import DebrisDetector
-from edge_defect_detection import EdgeDefectDetector
-from banding_detection import BandingDetector
-from streak_detection import StreakDetector
 
 
 def example_single_detector():
@@ -68,7 +65,7 @@ def example_multiple_detectors():
     # Initialize detectors
     detectors = {
         'overspray': OversprayDetector(),
-        'streak': StreakDetector(),
+        'surface_treatment': SurfaceTreatmentDetector(),
         'debris': DebrisDetector()
     }
     

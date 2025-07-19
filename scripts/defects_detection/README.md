@@ -4,13 +4,10 @@ A comprehensive suite of computer vision algorithms for detecting various printi
 
 ## Overview
 
-This system detects multiple types of printing defects including:
-- **Overspray**: Scattered ink dots outside intended areas
-- **Surface Treatment Issues**: Irregular ink drops and missing ink areas due to poor surface energy
-- **Debris**: Foreign particles on sheets (pre-print and post-print)
-- **Edge Defects**: Irregularities and jaggedness along printed boundaries
-- **Banding**: Horizontal and vertical periodic patterns
-- **Streaks**: Linear marks and lines in prints
+This system detects three critical types of printing defects:
+- **Overspray**: Ink scattered outside intended areas, appearing as dots trailing printed regions
+- **Surface Treatment Issues**: Poor surface energy causing ink to combine into irregular drops, leaving areas with no ink
+- **Debris**: Foreign particles (dirt, fibers, etc.) causing dark spots with blank rings or contamination patterns
 
 ## Features
 
@@ -87,36 +84,22 @@ The system automatically detects large images and processes them efficiently:
 ## Detection Algorithms
 
 ### 1. Overspray Detection (`overspray_detection.py`)
-- Detects scattered ink dots outside main printed areas
-- Uses morphological operations and connected component analysis
-- Parameters: dot size range, proximity threshold
+- **Purpose**: Detects ink scattered outside intended print areas
+- **Method**: Uses kernel-based region analysis to group scattered dots into meaningful regions
+- **Parameters**: Region size (50-1000 pixels), proximity to main print areas, morphological kernels
+- **Output**: Highlighted regions showing where ink has scattered beyond intended boundaries
 
 ### 2. Surface Treatment Detection (`surface_treatment_detection.py`)
-- Identifies areas with irregular ink coalescence
-- Detects voids and missing ink regions
-- Uses local contrast analysis and texture features
+- **Purpose**: Identifies poor surface energy causing irregular ink behavior
+- **Method**: Detects high-contrast ink drops and void areas where ink is missing
+- **Parameters**: Contrast thresholds, void size limits, coalescence detection
+- **Output**: Regions showing irregular ink drops and missing ink areas
 
 ### 3. Debris Detection (`debris_detection.py`)
-- Detects foreign particles on sheets
-- Distinguishes pre-print vs post-print debris
-- Identifies characteristic halo patterns around debris
-
-
-
-### 4. Edge Defect Detection (`edge_defect_detection.py`)
-- Analyzes edge smoothness and regularity
-- Detects jagged edges and boundary irregularities
-- Uses contour analysis and edge deviation metrics
-
-### 5. Banding Detection (`banding_detection.py`)
-- Detects periodic horizontal/vertical patterns
-- Uses FFT and autocorrelation analysis
-- Identifies band frequency and strength
-
-### 6. Streak Detection (`streak_detection.py`)
-- Finds linear marks and streaks
-- Uses Hough transform and morphological operations
-- Detects streak angle, length, and contrast
+- **Purpose**: Finds foreign particles and contamination on the substrate
+- **Method**: Detects characteristic halo patterns and dark spots caused by debris
+- **Parameters**: Halo detection thresholds, particle size ranges, contrast analysis
+- **Output**: Contaminated regions with debris particles and their effects
 
 ## Individual Algorithm Usage
 

@@ -17,13 +17,10 @@ from matplotlib.backends.backend_pdf import PdfPages
 import argparse
 import sys
 
-# Import all detection modules
+# Import detection modules
 from overspray_detection import OversprayDetector
 from surface_treatment_detection import SurfaceTreatmentDetector
 from debris_detection import DebrisDetector
-from edge_defect_detection import EdgeDefectDetector
-from banding_detection import BandingDetector
-from streak_detection import StreakDetector
 from window_processor import WindowProcessor
 
 
@@ -48,31 +45,22 @@ class DefectDetectionPipeline:
         if self.sensitivity == 'low':
             # Conservative detection
             detectors = {
-                'overspray': OversprayDetector(dot_size_range=(5, 20), proximity_threshold=30),
-                'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=70, void_size_threshold=30),
-                'debris': DebrisDetector(halo_threshold=40, particle_size_range=(20, 800)),
-                'edge_defect': EdgeDefectDetector(deviation_threshold=20, min_defect_length=100),
-                'banding': BandingDetector(min_band_strength=0.2, band_width_range=(8, 60)),
-                'streak': StreakDetector(min_streak_length=70, contrast_threshold=30)
+                'overspray': OversprayDetector(region_size_range=(100, 1000), proximity_threshold=30, kernel_size=20),
+                'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=70, void_size_threshold=200, coalescence_threshold=400, kernel_size=15),
+                'debris': DebrisDetector(halo_threshold=40, region_size_range=(150, 1500), kernel_size=18)
             }
         elif self.sensitivity == 'high':
             # Aggressive detection
             detectors = {
-                'overspray': OversprayDetector(dot_size_range=(2, 25), proximity_threshold=70),
-                'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=30, void_size_threshold=10),
-                'debris': DebrisDetector(halo_threshold=20, particle_size_range=(5, 1000)),
-                'edge_defect': EdgeDefectDetector(deviation_threshold=10, min_defect_length=50),
-                'banding': BandingDetector(min_band_strength=0.1, band_width_range=(3, 40)),
-                'streak': StreakDetector(min_streak_length=30, contrast_threshold=15)
+                'overspray': OversprayDetector(region_size_range=(50, 800), proximity_threshold=70, kernel_size=15),
+                'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=30, void_size_threshold=100, coalescence_threshold=250, kernel_size=12),
+                'debris': DebrisDetector(halo_threshold=20, region_size_range=(80, 1200), kernel_size=15)
             }
         else:  # medium (default)
             detectors = {
-                'overspray': OversprayDetector(),
-                'surface_treatment': SurfaceTreatmentDetector(),
-                'debris': DebrisDetector(),
-                'edge_defect': EdgeDefectDetector(deviation_threshold=15, min_defect_length=75),
-                'banding': BandingDetector(),
-                'streak': StreakDetector()
+                'overspray': OversprayDetector(region_size_range=(75, 900), kernel_size=18),
+                'surface_treatment': SurfaceTreatmentDetector(void_size_threshold=150, coalescence_threshold=300, kernel_size=12),
+                'debris': DebrisDetector(region_size_range=(100, 1200), kernel_size=15)
             }
         return detectors
     

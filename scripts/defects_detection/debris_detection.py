@@ -16,19 +16,21 @@ from tqdm import tqdm
 
 
 class DebrisDetector:
-    """Detects debris defects - foreign particles with characteristic patterns"""
+    """Detects debris defects - foreign particle regions with characteristic patterns"""
     
-    def __init__(self, halo_threshold=30, particle_size_range=(10, 500),
-                 contrast_threshold=40):
+    def __init__(self, halo_threshold=30, region_size_range=(100, 2000),
+                 contrast_threshold=40, kernel_size=12):
         """
         Args:
             halo_threshold: Minimum intensity difference for halo detection
-            particle_size_range: Min and max size for particle detection
+            region_size_range: Min and max size for debris regions
             contrast_threshold: Minimum contrast for debris detection
+            kernel_size: Size of morphological kernel for region analysis
         """
         self.halo_threshold = halo_threshold
-        self.particle_size_range = particle_size_range
+        self.region_size_range = region_size_range
         self.contrast_threshold = contrast_threshold
+        self.kernel_size = kernel_size
         
     def preprocess_image(self, image):
         """Preprocess image for debris detection"""
@@ -63,7 +65,7 @@ class DebrisDetector:
         halo_mask = np.zeros_like(image)
         
         for prop in props:
-            if self.particle_size_range[0] <= prop.area <= self.particle_size_range[1]:
+            if self.region_size_range[0] <= prop.area <= self.region_size_range[1]:
                 # Check for halo around dark spot
                 y, x = prop.centroid
                 
@@ -120,7 +122,7 @@ class DebrisDetector:
         particle_mask = np.zeros_like(image)
         
         for prop in props:
-            if self.particle_size_range[0] <= prop.area <= self.particle_size_range[1]:
+            if self.region_size_range[0] <= prop.area <= self.region_size_range[1]:
                 # Check contrast with surroundings
                 y, x = prop.centroid
                 

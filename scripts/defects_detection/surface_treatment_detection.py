@@ -16,19 +16,21 @@ from tqdm import tqdm
 
 
 class SurfaceTreatmentDetector:
-    """Detects surface treatment defects - irregular ink drops and voids"""
+    """Detects surface treatment defects - irregular ink regions and void areas"""
     
-    def __init__(self, contrast_threshold=50, void_size_threshold=20, 
-                 coalescence_threshold=100):
+    def __init__(self, contrast_threshold=50, void_size_threshold=150, 
+                 coalescence_threshold=300, kernel_size=10):
         """
         Args:
-            contrast_threshold: Minimum contrast for high-contrast drops
+            contrast_threshold: Minimum contrast for high-contrast regions
             void_size_threshold: Minimum size for void areas
-            coalescence_threshold: Minimum size for coalesced ink drops
+            coalescence_threshold: Minimum size for coalesced ink regions
+            kernel_size: Size of morphological kernel for region analysis
         """
         self.contrast_threshold = contrast_threshold
         self.void_size_threshold = void_size_threshold
         self.coalescence_threshold = coalescence_threshold
+        self.kernel_size = kernel_size
         
     def preprocess_image(self, image):
         """Preprocess image for surface treatment detection"""
