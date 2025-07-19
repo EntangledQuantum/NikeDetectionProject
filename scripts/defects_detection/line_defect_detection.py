@@ -13,173 +13,178 @@ import os
 
 
 class LineDefectDetector:
-    """Detects line defects - missing segments and jagged/zig-zag patterns"""
+    """Detects line defects using kernel-based line tracking"""
     
-    def __init__(self, min_gap_size=10, angle_tolerance=30, 
-                 vertical_deviation_threshold=15, sensitivity='medium', debug=False):
+    def __init__(self, kernel_size=20, search_range=10,
+                 min_gap_size=10, sensitivity='medium', debug=False):
         """
         Args:
+            kernel_size: Size of the tracking kernel (square)
+            search_range: Vertical search range when line is lost
             min_gap_size: Minimum gap size to consider as defect
-            angle_tolerance: Maximum angle deviation from horizontal (degrees)
-            vertical_deviation_threshold: Max vertical deviation for jagged detection
             sensitivity: Detection sensitivity level
-            debug: Whether to draw debug lines showing detected line slopes
+            debug: Whether to draw debug visualization
         """
+        self.kernel_size = kernel_size
+        self.search_range = search_range
         self.min_gap_size = min_gap_size
-        self.angle_tolerance = angle_tolerance
-        self.vertical_deviation_threshold = vertical_deviation_threshold
         self.debug = debug
+        self.step_size = kernel_size  # Horizontal step to avoid overlap
         
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
+            self.kernel_size = 15
+            self.search_range = 15
             self.min_gap_size = 5
-            self.angle_tolerance = 45
-            self.vertical_deviation_threshold = 10
+            self.step_size = 15
         elif sensitivity == 'low':
+            self.kernel_size = 25
+            self.search_range = 8
             self.min_gap_size = 20
-            self.angle_tolerance = 20
-            self.vertical_deviation_threshold = 20
+            self.step_size = 25
     
-    def detect_line_regions(self, binary_image):
-        """Detect connected line regions using connected components"""
-        # Use connected components to find all line segments
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, connectivity=8)
+    def scan_for_lines(self, binary_image):
+        """Scan image to find all horizontal lines"""
+        height, width = binary_image.shape
+        line_starts = []
         
-        line_segments = []
-        for i in range(1, num_labels):  # Skip background (0)
-            area = stats[i, cv2.CC_STAT_AREA]
-            width = stats[i, cv2.CC_STAT_WIDTH]
-            height = stats[i, cv2.CC_STAT_HEIGHT]
+        y = self.kernel_size // 2
+        while y < height - self.kernel_size // 2:
+            # Check if there's a line at this Y position
+            x = self.kernel_size // 2
+            found_line = False
             
-            # Filter for line-like components (wider than tall)
-            if width > height * 2 and area > 50:
-                line_segments.append({
-                    'label': i,
-                    'bbox': (stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
-                            stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]),
-                    'centroid': centroids[i],
-                    'area': area
-                })
+            # Scan horizontally at this Y level
+            while x < width - self.kernel_size // 2 and not found_line:
+                # Extract kernel region
+                y1 = y - self.kernel_size // 2
+                y2 = y + self.kernel_size // 2
+                x1 = x - self.kernel_size // 2
+                x2 = x + self.kernel_size // 2
+                
+                kernel_region = binary_image[y1:y2, x1:x2]
+                
+                # Check if there's a line - at least 10% of pixels should be white
+                white_pixels = np.sum(kernel_region > 0)
+                total_pixels = self.kernel_size * self.kernel_size
+                
+                if white_pixels > total_pixels * 0.1:  # 10% threshold
+                    # Found a line at this Y position
+                    found_line = True
+                    line_starts.append(y)
+                    if self.debug:
+                        print(f"Found line at Y={y}")
+                
+                x += self.kernel_size  # Move by kernel size to check next position
+            
+            # Move down by kernel size to avoid overlap with previous scan
+            y += self.kernel_size
         
-        return labels, line_segments
+        if self.debug:
+            print(f"Total lines detected: {len(line_starts)}")
+        
+        return line_starts
     
-    def group_line_segments(self, line_segments, image_width):
-        """Group line segments that belong to the same logical line"""
-        if not line_segments:
-            return []
-        
-        # Sort segments by Y coordinate
-        sorted_segments = sorted(line_segments, key=lambda s: s['centroid'][1])
-        
-        # Group segments that are close in Y coordinate
-        line_groups = []
-        current_group = [sorted_segments[0]]
-        
-        for segment in sorted_segments[1:]:
-            # Check if segment belongs to current group
-            avg_y = np.mean([s['centroid'][1] for s in current_group])
-            if abs(segment['centroid'][1] - avg_y) < 50:  # Within 50 pixels vertically
-                current_group.append(segment)
-            else:
-                line_groups.append(current_group)
-                current_group = [segment]
-        
-        if current_group:
-            line_groups.append(current_group)
-        
-        return line_groups
-    
-    def analyze_line_continuity(self, labels, line_group, image_shape):
-        """Analyze a line group for gaps and discontinuities"""
-        height, width = image_shape
+    def track_line(self, binary_image, start_y):
+        """Track a single line across the image using kernel"""
+        height, width = binary_image.shape
+        kernel_states = []  # For debug visualization
         defects = []
         
-        # Get Y range for this line group
-        y_coords = [seg['centroid'][1] for seg in line_group]
-        avg_y = int(np.mean(y_coords))
-        y_range = max(20, int(np.std(y_coords) * 3 + 10))
+        # Starting position
+        x = self.kernel_size // 2
+        y = start_y
+        gap_start = None
+        previous_y = y  # Keep track of last known good Y position
         
-        # Calculate line slope by fitting a line through segment centroids
-        x_coords = [seg['centroid'][0] for seg in line_group]
-        if len(x_coords) > 1:
-            # Fit a line to get slope
-            coeffs = np.polyfit(x_coords, y_coords, 1)
-            slope = coeffs[0]  # dy/dx
-            intercept = coeffs[1]
-        else:
-            slope = 0
-            intercept = avg_y
-        
-        # Create a mask for this line group
-        line_mask = np.zeros((height, width), dtype=np.uint8)
-        for segment in line_group:
-            line_mask[labels == segment['label']] = 255
-        
-        # Scan horizontally with a wider band
-        y_start = max(0, avg_y - y_range)
-        y_end = min(height, avg_y + y_range)
-        
-        # Project line onto horizontal axis
-        horizontal_projection = np.max(line_mask[y_start:y_end, :], axis=0)
-        
-        # Find gaps in the projection
-        in_line = False
-        gap_start = 0
-        
-        for x in range(width):
-            if horizontal_projection[x] > 0:
-                if not in_line:
-                    # End of gap
-                    if x - gap_start > self.min_gap_size and gap_start > 0:
-                        # Check if there was line before the gap
-                        has_line_before = np.any(horizontal_projection[max(0, gap_start-50):gap_start] > 0)
-                        has_line_after = np.any(horizontal_projection[x:min(width, x+50)] > 0)
-                        
-                        if has_line_before and has_line_after:
+        while x < width - self.kernel_size // 2:
+            # Extract kernel region
+            y1 = max(0, y - self.kernel_size // 2)
+            y2 = min(height, y + self.kernel_size // 2)
+            x1 = max(0, x - self.kernel_size // 2)
+            x2 = min(width, x + self.kernel_size // 2)
+            
+            kernel_region = binary_image[y1:y2, x1:x2]
+            
+            # Check if there's line in kernel - count white pixels
+            white_pixels = np.sum(kernel_region > 0)
+            total_pixels = (y2 - y1) * (x2 - x1)
+            has_line = white_pixels > total_pixels * 0.1  # 10% threshold
+            
+            if has_line:
+                # Calculate centroid of line pixels in kernel to follow the line
+                y_indices, x_indices = np.where(kernel_region > 0)
+                if len(y_indices) > 0:
+                    # Update Y position to follow line
+                    local_y_center = np.mean(y_indices)
+                    y = y1 + int(local_y_center)
+                    previous_y = y  # Update last known good position
+                    
+                    # If we were in a gap, record it
+                    if gap_start is not None:
+                        gap_size = x - gap_start
+                        if gap_size > self.min_gap_size:
                             defects.append({
                                 'type': 'missing_line',
                                 'start_x': gap_start,
                                 'end_x': x,
-                                'slope': slope,
-                                'intercept': intercept,
-                                'location': ((gap_start + x) // 2, int(slope * ((gap_start + x) // 2) + intercept)),
-                                'size': x - gap_start
+                                'y': previous_y,
+                                'location': ((gap_start + x) // 2, previous_y),
+                                'size': gap_size
                             })
-                    in_line = True
+                        gap_start = None
+                    
+                    # Record kernel state for debug (green box)
+                    kernel_states.append({
+                        'x': x,
+                        'y': y,
+                        'has_line': True,
+                        'bbox': (x1, y1, x2, y2)
+                    })
             else:
-                if in_line:
-                    gap_start = x
-                    in_line = False
-        
-        # Check for jagged sections by analyzing vertical deviations
-        for segment in line_group:
-            x, y, w, h = segment['bbox']
-            if h > self.vertical_deviation_threshold:
-                # This segment has significant vertical variation
-                segment_mask = (labels == segment['label']).astype(np.uint8)
-                segment_region = segment_mask[y:y+h, x:x+w]
+                # No line found - try searching vertically
+                found = False
+                best_y = y
+                max_pixels = 0
                 
-                # Analyze vertical distribution
-                for col in range(0, w, 5):  # Sample every 5 pixels
-                    if col < segment_region.shape[1]:
-                        col_pixels = segment_region[:, col]
-                        if np.sum(col_pixels) > 0:
-                            pixel_positions = np.where(col_pixels > 0)[0]
-                            if len(pixel_positions) > 1:
-                                spread = np.max(pixel_positions) - np.min(pixel_positions)
-                                if spread > self.vertical_deviation_threshold:
-                                    defects.append({
-                                        'type': 'jagged_line',
-                                        'start_x': x + col - 10,
-                                        'end_x': x + col + 10,
-                                        'y_from': y + np.min(pixel_positions),
-                                        'y_to': y + np.max(pixel_positions),
-                                        'location': (x + col, y + h//2),
-                                        'deviation': spread
-                                    })
-                                    break
+                for dy in range(-self.search_range, self.search_range + 1):
+                    test_y = y + dy
+                    if 0 <= test_y - self.kernel_size // 2 < height and 0 <= test_y + self.kernel_size // 2 < height:
+                        test_y1 = test_y - self.kernel_size // 2
+                        test_y2 = test_y + self.kernel_size // 2
+                        test_region = binary_image[test_y1:test_y2, x1:x2]
+                        
+                        white_pixels = np.sum(test_region > 0)
+                        if white_pixels > max_pixels:
+                            max_pixels = white_pixels
+                            best_y = test_y
+                        
+                        if white_pixels > (self.kernel_size * self.kernel_size) * 0.1:
+                            # Found line at different Y
+                            y = test_y
+                            found = True
+                            previous_y = y
+                            break
+                
+                if not found:
+                    # Mark start of gap if not already in one
+                    if gap_start is None:
+                        gap_start = x
+                    # Keep Y at previous position for red box
+                    y = previous_y
+                
+                # Record kernel state (red box if no line)
+                kernel_states.append({
+                    'x': x,
+                    'y': y,  # Use previous_y to maintain position
+                    'has_line': found,
+                    'bbox': (x1, y - self.kernel_size // 2, x2, y + self.kernel_size // 2)
+                })
+            
+            # Move to next position horizontally by kernel size to avoid overlap
+            x += self.kernel_size
         
-        return defects
+        return kernel_states, defects
     
     def detect(self, image):
         """Main detection method"""
@@ -193,7 +198,7 @@ class LineDefectDetector:
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
         
-        # Use adaptive threshold for better line detection
+        # Binary threshold
         binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
                                       cv2.THRESH_BINARY, 21, -5)
         
@@ -201,44 +206,29 @@ class LineDefectDetector:
         if np.mean(binary) > 127:
             binary = cv2.bitwise_not(binary)
         
-        # Clean up noise
-        kernel = np.ones((3, 3), np.uint8)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        # Find all horizontal lines
+        line_positions = self.scan_for_lines(binary)
         
-        # Detect line segments
-        labels, line_segments = self.detect_line_regions(binary)
-        
-        # Group segments into logical lines
-        line_groups = self.group_line_segments(line_segments, image.shape[1])
-        
-        # Analyze each line group for defects
+        # Track each line
         all_defects = []
-        line_parameters = []  # Store line parameters for debug drawing
+        all_kernel_states = []
         
-        for line_group in line_groups:
-            line_defects = self.analyze_line_continuity(labels, line_group, binary.shape)
-            all_defects.extend(line_defects)
+        for i, start_y in enumerate(line_positions):
+            if self.debug:
+                print(f"Tracking line {i+1} starting at Y={start_y}")
             
-            # Store line parameters for debug visualization
-            if len(line_group) > 0:
-                x_coords = [seg['centroid'][0] for seg in line_group]
-                y_coords = [seg['centroid'][1] for seg in line_group]
-                if len(x_coords) > 1:
-                    coeffs = np.polyfit(x_coords, y_coords, 1)
-                    line_parameters.append({
-                        'slope': coeffs[0],
-                        'intercept': coeffs[1],
-                        'x_range': (min(x_coords), max(x_coords))
-                    })
+            kernel_states, defects = self.track_line(binary, start_y)
+            all_defects.extend(defects)
+            if self.debug:
+                all_kernel_states.extend(kernel_states)
         
         # Create visualization
-        visualization = self.create_visualization(image, all_defects, line_parameters)
+        visualization = self.create_visualization(image, all_defects, all_kernel_states)
         
         # Return tuple format (visualization, defects)
         return visualization, all_defects
     
-    def create_visualization(self, original, defects, line_parameters=None):
+    def create_visualization(self, original, defects, kernel_states=None):
         """Create visualization with detected defects highlighted"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
@@ -248,51 +238,39 @@ class LineDefectDetector:
         # Create overlay
         overlay = vis.copy()
         
-        # Draw debug lines if enabled
-        if self.debug and line_parameters:
-            for line_params in line_parameters:
-                slope = line_params['slope']
-                intercept = line_params['intercept']
-                x1, x2 = line_params['x_range']
+        # Draw debug kernels if enabled
+        if self.debug and kernel_states:
+            for state in kernel_states:
+                x = state['x']
+                y = state['y']
+                x1, y1, x2, y2 = state['bbox']
                 
-                # Calculate y values at x boundaries
-                y1 = int(slope * x1 + intercept)
-                y2 = int(slope * x2 + intercept)
+                # Ensure coordinates are within image bounds
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(vis.shape[1], x2)
+                y2 = min(vis.shape[0], y2)
                 
-                # Draw the detected line in green
-                cv2.line(overlay, (int(x1), y1), (int(x2), y2), (0, 255, 0), 2)
+                # Draw kernel box (red if no line, green if line found)
+                color = (0, 255, 0) if state['has_line'] else (0, 0, 255)
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 1)
+                
+                # Draw centroid as red dot
+                cv2.circle(overlay, (x, y), 2, (0, 0, 255), -1)
             
-            # In debug mode, only show the lines
+            # In debug mode, blend lightly to see kernels clearly
             result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
             return result
         
         # Draw defects (only when not in debug mode)
         for defect in defects:
             if defect['type'] == 'missing_line':
-                # Simple horizontal rectangles for now
                 x1 = defect['start_x']
                 x2 = defect['end_x']
+                y = defect['y']
                 
-                # Get Y position from the stored slope and intercept
-                if 'slope' in defect and 'intercept' in defect:
-                    slope = defect['slope']
-                    intercept = defect['intercept']
-                    # Calculate Y at the center of the gap
-                    center_x = (x1 + x2) // 2
-                    center_y = int(slope * center_x + intercept)
-                else:
-                    center_y = defect['location'][1]
-                
-                # Draw simple rectangle centered on the line
-                cv2.rectangle(overlay, (x1, center_y - 15), (x2, center_y + 15), (0, 0, 255), -1)
-                
-            elif defect['type'] == 'jagged_line':
-                # Draw yellow region for jagged/zig-zag sections
-                x1 = max(0, defect['start_x'])
-                x2 = min(overlay.shape[1]-1, defect['end_x'])
-                y1 = max(0, defect['y_from'] - 5)
-                y2 = min(overlay.shape[0]-1, defect['y_to'] + 5)
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), -1)
+                # Draw rectangle for missing line
+                cv2.rectangle(overlay, (x1, y - 15), (x2, y + 15), (0, 0, 255), -1)
         
         # Blend with original
         result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
