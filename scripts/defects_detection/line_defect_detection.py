@@ -43,12 +43,12 @@ class LineDefectDetector:
             self.max_y_drift = 8  # Maximum Y drift per step
             self.stability_weight = 0.7  # Weight for previous position (higher = more stable)
         elif sensitivity == 'low':
-            self.kernel_size = 50
-            self.search_range = 10
+            self.kernel_size = 40
+            self.search_range = 10  
             self.min_gap_size = 30
-            self.step_size = 20
+            self.step_size = 25
             self.line_threshold = 0.25  # Only 5% pixels needed (lenient)
-            self.strong_line_threshold = 0.35  # Require 35% pixels to change Y position
+            self.strong_line_threshold = 0.25  # Require 35% pixels to change Y position
             self.max_y_drift = 12  # Maximum Y drift per step
             self.stability_weight = 0.6  # Weight for previous position
         else:  # medium
