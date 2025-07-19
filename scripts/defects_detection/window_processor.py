@@ -54,9 +54,15 @@ class WindowProcessor:
             del img_info  # Free memory
         
         # Determine if image needs windowed processing
-        if height * width < 10_000_000:  # < 10 megapixels
+        total_pixels = height * width
+        print(f"Image dimensions: {width}x{height} = {total_pixels:,} pixels ({total_pixels/1_000_000:.1f} megapixels)")
+        
+        if total_pixels < 10_000_000:  # < 10 megapixels
             # Small enough to process directly
-            return self._process_full_image(image_path, detectors)
+            print(f"Using direct processing (< 10 megapixels)")
+            return self._process_full_image(image_path, detectors, output_dir)
+        else:
+            print(f"Using windowed processing (>= 10 megapixels)")
         
         # Calculate windows
         windows = self._calculate_windows(height, width)
@@ -104,9 +110,11 @@ class WindowProcessor:
                         print(f"Error processing window {window}: {e}")
         
         # Create combined visualizations
+        print(f"Creating final visualizations...")
         final_results = self._create_final_visualizations(
             image_path, all_results, height, width, output_dir
         )
+        print(f"Final visualizations completed.")
         
         return final_results
     
@@ -171,25 +179,35 @@ class WindowProcessor:
         # Read only the window region
         x, y, w, h = window['x'], window['y'], window['width'], window['height']
         
-        # For TIFF files, use memory-mapped reading
+        # For TIFF files, use memory-mapped reading to load ONLY the window region
         if image_path.lower().endswith(('.tif', '.tiff')):
             try:
                 import tifffile
                 with tifffile.TiffFile(image_path) as tif:
-                    # Read just the window region
-                    window_img = tif.asarray()[y:y+h, x:x+w]
+                    # Read ONLY the window region - this is the key optimization!
+                    window_img = tif.pages[0].asarray()[y:y+h, x:x+w]
+                    # Convert to BGR if grayscale
                     if len(window_img.shape) == 2:
                         window_img = cv2.cvtColor(window_img, cv2.COLOR_GRAY2BGR)
-            except:
-                # Fallback
+                    elif len(window_img.shape) == 3 and window_img.shape[2] == 1:
+                        window_img = cv2.cvtColor(window_img.squeeze(), cv2.COLOR_GRAY2BGR)
+            except Exception as e:
+                print(f"        Error reading TIFF window: {e}")
+                # Fallback to OpenCV (slower but more compatible)
                 img = cv2.imread(image_path)
+                if img is not None:
+                    window_img = img[y:y+h, x:x+w]
+                    del img
+                else:
+                    return None
+        else:
+            # For other formats, still need to load full image (OpenCV limitation)
+            img = cv2.imread(image_path)
+            if img is not None:
                 window_img = img[y:y+h, x:x+w]
                 del img
-        else:
-            # For other formats
-            img = cv2.imread(image_path)
-            window_img = img[y:y+h, x:x+w]
-            del img
+            else:
+                return None
         
         # Run all detectors on this window
         results = {}
@@ -250,41 +268,54 @@ class WindowProcessor:
                         'image': result['visualization']
                     })
     
-    def _process_full_image(self, image_path, detectors):
+    def _process_full_image(self, image_path, detectors, output_dir):
         """Process image without windowing (for smaller images)"""
         image = cv2.imread(image_path)
         if image is None:
             return None
             
+        print(f"Processing full image directly...")
         results = {}
+        
         for name, detector in detectors.items():
+            print(f"  Running {name} detection...")
             try:
                 # Call detection method - all detectors should return (visualization, defects)
                 result_img, defects = detector.detect(image)
                 
+                # Save visualization to disk
+                output_path = os.path.join(output_dir, f"{name}_defects.jpg")
+                cv2.imwrite(output_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                print(f"    Saved {name} visualization: {len(defects)} defects found")
+                
                 results[name] = {
-                    'visualization': result_img,
+                    'visualization_path': output_path,
                     'defects': defects,
                     'defect_count': len(defects)
                 }
                     
             except Exception as e:
-                print(f"Error in {name} detector: {e}")
+                print(f"    Error in {name} detector: {e}")
                 results[name] = {
-                    'visualization': image,
+                    'visualization_path': None,
                     'defects': [],
                     'defect_count': 0
                 }
         
+        print(f"✅ Full image processing completed")
         return results
     
     def _create_final_visualizations(self, image_path, all_results, height, width, output_dir):
         """Create final visualizations by combining window results"""
         final_results = {}
         
-        for name, result in all_results.items():
+        print(f"Processing {len(all_results)} detector results...")
+        
+        for i, (name, result) in enumerate(all_results.items(), 1):
+            print(f"  [{i}/{len(all_results)}] Creating visualization for {name}...")
             # Remove duplicate defects from overlapping regions
             defects = self._remove_duplicate_defects(result['defects'], name)
+            print(f"    Found {len(defects)} defects after deduplication")
             
             # Create visualization
             if result['visualizations']:
@@ -298,38 +329,49 @@ class WindowProcessor:
                     vis_width = width
                     scale_factor = 1.0
                 
-                # Load and scale the original image as background
+                # Load the actual image as background, but do it smartly
+                print(f"    Creating visualization with real image background ({vis_width}x{vis_height}, scale: {scale_factor:.3f})...")
                 try:
                     if image_path.lower().endswith(('.tif', '.tiff')):
                         import tifffile
                         with tifffile.TiffFile(image_path) as tif:
-                            # Read image with scaling if needed
                             if scale_factor < 1.0:
-                                # Read a subset for very large images
+                                # For large images, read with subsampling directly
                                 step_y = max(1, int(1 / scale_factor))
                                 step_x = max(1, int(1 / scale_factor))
+                                print(f"    Reading TIFF with subsampling (step: {step_y}x{step_x})...")
                                 image_data = tif.pages[0].asarray()[::step_y, ::step_x]
                             else:
+                                print(f"    Reading full TIFF...")
                                 image_data = tif.pages[0].asarray()
+                        
+                        # Convert to BGR if needed
+                        if len(image_data.shape) == 2:
+                            visualization = cv2.cvtColor(image_data, cv2.COLOR_GRAY2BGR)
+                        elif len(image_data.shape) == 3 and image_data.shape[2] == 1:
+                            visualization = cv2.cvtColor(image_data.squeeze(), cv2.COLOR_GRAY2BGR)
+                        else:
+                            visualization = image_data.copy()
+                            
+                        # Resize to exact target size if needed
+                        if visualization.shape[:2] != (vis_height, vis_width):
+                            visualization = cv2.resize(visualization, (vis_width, vis_height))
+                            
+                        print(f"    Successfully loaded TIFF background: {visualization.shape}")
+                        
                     else:
+                        # For regular images
+                        print(f"    Reading regular image...")
                         image_data = cv2.imread(image_path)
                         if scale_factor < 1.0:
-                            image_data = cv2.resize(image_data, (vis_width, vis_height))
-                    
-                    # Convert to BGR if needed
-                    if len(image_data.shape) == 2:
-                        visualization = cv2.cvtColor(image_data, cv2.COLOR_GRAY2BGR)
-                    else:
-                        visualization = image_data.copy()
-                        
-                    # Ensure correct size
-                    if visualization.shape[:2] != (vis_height, vis_width):
-                        visualization = cv2.resize(visualization, (vis_width, vis_height))
+                            visualization = cv2.resize(image_data, (vis_width, vis_height))
+                        else:
+                            visualization = image_data.copy()
+                        print(f"    Successfully loaded regular image background: {visualization.shape}")
                         
                 except Exception as e:
-                    print(f"Warning: Could not load image for visualization, using white background: {e}")
-                    # Fallback to white canvas
-                    visualization = np.ones((vis_height, vis_width, 3), dtype=np.uint8) * 255
+                    print(f"    Warning: Could not load image background ({e}), using gray background")
+                    visualization = np.ones((vis_height, vis_width, 3), dtype=np.uint8) * 128
                 
                 # Draw defects on visualization
                 for defect in defects:
@@ -340,6 +382,7 @@ class WindowProcessor:
                 # Save visualization
                 output_path = os.path.join(output_dir, f"{name}_defects.jpg")
                 cv2.imwrite(output_path, visualization, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                print(f"    Saved {name} visualization: {len(defects)} defects found")
                 
                 final_results[name] = {
                     'defects': defects,
@@ -353,7 +396,75 @@ class WindowProcessor:
                     'visualization_path': None
                 }
         
+        # Create a legend image explaining the color scheme
+        self._create_legend(output_dir, final_results)
+        
+        print(f"✅ All visualizations completed for {len(final_results)} detectors")
         return final_results
+    
+    def _create_legend(self, output_dir, results):
+        """Create a legend image explaining what each color means"""
+        try:
+            # Create legend canvas
+            legend_height = 400
+            legend_width = 600
+            legend = np.ones((legend_height, legend_width, 3), dtype=np.uint8) * 255
+            
+            # Color scheme (same as in drawing function)
+            colors = {
+                'overspray': (0, 0, 255),        # Bright Red
+                'surface_treatment': (0, 255, 0), # Bright Green  
+                'debris': (255, 255, 0),         # Bright Yellow
+                'edge_defect': (255, 0, 255),    # Bright Magenta
+                'banding': (0, 165, 255),        # Bright Orange
+                'streak': (255, 255, 255)        # White
+            }
+            
+            # Descriptions
+            descriptions = {
+                'overspray': 'Scattered ink dots outside printed areas',
+                'surface_treatment': 'Poor surface energy causing ink issues',
+                'debris': 'Foreign particles and contamination',
+                'edge_defect': 'Irregular edges and boundaries',
+                'banding': 'Periodic horizontal/vertical patterns',
+                'streak': 'Linear marks and streaks'
+            }
+            
+            # Title
+            cv2.putText(legend, "DEFECT DETECTION LEGEND", 
+                       (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+            
+            y_pos = 80
+            for detector_name, color in colors.items():
+                if detector_name in results and results[detector_name]['defect_count'] > 0:
+                    # Draw color sample
+                    cv2.circle(legend, (70, y_pos), 15, color, -1)
+                    cv2.circle(legend, (70, y_pos), 15, (0, 0, 0), 2)
+                    
+                    # Add label
+                    label = f"{detector_name.upper().replace('_', ' ')}"
+                    cv2.putText(legend, label, (100, y_pos - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+                    
+                    # Add description
+                    desc = descriptions.get(detector_name, '')
+                    cv2.putText(legend, desc, (100, y_pos + 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                    
+                    # Add count
+                    count_text = f"Found: {results[detector_name]['defect_count']} defects"
+                    cv2.putText(legend, count_text, (100, y_pos + 25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+                    
+                    y_pos += 50
+            
+            # Save legend
+            legend_path = os.path.join(output_dir, "defect_legend.jpg")
+            cv2.imwrite(legend_path, legend, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            print(f"    Created defect legend: {legend_path}")
+            
+        except Exception as e:
+            print(f"    Warning: Could not create legend: {e}")
     
     def _remove_duplicate_defects(self, defects, detector_name):
         """Remove duplicate defects from overlapping windows"""
@@ -406,43 +517,65 @@ class WindowProcessor:
         return unique_defects
     
     def _draw_defect_on_visualization(self, visualization, defect, detector_name, scale_factor):
-        """Draw a defect on the visualization canvas"""
-        # Scale coordinates
-        def scale_point(point):
-            return (int(point[0] * scale_factor), int(point[1] * scale_factor))
-        
-        # Color scheme for different detectors
-        colors = {
-            'overspray': (0, 0, 255),      # Red
-            'surface_treatment': (0, 255, 0), # Green
-            'debris': (255, 0, 0),          # Blue
-            'gray_spot': (0, 255, 255),     # Yellow
-            'edge_defect': (255, 0, 255),   # Magenta
-            'banding': (255, 128, 0),       # Orange
-            'streak': (0, 255, 255)         # Cyan
-        }
-        
-        color = colors.get(detector_name, (128, 128, 128))
-        
-        # Draw based on defect type
-        if 'location' in defect:
-            # Point defect
-            center = scale_point(defect['location'])
-            radius = max(2, int(defect.get('size', 5) * scale_factor))
-            cv2.circle(visualization, center, radius, color, -1)
+        """Draw a defect on the visualization canvas with clear, visible marks"""
+        try:
+            # Scale coordinates safely
+            def scale_point(point):
+                if isinstance(point, (list, tuple)) and len(point) >= 2:
+                    x = max(0, min(int(point[0] * scale_factor), visualization.shape[1] - 1))
+                    y = max(0, min(int(point[1] * scale_factor), visualization.shape[0] - 1))
+                    return (x, y)
+                return (0, 0)
             
-        elif 'start_point' in defect and 'end_point' in defect:
-            # Line defect
-            start = scale_point(defect['start_point'])
-            end = scale_point(defect['end_point'])
-            thickness = max(1, int(defect.get('width', 2) * scale_factor))
-            cv2.line(visualization, start, end, color, thickness)
+            # CLEAR color scheme - bright, distinct colors
+            colors = {
+                'overspray': (0, 0, 255),        # Bright Red
+                'surface_treatment': (0, 255, 0), # Bright Green  
+                'debris': (255, 255, 0),         # Bright Yellow (Cyan)
+                'edge_defect': (255, 0, 255),    # Bright Magenta
+                'banding': (0, 165, 255),        # Bright Orange
+                'streak': (255, 255, 255)        # White
+            }
             
-        elif 'position' in defect and detector_name == 'banding':
-            # Banding defect
-            if defect.get('type') == 'horizontal_banding':
-                y = int(defect['position'] * scale_factor)
-                cv2.line(visualization, (0, y), (visualization.shape[1], y), color, 2)
-            else:
-                x = int(defect['position'] * scale_factor)
-                cv2.line(visualization, (x, 0), (x, visualization.shape[0]), color, 2) 
+            color = colors.get(detector_name, (128, 128, 128))
+            
+            # Draw with MUCH MORE VISIBLE marks
+            if 'location' in defect:
+                # Point defect - draw larger circles with borders
+                center = scale_point(defect['location'])
+                radius = max(8, min(20, int(defect.get('size', 10) * scale_factor)))
+                
+                # Draw filled circle
+                cv2.circle(visualization, center, radius, color, -1)
+                # Draw black border for visibility
+                cv2.circle(visualization, center, radius, (0, 0, 0), 2)
+                
+                # Add text label
+                label = detector_name[0].upper()  # First letter
+                cv2.putText(visualization, label, 
+                           (center[0] - 5, center[1] + 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                
+            elif 'start_point' in defect and 'end_point' in defect:
+                # Line defect - draw thicker lines
+                start = scale_point(defect['start_point'])
+                end = scale_point(defect['end_point'])
+                thickness = max(3, min(8, int(defect.get('width', 4) * scale_factor)))
+                
+                # Draw line with black border
+                cv2.line(visualization, start, end, (0, 0, 0), thickness + 2)
+                cv2.line(visualization, start, end, color, thickness)
+                
+            elif 'position' in defect and detector_name == 'banding':
+                # Banding defect - draw thicker lines
+                if defect.get('type') == 'horizontal_banding':
+                    y = max(0, min(int(defect['position'] * scale_factor), visualization.shape[0] - 1))
+                    cv2.line(visualization, (0, y), (visualization.shape[1], y), (0, 0, 0), 4)
+                    cv2.line(visualization, (0, y), (visualization.shape[1], y), color, 2)
+                else:
+                    x = max(0, min(int(defect['position'] * scale_factor), visualization.shape[1] - 1))
+                    cv2.line(visualization, (x, 0), (x, visualization.shape[0]), (0, 0, 0), 4)
+                    cv2.line(visualization, (x, 0), (x, visualization.shape[0]), color, 2)
+                    
+        except Exception as e:
+            print(f"    Warning: Could not draw defect for {detector_name}: {e}") 

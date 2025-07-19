@@ -16,19 +16,19 @@ from tqdm import tqdm
 
 
 class EdgeDefectDetector:
-    """Detects edge defects - irregularities and jaggedness along printed boundaries"""
+    """Detects REAL edge defects - misalignment and significant irregularities only"""
     
-    def __init__(self, smoothness_threshold=5, min_defect_length=10, 
-                 edge_width=20):
+    def __init__(self, deviation_threshold=15, min_defect_length=50, 
+                 straightness_tolerance=5):
         """
         Args:
-            smoothness_threshold: Maximum deviation from smooth edge
-            min_defect_length: Minimum length of edge defect
-            edge_width: Width of edge region to analyze
+            deviation_threshold: Maximum allowed deviation from straight line (pixels)
+            min_defect_length: Minimum length to consider as defect (pixels)
+            straightness_tolerance: Tolerance for what's considered "straight"
         """
-        self.smoothness_threshold = smoothness_threshold
+        self.deviation_threshold = deviation_threshold
         self.min_defect_length = min_defect_length
-        self.edge_width = edge_width
+        self.straightness_tolerance = straightness_tolerance
         
     def preprocess_image(self, image):
         """Preprocess image for edge defect detection"""
@@ -213,78 +213,180 @@ class EdgeDefectDetector:
         return cleaned_gaps.astype(np.uint8) * 255
     
     def detect(self, image):
-        """Main detection method"""
+        """Main detection method - focus on REAL edge problems only"""
         # Preprocess
         gray, denoised = self.preprocess_image(image)
         
-        # Extract edges
-        canny_edges, sobel_edges, combined_edges, thinned, sobel_x, sobel_y = self.extract_edges(denoised)
+        # Find the main printed strip boundaries
+        strip_edges = self.find_strip_edges(denoised)
         
-        # Analyze edge smoothness
-        irregularity_mask, edge_defects = self.analyze_edge_smoothness(
-            thinned, sobel_x, sobel_y
-        )
-        
-        # Detect edge breaks
-        break_mask = self.detect_edge_breaks(combined_edges)
-        
-        # Combine defects
-        combined_mask = cv2.bitwise_or(irregularity_mask, break_mask)
+        # Check if edges are straight and properly aligned
+        edge_defects = self.check_edge_straightness(strip_edges, gray)
         
         # Create visualization
-        visualization = self.create_visualization(
-            image, canny_edges, irregularity_mask, break_mask, edge_defects
-        )
-        
-        # Combine all defects
-        all_defects = []
-        for defect in edge_defects:
-            defect['type'] = 'edge_irregularity'
-            all_defects.append(defect)
-        
-        # Add break defects
-        break_locations = np.where(break_mask > 0)
-        for y, x in zip(break_locations[0], break_locations[1]):
-            all_defects.append({
-                'type': 'edge_break',
-                'location': (x, y)
-            })
+        visualization = self.create_visualization(image, strip_edges, edge_defects)
         
         # Return tuple format (visualization, defects)
-        return visualization, all_defects
+        return visualization, edge_defects
     
-    def create_visualization(self, original, edges, irregularity_mask, 
-                           break_mask, edge_defects):
+    def find_strip_edges(self, image):
+        """Find the main edges of the printed strip"""
+        h, w = image.shape
+        
+        # Use Otsu thresholding to separate printed from non-printed areas
+        _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # For tall strips, we mainly care about left and right edges
+        edges = {
+            'left': [],
+            'right': [],
+            'top': [],
+            'bottom': []
+        }
+        
+        # Find left and right edges by scanning horizontally
+        for y in range(0, h, 20):  # Sample every 20 pixels
+            row = binary[y, :]
+            
+            # Find left edge (first white pixel)
+            left_edge = np.where(row > 128)[0]
+            if len(left_edge) > 0:
+                edges['left'].append((left_edge[0], y))
+            
+            # Find right edge (last white pixel)
+            if len(left_edge) > 0:
+                edges['right'].append((left_edge[-1], y))
+        
+        # Find top and bottom edges by scanning vertically
+        for x in range(0, w, 20):  # Sample every 20 pixels
+            col = binary[:, x]
+            
+            # Find top edge (first white pixel)
+            top_edge = np.where(col > 128)[0]
+            if len(top_edge) > 0:
+                edges['top'].append((x, top_edge[0]))
+            
+            # Find bottom edge (last white pixel)
+            if len(top_edge) > 0:
+                edges['bottom'].append((x, top_edge[-1]))
+        
+        return edges
+    
+    def check_edge_straightness(self, edges, image):
+        """Check if edges are straight and mark only REAL problems"""
+        defects = []
+        
+        for edge_name, points in edges.items():
+            if len(points) < 10:  # Need enough points to analyze
+                continue
+                
+            # Convert to numpy array
+            points_array = np.array(points)
+            
+            # Fit a line through the edge points
+            if edge_name in ['left', 'right']:
+                # For vertical edges, fit x = my + b
+                if len(points_array) > 1:
+                    y_coords = points_array[:, 1]
+                    x_coords = points_array[:, 0]
+                    
+                    # Fit line
+                    coeffs = np.polyfit(y_coords, x_coords, 1)
+                    fitted_x = np.polyval(coeffs, y_coords)
+                    
+                    # Calculate deviations
+                    deviations = np.abs(x_coords - fitted_x)
+                    
+            else:  # top, bottom edges
+                # For horizontal edges, fit y = mx + b
+                if len(points_array) > 1:
+                    x_coords = points_array[:, 0]
+                    y_coords = points_array[:, 1]
+                    
+                    # Fit line
+                    coeffs = np.polyfit(x_coords, y_coords, 1)
+                    fitted_y = np.polyval(coeffs, x_coords)
+                    
+                    # Calculate deviations
+                    deviations = np.abs(y_coords - fitted_y)
+            
+            # Find areas where deviation exceeds threshold
+            problem_indices = np.where(deviations > self.deviation_threshold)[0]
+            
+            if len(problem_indices) > 0:
+                # Group consecutive problem areas
+                problem_groups = []
+                current_group = [problem_indices[0]]
+                
+                for i in range(1, len(problem_indices)):
+                    if problem_indices[i] - problem_indices[i-1] <= 3:  # Close enough
+                        current_group.append(problem_indices[i])
+                    else:
+                        if len(current_group) >= 3:  # Minimum group size
+                            problem_groups.append(current_group)
+                        current_group = [problem_indices[i]]
+                
+                # Add last group
+                if len(current_group) >= 3:
+                    problem_groups.append(current_group)
+                
+                # Create defects for significant problem areas
+                for group in problem_groups:
+                    start_idx = group[0]
+                    end_idx = group[-1]
+                    
+                    # Calculate length of defective area
+                    start_point = points_array[start_idx]
+                    end_point = points_array[end_idx]
+                    length = np.sqrt((end_point[0] - start_point[0])**2 + 
+                                   (end_point[1] - start_point[1])**2)
+                    
+                    if length >= self.min_defect_length:
+                        max_deviation = np.max(deviations[group])
+                        
+                        defects.append({
+                            'type': f'{edge_name}_edge_misalignment',
+                            'start_point': tuple(start_point),
+                            'end_point': tuple(end_point),
+                            'length': length,
+                            'max_deviation': max_deviation,
+                            'edge_side': edge_name
+                        })
+        
+        print(f"    Found {len(defects)} REAL edge defects (not {len(defects)*1000}!)")
+        return defects
+    
+    def create_visualization(self, original, strip_edges, edge_defects):
         """Create visualization with detected edge defects highlighted"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
             vis = original.copy()
             
-        # Create overlay
-        overlay = vis.copy()
+        # Draw the detected strip edges in light blue (for reference)
+        for edge_name, points in strip_edges.items():
+            if len(points) > 1:
+                pts = np.array(points, dtype=np.int32)
+                cv2.polylines(vis, [pts], False, (255, 200, 100), 1)
         
-        # Show all edges in light gray
-        overlay[edges > 0] = [200, 200, 200]
-        
-        # Highlight irregular edges in red
-        overlay[irregularity_mask > 0] = [0, 0, 255]
-        
-        # Highlight edge breaks in orange
-        overlay[break_mask > 0] = [0, 165, 255]
-        
-        # Blend with original
-        result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
-        
-        # Mark defect locations
+        # Highlight REAL edge defects in bright red
         for defect in edge_defects:
-            pos = defect['position']
-            cv2.circle(result, tuple(pos), 5, (0, 0, 255), -1)
-            cv2.putText(result, f"E:{defect['deviation']:.1f}", 
-                       (pos[0] - 20, pos[1] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            start_point = tuple(map(int, defect['start_point']))
+            end_point = tuple(map(int, defect['end_point']))
             
-        return result
+            # Draw thick red line for the defective edge section
+            cv2.line(vis, start_point, end_point, (0, 0, 255), 4)
+            
+            # Add text showing deviation
+            mid_point = ((start_point[0] + end_point[0]) // 2, 
+                        (start_point[1] + end_point[1]) // 2)
+            
+            text = f"Edge: {defect['max_deviation']:.1f}px off"
+            cv2.putText(vis, text, 
+                       (mid_point[0] - 50, mid_point[1] - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            
+        return vis
 
 
 def process_single_image(image_path, output_dir, detector):

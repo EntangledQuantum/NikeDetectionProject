@@ -16,16 +16,18 @@ from tqdm import tqdm
 
 
 class OversprayDetector:
-    """Detects overspray defects - scattered ink dots outside intended areas"""
+    """Detects overspray defects - scattered ink regions outside intended areas"""
     
-    def __init__(self, dot_size_range=(3, 15), proximity_threshold=50):
+    def __init__(self, region_size_range=(50, 500), proximity_threshold=50, kernel_size=15):
         """
         Args:
-            dot_size_range: Tuple of (min, max) area for scattered dots
+            region_size_range: Tuple of (min, max) area for overspray regions
             proximity_threshold: Max distance from main printed area to consider as overspray
+            kernel_size: Size of morphological kernel for region analysis
         """
-        self.dot_size_range = dot_size_range
+        self.region_size_range = region_size_range
         self.proximity_threshold = proximity_threshold
+        self.kernel_size = kernel_size
         
     def preprocess_image(self, image):
         """Preprocess image for overspray detection"""
@@ -61,8 +63,8 @@ class OversprayDetector:
         
         return main_regions
     
-    def detect_scattered_dots(self, image, main_regions):
-        """Detect small scattered dots that could be overspray"""
+    def detect_scattered_regions(self, image, main_regions):
+        """Detect scattered ink regions that could be overspray"""
         # Threshold to get all printed areas
         _, all_printed = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
@@ -73,20 +75,26 @@ class OversprayDetector:
         # Subtract main regions to get potential overspray
         potential_overspray = cv2.subtract(all_printed, main_regions)
         
-        # Remove noise
-        kernel = np.ones((3, 3), np.uint8)
-        cleaned = cv2.morphologyEx(potential_overspray, cv2.MORPH_OPEN, kernel)
+        # Use morphological operations to group nearby scattered dots into regions
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.kernel_size, self.kernel_size))
+        
+        # Close small gaps to group scattered dots
+        closed = cv2.morphologyEx(potential_overspray, cv2.MORPH_CLOSE, kernel, iterations=2)
+        
+        # Open to remove very small noise
+        opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, 
+                                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
         
         # Label connected components
-        labeled = measure.label(cleaned, connectivity=2)
+        labeled = measure.label(opened, connectivity=2)
         props = measure.regionprops(labeled)
         
-        overspray_mask = np.zeros_like(cleaned)
-        overspray_dots = []
+        overspray_mask = np.zeros_like(opened)
+        overspray_regions = []
         
         for prop in props:
-            # Check if component size is within dot range
-            if self.dot_size_range[0] <= prop.area <= self.dot_size_range[1]:
+            # Check if component size is within region range
+            if self.region_size_range[0] <= prop.area <= self.region_size_range[1]:
                 # Check proximity to main regions
                 y, x = prop.centroid
                 
@@ -97,19 +105,31 @@ class OversprayDetector:
                     5
                 )
                 
-                # Check if dot is within proximity threshold
+                # Check if region is within proximity threshold
                 if dist_transform[int(y), int(x)] <= self.proximity_threshold:
-                    overspray_dots.append({
+                    # Expand the region slightly for better visibility
+                    expanded_coords = []
+                    for coord in prop.coords:
+                        y_coord, x_coord = coord
+                        # Add surrounding pixels
+                        for dy in range(-3, 4):
+                            for dx in range(-3, 4):
+                                new_y = max(0, min(image.shape[0]-1, y_coord + dy))
+                                new_x = max(0, min(image.shape[1]-1, x_coord + dx))
+                                expanded_coords.append([new_y, new_x])
+                    
+                    overspray_regions.append({
                         'centroid': (int(x), int(y)),
                         'area': prop.area,
-                        'bbox': prop.bbox
+                        'bbox': prop.bbox,
+                        'expanded_area': len(expanded_coords)
                     })
                     
-                    # Add to mask
-                    coords = prop.coords
-                    overspray_mask[coords[:, 0], coords[:, 1]] = 255
+                    # Add expanded region to mask
+                    for coord in expanded_coords:
+                        overspray_mask[coord[0], coord[1]] = 255
                     
-        return overspray_mask, overspray_dots
+        return overspray_mask, overspray_regions
     
     def detect(self, image):
         """Main detection method"""
@@ -119,17 +139,17 @@ class OversprayDetector:
         # Find main printed regions
         main_regions = self.find_main_printed_regions(denoised)
         
-        # Detect scattered dots
-        overspray_mask, overspray_dots = self.detect_scattered_dots(denoised, main_regions)
+        # Detect scattered regions
+        overspray_mask, overspray_regions = self.detect_scattered_regions(denoised, main_regions)
         
         # Create visualization
-        visualization = self.create_visualization(image, overspray_mask, overspray_dots)
+        visualization = self.create_visualization(image, overspray_mask, overspray_regions)
         
         # Return tuple format (visualization, defects)
-        return visualization, overspray_dots
+        return visualization, overspray_regions
     
-    def create_visualization(self, original, mask, dots):
-        """Create visualization with detected overspray highlighted"""
+    def create_visualization(self, original, mask, regions):
+        """Create visualization with detected overspray regions highlighted"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
@@ -138,18 +158,25 @@ class OversprayDetector:
         # Create overlay
         overlay = vis.copy()
         
-        # Highlight overspray areas in red
+        # Highlight overspray regions in red
         overlay[mask > 0] = [0, 0, 255]
         
         # Blend with original
         result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
         
-        # Draw circles around detected dots
-        for dot in dots:
-            cv2.circle(result, dot['centroid'], 10, (0, 255, 0), 2)
-            cv2.putText(result, 'O', 
-                       (dot['centroid'][0] - 5, dot['centroid'][1] + 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        # Draw larger markers for detected regions
+        for region in regions:
+            # Draw a larger circle to mark the region center
+            cv2.circle(result, region['centroid'], 20, (0, 255, 0), 3)
+            
+            # Draw bounding box
+            minr, minc, maxr, maxc = region['bbox']
+            cv2.rectangle(result, (minc, minr), (maxc, maxr), (0, 255, 0), 2)
+            
+            # Add label
+            cv2.putText(result, f'O-{region["area"]}px', 
+                       (region['centroid'][0] - 20, region['centroid'][1] - 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
         return result
 

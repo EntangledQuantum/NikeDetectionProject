@@ -51,7 +51,7 @@ class DefectDetectionPipeline:
                 'overspray': OversprayDetector(dot_size_range=(5, 20), proximity_threshold=30),
                 'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=70, void_size_threshold=30),
                 'debris': DebrisDetector(halo_threshold=40, particle_size_range=(20, 800)),
-                'edge_defect': EdgeDefectDetector(smoothness_threshold=7, min_defect_length=15),
+                'edge_defect': EdgeDefectDetector(deviation_threshold=20, min_defect_length=100),
                 'banding': BandingDetector(min_band_strength=0.2, band_width_range=(8, 60)),
                 'streak': StreakDetector(min_streak_length=70, contrast_threshold=30)
             }
@@ -61,7 +61,7 @@ class DefectDetectionPipeline:
                 'overspray': OversprayDetector(dot_size_range=(2, 25), proximity_threshold=70),
                 'surface_treatment': SurfaceTreatmentDetector(contrast_threshold=30, void_size_threshold=10),
                 'debris': DebrisDetector(halo_threshold=20, particle_size_range=(5, 1000)),
-                'edge_defect': EdgeDefectDetector(smoothness_threshold=3, min_defect_length=5),
+                'edge_defect': EdgeDefectDetector(deviation_threshold=10, min_defect_length=50),
                 'banding': BandingDetector(min_band_strength=0.1, band_width_range=(3, 40)),
                 'streak': StreakDetector(min_streak_length=30, contrast_threshold=15)
             }
@@ -70,7 +70,7 @@ class DefectDetectionPipeline:
                 'overspray': OversprayDetector(),
                 'surface_treatment': SurfaceTreatmentDetector(),
                 'debris': DebrisDetector(),
-                'edge_defect': EdgeDefectDetector(),
+                'edge_defect': EdgeDefectDetector(deviation_threshold=15, min_defect_length=75),
                 'banding': BandingDetector(),
                 'streak': StreakDetector()
             }
@@ -102,7 +102,8 @@ class DefectDetectionPipeline:
         # Generate summary report
         self.generate_summary_report(output_dir)
         
-        print(f"\nProcessing complete! Results saved to: {output_dir}")
+        print(f"\n✅ Processing complete! Results saved to: {output_dir}")
+        print(f"📊 Processed {len(self.results_summary)} images total")
         
     def process_single_image(self, image_path, output_dir):
         """Process a single image through all detectors"""
@@ -175,6 +176,7 @@ class DefectDetectionPipeline:
                 print(f"    Could not save even simplified results: {e2}")
         
         self.results_summary.append(image_results)
+        print(f"  ✅ Completed processing {base_name}")
     
     def _json_serializer(self, obj):
         """Custom JSON serializer for numpy arrays and other objects"""
