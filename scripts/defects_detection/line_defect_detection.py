@@ -94,6 +94,11 @@ class LineDefectDetector:
         max_consecutive_missing = 30  # Hardcoded limit
         ever_found_line = False  # Track if we ever found a line
         
+        # Track line trajectory for missing segments
+        y_positions = []  # Store Y positions for trajectory calculation
+        trajectory_slope = 0  # Average Y change per step
+        frozen_slope = 0  # Frozen slope to use during missing segments (30% of average)
+        
         while x < width - self.kernel_size // 2:
             # Extract kernel region
             y1 = max(0, y - self.kernel_size // 2)
@@ -126,8 +131,19 @@ class LineDefectDetector:
                         y = new_y
                         previous_y = y
                         
+                        # Store Y position for trajectory calculation
+                        y_positions.append(y)
+                        
+                        # Always calculate trajectory slope when line is detected
+                        if len(y_positions) >= 2:
+                            # Calculate average Y change over all positions
+                            y_changes = [y_positions[i+1] - y_positions[i] for i in range(len(y_positions)-1)]
+                            trajectory_slope = np.mean(y_changes)
+                            # Update frozen slope to 30% of current average
+                            frozen_slope = trajectory_slope * 0.6
+                        
                         if self.debug:
-                            print(f"Centering kernel at X={x}: Y={y} (line centroid)")
+                            print(f"Line detected at X={x}: Y={y}, avg_slope={trajectory_slope:.2f}, frozen_slope={frozen_slope:.2f}")
                     else:
                         # Weak signal - apply stability logic
                         strong_pixels = white_pixels / total_pixels
@@ -149,6 +165,13 @@ class LineDefectDetector:
                                 print(f"Weak line signal ({strong_pixels:.2%}) - maintaining Y position at X={x}")
                         
                         previous_y = y  # Update last known good position
+                        y_positions.append(y)  # Store for trajectory
+                        
+                        # Update trajectory calculations for weak signals too
+                        if len(y_positions) >= 2:
+                            y_changes = [y_positions[i+1] - y_positions[i] for i in range(len(y_positions)-1)]
+                            trajectory_slope = np.mean(y_changes)
+                            frozen_slope = trajectory_slope * 0.3
                     
                     # Check for overlap with previous scans for EVERY kernel placement
                     if previous_scan_means:
@@ -210,12 +233,19 @@ class LineDefectDetector:
                     # Increment consecutive missing counter
                     consecutive_missing += 1
                     
-                    # Check if we've exceeded the limit AND never found a line
-                    if consecutive_missing >= max_consecutive_missing and not ever_found_line:
-                        # This was a false detection - no line exists here
+                    # Apply 30% of trajectory slope - do NOT update the average
+                    if frozen_slope != 0:
+                        predicted_y = previous_y + int(frozen_slope)
+                        # Clamp to image bounds
+                        predicted_y = max(self.kernel_size // 2, min(height - self.kernel_size // 2, predicted_y))
+                        y = predicted_y
+                        previous_y = y
+                        
                         if self.debug:
-                            print(f"False line detection at Y={start_y} - no line found in first {consecutive_missing} kernels")
-                        return [], []  # Return empty results
+                            print(f"Applying frozen slope at X={x}: Y={y} (30% slope={frozen_slope:.2f})")
+                    else:
+                        # No trajectory yet - stay at previous position
+                        y = previous_y
                     
                     # Only record states and gaps if we've found a line before
                     if ever_found_line:
