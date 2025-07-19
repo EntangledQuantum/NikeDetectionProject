@@ -30,7 +30,7 @@ class LineDefectDetector:
         self.min_gap_size = min_gap_size
         self.debug = debug
         self.step_size = kernel_size  # Horizontal step to avoid overlap
-        
+        print("Sensitivity: ", sensitivity)
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
             self.kernel_size = 15
@@ -39,11 +39,11 @@ class LineDefectDetector:
             self.step_size = 15
             self.line_threshold = 0.25  # Require 25% pixels for a valid line (aggressive)
         elif sensitivity == 'low':
-            self.kernel_size = 60
+            self.kernel_size = 35
             self.search_range = 10
             self.min_gap_size = 30
-            self.step_size = 60
-            self.line_threshold = 0.20  # Only 5% pixels needed (lenient)
+            self.step_size = 20
+            self.line_threshold = 0.25  # Only 5% pixels needed (lenient)
         else:  # medium
             self.line_threshold = 0.10  # 10% pixels needed (balanced)
     
@@ -89,7 +89,7 @@ class LineDefectDetector:
                         if self.debug:
                             print(f"Found line at Y={line_center_y}, bottom at Y={line_bottom_y}")
                 
-                x += self.kernel_size  # Move by kernel size to check next position
+                x += self.step_size  # Move by step size to check next position
             
             if found_line:
                 # Next scan should start below this line
@@ -229,8 +229,8 @@ class LineDefectDetector:
                         'bbox': (x1, y - self.kernel_size // 2, x2, y + self.kernel_size // 2)
                     })
             
-            # Move to next position horizontally by kernel size to avoid overlap
-            x += self.kernel_size
+            # Move to next position horizontally by step size to avoid overlap
+            x += self.step_size
         
         return kernel_states, defects
     
