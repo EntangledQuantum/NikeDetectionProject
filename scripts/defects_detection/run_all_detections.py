@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Tuple, Optional, Any
 from enum import Enum
+from sklearn.cluster import DBSCAN
+from scipy.spatial.distance import cdist
 
 # Import detection modules
 from surface_treatment_detection import SurfaceTreatmentDetector
@@ -117,6 +119,291 @@ class ImagePreprocessor:
         denoised = cls.apply_noise_reduction(gray, 'median')
         enhanced = cls.enhance_contrast(denoised, clip_limit=3.0)
         return original, gray, denoised, enhanced
+
+
+class DefectClusterer:
+    """Clusters nearby defects of the same type using sophisticated algorithms"""
+    
+    def __init__(self, eps: float = 50.0, min_samples: int = 2, max_cluster_distance: float = 100.0):
+        """
+        Args:
+            eps: Maximum distance between two samples for clustering (DBSCAN parameter)
+            min_samples: Minimum number of samples in a neighborhood for a core point
+            max_cluster_distance: Maximum distance to consider defects as clusterable
+        """
+        self.eps = eps
+        self.min_samples = min_samples
+        self.max_cluster_distance = max_cluster_distance
+    
+    def cluster_defects_by_type(self, defects: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Cluster defects by type and proximity using DBSCAN clustering
+        
+        Args:
+            defects: List of defect dictionaries with 'type', 'location', etc.
+            
+        Returns:
+            Dictionary mapping defect types to lists of clustered defects
+        """
+        if not defects:
+            return {}
+        
+        # Group defects by type first
+        defects_by_type = {}
+        for defect in defects:
+            defect_type = defect.get('type', 'unknown')
+            if defect_type not in defects_by_type:
+                defects_by_type[defect_type] = []
+            defects_by_type[defect_type].append(defect)
+        
+        # Cluster each type separately
+        clustered_results = {}
+        for defect_type, type_defects in defects_by_type.items():
+            clustered_results[defect_type] = self._cluster_single_type(type_defects, defect_type)
+        
+        return clustered_results
+    
+    def _cluster_single_type(self, defects: List[Dict[str, Any]], defect_type: str) -> List[Dict[str, Any]]:
+        """Cluster defects of a single type"""
+        if len(defects) <= 1:
+            # If only one defect, create a single-defect cluster
+            if defects:
+                return [{
+                    'cluster_id': 0,
+                    'defect_type': defect_type,
+                    'defects': defects,
+                    'centroid': defects[0]['location'],
+                    'bounding_box': self._calculate_bounding_box([defects[0]]),
+                    'cluster_size': 1,
+                    'cluster_area': defects[0].get('area', 0)
+                }]
+            return []
+        
+        # Extract locations for clustering
+        locations = []
+        for defect in defects:
+            if 'location' in defect:
+                locations.append(defect['location'])
+            elif 'bbox' in defect and len(defect['bbox']) >= 4:
+                # Calculate centroid from bounding box
+                minr, minc, maxr, maxc = defect['bbox'][:4]
+                centroid = ((minr + maxr) // 2, (minc + maxc) // 2)
+                locations.append(centroid)
+            else:
+                # Skip defects without location info
+                continue
+        
+        if len(locations) < 2:
+            # Not enough valid locations for clustering
+            valid_defects = [d for d in defects if 'location' in d or 'bbox' in d]
+            if valid_defects:
+                return [{
+                    'cluster_id': 0,
+                    'defect_type': defect_type,
+                    'defects': valid_defects,
+                    'centroid': locations[0] if locations else (0, 0),
+                    'bounding_box': self._calculate_bounding_box(valid_defects),
+                    'cluster_size': len(valid_defects),
+                    'cluster_area': sum(d.get('area', 0) for d in valid_defects)
+                }]
+            return []
+        
+        # Apply DBSCAN clustering
+        locations_array = np.array(locations)
+        
+        # Use adaptive eps based on data distribution
+        adaptive_eps = min(self.eps, self._calculate_adaptive_eps(locations_array))
+        
+        clustering = DBSCAN(eps=adaptive_eps, min_samples=self.min_samples)
+        cluster_labels = clustering.fit_predict(locations_array)
+        
+        # Group defects by cluster
+        clusters = {}
+        for i, label in enumerate(cluster_labels):
+            if label == -1:  # Noise points get individual clusters
+                label = f"noise_{i}"
+            
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(defects[i])
+        
+        # Create cluster objects
+        result_clusters = []
+        for cluster_id, cluster_defects in clusters.items():
+            centroid = self._calculate_cluster_centroid(cluster_defects)
+            bounding_box = self._calculate_bounding_box(cluster_defects)
+            
+            result_clusters.append({
+                'cluster_id': cluster_id,
+                'defect_type': defect_type,
+                'defects': cluster_defects,
+                'centroid': centroid,
+                'bounding_box': bounding_box,
+                'cluster_size': len(cluster_defects),
+                'cluster_area': sum(d.get('area', 0) for d in cluster_defects)
+            })
+        
+        return result_clusters
+    
+    def _calculate_adaptive_eps(self, locations: np.ndarray) -> float:
+        """Calculate adaptive eps based on data distribution"""
+        if len(locations) < 2:
+            return self.eps
+        
+        # Calculate pairwise distances
+        distances = cdist(locations, locations)
+        
+        # Use k-nearest neighbor distance (k=4) as adaptive eps
+        k = min(4, len(locations) - 1)
+        knn_distances = []
+        for i in range(len(locations)):
+            row_distances = distances[i]
+            row_distances = np.sort(row_distances)[1:k+1]  # Exclude self (distance=0)
+            knn_distances.append(np.mean(row_distances))
+        
+        # Use 75th percentile of k-NN distances
+        adaptive_eps = np.percentile(knn_distances, 75)
+        return min(adaptive_eps, self.max_cluster_distance)
+    
+    def _calculate_cluster_centroid(self, cluster_defects: List[Dict[str, Any]]) -> Tuple[int, int]:
+        """Calculate the centroid of a cluster"""
+        x_coords = []
+        y_coords = []
+        
+        for defect in cluster_defects:
+            if 'location' in defect:
+                x, y = defect['location']
+                x_coords.append(x)
+                y_coords.append(y)
+            elif 'bbox' in defect and len(defect['bbox']) >= 4:
+                minr, minc, maxr, maxc = defect['bbox'][:4]
+                x_coords.append((minc + maxc) // 2)
+                y_coords.append((minr + maxr) // 2)
+        
+        if x_coords and y_coords:
+            return (int(np.mean(x_coords)), int(np.mean(y_coords)))
+        return (0, 0)
+    
+    def _calculate_bounding_box(self, cluster_defects: List[Dict[str, Any]]) -> Tuple[int, int, int, int]:
+        """Calculate the bounding box that encompasses all defects in cluster"""
+        min_x, min_y = float('inf'), float('inf')
+        max_x, max_y = float('-inf'), float('-inf')
+        
+        for defect in cluster_defects:
+            if 'bbox' in defect and len(defect['bbox']) >= 4:
+                minr, minc, maxr, maxc = defect['bbox'][:4]
+                min_x = min(min_x, minc)
+                min_y = min(min_y, minr)
+                max_x = max(max_x, maxc)
+                max_y = max(max_y, maxr)
+            elif 'location' in defect:
+                x, y = defect['location']
+                # Use a default size if no bbox available
+                size = defect.get('area', 100) ** 0.5 / 2  # Approximate radius
+                min_x = min(min_x, x - size)
+                min_y = min(min_y, y - size)
+                max_x = max(max_x, x + size)
+                max_y = max(max_y, y + size)
+        
+        # Handle case where no valid coordinates found
+        if min_x == float('inf'):
+            return (0, 0, 10, 10)
+        
+        return (int(min_y), int(min_x), int(max_y), int(max_x))
+    
+    def create_cluster_visualization(self, image: np.ndarray, 
+                                   clustered_defects: Dict[str, List[Dict[str, Any]]]) -> np.ndarray:
+        """
+        Create improved visualization with bright hollow circles for clustered defects
+        
+        Args:
+            image: Original image
+            clustered_defects: Dictionary of clustered defects by type
+            
+        Returns:
+            Visualization image with clustered defects highlighted
+        """
+        vis = image.copy()
+        
+        # Color scheme for different defect types
+        type_colors = {
+            'debris': (0, 255, 255),      # Yellow
+            'smudge': (255, 0, 255),      # Magenta
+            'void': (0, 0, 255),          # Red
+            'head_calibration': (255, 255, 0),  # Cyan
+            'surface_treatment': (0, 255, 0),    # Green
+            'unknown': (128, 128, 128)    # Gray
+        }
+        
+        cluster_id_counter = 0
+        
+        for defect_type, clusters in clustered_defects.items():
+            color = type_colors.get(defect_type, (255, 255, 255))  # White default
+            
+            for cluster in clusters:
+                cluster_id_counter += 1
+                centroid = cluster['centroid']
+                bounding_box = cluster['bounding_box']
+                cluster_size = cluster['cluster_size']
+                
+                # Calculate circle radius based on cluster size and bounding box
+                minr, minc, maxr, maxc = bounding_box
+                bbox_width = maxc - minc
+                bbox_height = maxr - minr
+                base_radius = max(bbox_width, bbox_height) // 2 + 10
+                
+                # Scale radius based on cluster size
+                size_multiplier = 1 + (cluster_size - 1) * 0.3  # Larger for more defects
+                radius = int(base_radius * size_multiplier)
+                radius = max(radius, 15)  # Minimum radius for visibility
+                radius = min(radius, 100)  # Maximum radius to avoid huge circles
+                
+                # Draw bright hollow circle
+                circle_thickness = max(3, radius // 10)  # Thickness scales with radius
+                cv2.circle(vis, centroid, radius, color, circle_thickness)
+                
+                # Draw inner circle for better visibility
+                inner_radius = max(5, radius // 3)
+                cv2.circle(vis, centroid, inner_radius, color, 2)
+                
+                # Add cluster information text
+                text = f"{defect_type[:4]}-{cluster_size}"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                text_thickness = 1
+                
+                # Get text size for background
+                (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, text_thickness)
+                
+                # Position text above the circle
+                text_x = centroid[0] - text_width // 2
+                text_y = centroid[1] - radius - 10
+                
+                # Ensure text stays within image bounds
+                text_x = max(0, min(text_x, vis.shape[1] - text_width))
+                text_y = max(text_height, min(text_y, vis.shape[0]))
+                
+                # Draw text background
+                cv2.rectangle(vis, 
+                            (text_x - 2, text_y - text_height - 2),
+                            (text_x + text_width + 2, text_y + 2),
+                            (0, 0, 0), -1)
+                
+                # Draw text
+                cv2.putText(vis, text, (text_x, text_y), font, font_scale, color, text_thickness)
+                
+                # Draw connecting lines between defects in the cluster if cluster has multiple defects
+                if cluster_size > 1:
+                    defects = cluster['defects']
+                    for i, defect in enumerate(defects):
+                        defect_location = defect.get('location')
+                        if defect_location:
+                            # Draw line from centroid to defect
+                            cv2.line(vis, centroid, defect_location, color, 1)
+                            # Mark individual defect with small circle
+                            cv2.circle(vis, defect_location, 3, color, -1)
+        
+        return vis
 
 
 class ImageTypeClassifier:
@@ -296,15 +583,14 @@ class StripeDetectionStrategy(DetectionStrategy):
     """Detection strategy for stripe images"""
     
     def get_required_detectors(self) -> List[str]:
-        return ['surface_treatment']  # , 'debris', 'smudge', 'void', 'head_calibration']
+        return ['debris', 'smudge', 'void', 'head_calibration']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
-            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            # 'debris': DetectorFactory.create_debris_detector(sensitivity),
-            # 'smudge': DetectorFactory.create_smudge_detector(sensitivity),
-            # 'void': DetectorFactory.create_void_detector(sensitivity),
-            # 'head_calibration': DetectorFactory.create_head_calibration_detector(sensitivity)
+            'debris': DetectorFactory.create_debris_detector(sensitivity),
+            'smudge': DetectorFactory.create_smudge_detector(sensitivity),
+            'void': DetectorFactory.create_void_detector(sensitivity),
+            'head_calibration': DetectorFactory.create_head_calibration_detector(sensitivity)
         }
 
 
@@ -324,12 +610,11 @@ class UnknownDetectionStrategy(DetectionStrategy):
     """Detection strategy for unknown image types"""
     
     def get_required_detectors(self) -> List[str]:
-        # Run all stripe detectors for unknown types
-        return ['surface_treatment', 'debris', 'smudge', 'void', 'head_calibration']
+        # Run all detectors except surface treatment for unknown types
+        return ['debris', 'smudge', 'void', 'head_calibration']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
-            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
             'debris': DetectorFactory.create_debris_detector(sensitivity),
             'smudge': DetectorFactory.create_smudge_detector(sensitivity),
             'void': DetectorFactory.create_void_detector(sensitivity),
@@ -358,6 +643,7 @@ class SingleImageProcessor:
     
     def __init__(self, config: ProcessingConfig):
         self.config = config
+        self.clusterer = DefectClusterer(eps=50.0, min_samples=2, max_cluster_distance=100.0)
     
     def process_image(self, image_path: str, output_dir: str) -> ImageResult:
         """Process a single image through appropriate detectors"""
@@ -401,34 +687,39 @@ class SingleImageProcessor:
     
     def _process_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
                       image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
-        """Process image using full image processing"""
+        """Process image using full image processing with clustering"""
         detections = {}
+        all_defects = []  # Collect all defects for clustering
         
+        # Load the image once for all detectors
+        original = TiffImageLoader.load_image(image_path)
+        if original is None:
+            raise ValueError(f"Could not read image: {image_path}")
+        
+        print(f"      Image loaded: {original.shape} pixels")
+        
+        # Run all detectors
         for detector_name, detector in detectors.items():
             print(f"    Running {detector_name} detection...")
             try:
-                # Load the image efficiently (handles TIFF files properly)
-                original = TiffImageLoader.load_image(image_path)
-                if original is None:
-                    raise ValueError(f"Could not read image: {image_path}")
-                
-                print(f"      Image loaded: {original.shape} pixels")
-                
                 # All detectors now accept BGR images and handle preprocessing internally
-                result_img, defects = detector.detect(original, image_path=image_path)
-                
-                # Save visualization
-                vis_path = os.path.join(output_dir, f"{detector_name}_visualization.jpg")
-                cv2.imwrite(vis_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                result_img, defects = detector.detect(original)
                 
                 print(f"      Found {len(defects)} defects")
+                
+                # Add detector name to each defect for clustering
+                for defect in defects:
+                    defect['detector'] = detector_name
+                
+                # Collect defects for clustering
+                all_defects.extend(defects)
                 
                 # Clean defects for JSON serialization
                 cleaned_defects = self._clean_defect_data(defects)
                 
                 detections[detector_name] = DetectionResult(
                     defect_count=len(defects),
-                    visualization_path=vis_path,
+                    visualization_path=None,  # Will be set after clustering
                     defects=cleaned_defects
                 )
                 
@@ -442,6 +733,53 @@ class SingleImageProcessor:
                     defects=[],
                     error=str(e)
                 )
+        
+        # Apply clustering to all defects
+        print(f"    Applying clustering to {len(all_defects)} total defects...")
+        clustered_defects = self.clusterer.cluster_defects_by_type(all_defects)
+        
+        # Count clustered defects
+        total_clusters = sum(len(clusters) for clusters in clustered_defects.values())
+        print(f"      Created {total_clusters} clusters from {len(all_defects)} defects")
+        
+        # Create clustered visualization
+        if clustered_defects:
+            clustered_vis = self.clusterer.create_cluster_visualization(original, clustered_defects)
+            clustered_vis_path = os.path.join(output_dir, "clustered_defects_visualization.jpg")
+            cv2.imwrite(clustered_vis_path, clustered_vis, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            print(f"      Saved clustered visualization: {clustered_vis_path}")
+        
+        # Create individual detector visualizations with clustering overlay
+        for detector_name, detection in detections.items():
+            if detection.error is None and detection.defect_count > 0:
+                # Get defects for this detector only
+                detector_defects = [d for d in all_defects if d.get('detector') == detector_name]
+                detector_clustered = self.clusterer.cluster_defects_by_type(detector_defects)
+                
+                # Create visualization for this detector
+                detector_vis = self.clusterer.create_cluster_visualization(original, detector_clustered)
+                
+                # Save detector-specific visualization
+                vis_path = os.path.join(output_dir, f"{detector_name}_clustered_visualization.jpg")
+                cv2.imwrite(vis_path, detector_vis, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                
+                # Update the detection result with the visualization path
+                detections[detector_name] = DetectionResult(
+                    defect_count=detection.defect_count,
+                    visualization_path=vis_path,
+                    defects=detection.defects,
+                    error=detection.error
+                )
+        
+        # Save clustering information
+        if clustered_defects:
+            cluster_info_path = os.path.join(output_dir, "cluster_information.json")
+            try:
+                with open(cluster_info_path, 'w') as f:
+                    json.dump(clustered_defects, f, indent=2, default=self._json_serializer)
+                print(f"      Saved cluster information: {cluster_info_path}")
+            except Exception as e:
+                print(f"      Warning: Could not save cluster information: {e}")
         
         return ImageResult(
             image_name=base_name,
@@ -474,6 +812,21 @@ class SingleImageProcessor:
                     cleaned_defect[key] = value
             cleaned_defects.append(cleaned_defect)
         return cleaned_defects
+    
+    def _json_serializer(self, obj):
+        """Custom JSON serializer for clustering data"""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, tuple):
+            return list(obj)
+        elif hasattr(obj, '__dict__'):
+            return obj.__dict__
+        else:
+            return str(obj)
 
 
 class ResultsSaver:
@@ -745,13 +1098,17 @@ def main():
     pipeline = DefectDetectionPipeline(config)
     
     print("=" * 60)
-    print("Defect Detection Pipeline v2.0")
+    print("Defect Detection Pipeline v2.0 with Clustering")
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
-    print(f"  - Stripe images: Surface Treatment, Debris, Smudge, Void, Head Calibration")
+    print(f"  - Stripe images: Debris, Smudge, Void, Head Calibration")
     print(f"  - Island images: (Currently no detectors)")
-    print(f"  - Unknown images: Surface Treatment, Debris, Smudge, Void, Head Calibration")
+    print(f"  - Unknown images: Debris, Smudge, Void, Head Calibration")
+    print(f"Features:")
+    print(f"  - DBSCAN clustering for nearby defects of same type")
+    print(f"  - Bright hollow circle visualization for clusters")
+    print(f"  - Adaptive clustering parameters based on defect distribution")
     print("=" * 60)
     
     pipeline.process_folder(args.input_folder)
