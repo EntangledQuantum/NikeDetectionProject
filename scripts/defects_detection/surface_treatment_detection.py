@@ -19,27 +19,27 @@ import os
 class SurfaceTreatmentDetector:
     """
     Detects surface treatment defects characterized by:
-    - Bands of light areas or pores throughout an entire print head
+    - Lighter bands, pores, or reduced color density across entire print head regions
     - Affects one of 4 vertically stacked print heads
-    - Must be uniform across the entire head region, not isolated spots
+    - Distinguishes from localized defects (which are smudges/debris)
     """
     
     def __init__(self, 
-                 uniformity_threshold: float = 0.7,
-                 porosity_threshold: float = 0.15,
-                 brightness_variation_threshold: float = 0.3,
-                 min_head_coverage: float = 0.4):
+                 density_threshold: float = 0.25,  # Threshold for color density difference
+                 band_detection_sensitivity: float = 0.2,  # Sensitivity for detecting bands
+                 head_comparison_threshold: float = 0.1,  # Threshold for comparing heads
+                 min_defect_area_ratio: float = 0.4):  # Minimum area ratio to consider head defective
         """
         Args:
-            uniformity_threshold: Threshold for uniformity across head (0-1)
-            porosity_threshold: Threshold for detecting porous regions (0-1)
-            brightness_variation_threshold: Threshold for brightness variations
-            min_head_coverage: Minimum coverage of defects to consider head defective
+            density_threshold: Threshold for detecting low density regions
+            band_detection_sensitivity: Sensitivity for band detection
+            head_comparison_threshold: Threshold for comparing heads against each other
+            min_defect_area_ratio: Minimum ratio of defective area in head
         """
-        self.uniformity_threshold = uniformity_threshold
-        self.porosity_threshold = porosity_threshold
-        self.brightness_variation_threshold = brightness_variation_threshold
-        self.min_head_coverage = min_head_coverage
+        self.density_threshold = density_threshold
+        self.band_detection_sensitivity = band_detection_sensitivity
+        self.head_comparison_threshold = head_comparison_threshold
+        self.min_defect_area_ratio = min_defect_area_ratio
     
     def detect(self, image: np.ndarray, image_path: str = "unknown") -> Tuple[np.ndarray, List[Dict[str, Any]]]:
         """
@@ -79,7 +79,8 @@ class SurfaceTreatmentDetector:
             if defect_info:
                 head_defects.append(defect_info)
                 print("❌ Result: Surface Treatment Error")
-                print(f"   Coverage: {defect_info['coverage']:.1%}")
+                print(f"   Average Density: {defect_info['average_density']:.3f}")
+                print(f"   Density Variation: {defect_info['density_std']:.3f}")
             else:
                 print("✅ Result: Normal Surface Treatment")
         
@@ -217,119 +218,150 @@ class SurfaceTreatmentDetector:
                                head_bbox: Tuple[int, int, int, int], 
                                head_index: int) -> Optional[Dict[str, Any]]:
         """
-        Analyze a single head for uniform surface treatment errors
-        
-        Args:
-            head_image: Image of the head region
-            head_bbox: Bounding box coordinates
-            head_index: Index of the head (0-3)
-            
-        Returns:
-            Defect info dictionary if defect found, None otherwise
+        SIMPLIFIED: Analyze head for surface treatment defects
+        Good heads = solid, uniform density
+        Bad heads = lighter, less dense, irregular
         """
-        # Convert to LAB color space for better lightness analysis
-        lab = cv2.cvtColor(head_image, cv2.COLOR_BGR2LAB)
-        lightness = lab[:, :, 0]
+        # Step 1: Get only the colored region (ignore white background)
+        colored_mask = self._get_simple_colored_mask(head_image)
+        colored_pixels = colored_mask > 0
         
-        # Step 1: Detect porous/light regions
-        porous_regions = self._detect_porous_regions(lightness)
+        if np.sum(colored_pixels) < 1000:  # Need sufficient colored area
+            print("   ⚠️  Insufficient colored region")
+            return None
         
-        # Step 2: Analyze uniformity across the head
-        h, w = head_image.shape[:2]
-        shape_2d = (h, w)  # Explicit 2-tuple
-        uniformity_score = self._calculate_uniformity_score(porous_regions, shape_2d)
+        # Step 2: Calculate simple density (darkness × saturation)
+        density_map = self._calculate_simple_density(head_image)
+        colored_density_values = density_map[colored_pixels]
         
-        # Step 3: Check if defects are distributed across the head (not just isolated spots)
-        coverage_score = self._calculate_coverage_score(porous_regions, shape_2d)
+        # Step 3: Calculate key metrics
+        avg_density = np.mean(colored_density_values)
+        density_std = np.std(colored_density_values)
+        low_density_ratio = np.sum(colored_density_values < 0.3) / len(colored_density_values)
         
-        # Step 4: Analyze brightness variations (bands of light areas)
-        brightness_bands = self._detect_brightness_bands(lightness)
-        band_score = np.sum(brightness_bands > 0) / brightness_bands.size
+        print(f"\n📊 Head {head_index + 1} Metrics:")
+        print(f"├── Average Density: {avg_density:.3f}")
+        print(f"├── Density Std: {density_std:.3f}")
+        print(f"└── Low Density Ratio: {low_density_ratio:.3f}")
         
-        # Decision logic: Surface treatment error if:
-        # 1. High coverage of porous regions across the head, OR
-        # 2. Significant brightness bands throughout the head
-        is_surface_treatment_error = (
-            coverage_score > self.min_head_coverage or 
-            band_score > self.brightness_variation_threshold
+        # Step 4: Simple decision logic
+        # Bad if: Low average density OR high variation OR too many low-density pixels
+        is_defective = (
+            avg_density < 0.35 or           # Overall too light
+            density_std > 0.15 or           # Too much variation (irregular)
+            low_density_ratio > 0.4         # Too many light pixels
         )
-        print("\nMetrics:")
-        print(f"├── Coverage Score: {coverage_score:.3f} (threshold: {self.min_head_coverage:.3f})")
-        print(f"├── Band Score: {band_score:.3f} (threshold: {self.brightness_variation_threshold:.3f})")
-        print(f"└── Uniformity Score: {uniformity_score:.3f}")
-        print(f"\nFinal Decision: {'❌ DEFECT' if is_surface_treatment_error else '✅ NORMAL'}")
+        
+        print(f"Decision: {'❌ DEFECT' if is_defective else '✅ NORMAL'}")
+        print(f"  Reasons: {'Low avg' if avg_density < 0.35 else ''} {'High var' if density_std > 0.15 else ''} {'Many light' if low_density_ratio > 0.4 else ''}")
 
-        if is_surface_treatment_error:
+        if is_defective:
             return {
                 'head_index': head_index,
                 'head_bbox': head_bbox,
-                'coverage': coverage_score,
-                'uniformity': uniformity_score,
-                'brightness_bands': band_score,
-                'severity': 'high' if coverage_score > 0.6 else 'medium',
-                'defect_mask': porous_regions | brightness_bands
+                'average_density': float(avg_density),
+                'density_std': float(density_std),
+                'low_density_ratio': float(low_density_ratio),
+                'severity': 'high' if avg_density < 0.25 else 'medium',
+                'defect_mask': colored_density_values < 0.3
             }
         
         return None
     
-    def _detect_porous_regions(self, lightness: np.ndarray) -> np.ndarray:
-        """Detect porous regions (areas with missing ink)"""
-        # Find regions that are significantly brighter than the mean
-        mean_lightness = np.mean(lightness)
-        std_lightness = np.std(lightness)
+    def _get_simple_colored_mask(self, head_image: np.ndarray) -> np.ndarray:
+        """Simple method to get colored (non-white) pixels"""
+        # Convert to HSV 
+        hsv = cv2.cvtColor(head_image, cv2.COLOR_BGR2HSV)
         
-        # Threshold for bright spots (pores)
-        pore_threshold = mean_lightness + 1.5 * std_lightness
+        # Simple threshold: any pixel with reasonable saturation
+        colored_mask = np.greater(hsv[:, :, 1], 30)  # Saturation > 30
         
-        # Create binary mask of porous regions
-        porous_mask = lightness > pore_threshold
-        
-        # Clean up small isolated spots (these might be debris, not surface treatment)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        porous_mask = cv2.morphologyEx(porous_mask.astype(np.uint8) * 255, 
-                                     cv2.MORPH_OPEN, kernel, iterations=1)
-        
-        # Connect nearby porous regions
-        kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        porous_mask = cv2.morphologyEx(porous_mask, cv2.MORPH_CLOSE, kernel_large, iterations=2)
-        
-        return np.greater(porous_mask.astype(np.uint8), 0)
+        return colored_mask.astype(np.uint8) * 255
     
-    def _detect_brightness_bands(self, lightness: np.ndarray) -> np.ndarray:
-        """Detect horizontal bands of varying brightness"""
-        h, w = lightness.shape
+    def _calculate_simple_density(self, head_image: np.ndarray) -> np.ndarray:
+        """Simple density calculation: darkness × saturation"""
+        # Convert to HSV
+        hsv = cv2.cvtColor(head_image, cv2.COLOR_BGR2HSV)
         
-        # Calculate horizontal intensity profiles
-        horizontal_profile = np.mean(lightness, axis=1)
+        # Darkness = 1 - (Value/255)
+        darkness = 1.0 - (hsv[:, :, 2].astype(np.float32) / 255.0)
         
-        # Smooth the profile
-        smoothed_profile = signal.savgol_filter(horizontal_profile, 
-                                              min(21, h//10*2+1), 3)
+        # Saturation normalized
+        saturation = hsv[:, :, 1].astype(np.float32) / 255.0
         
-        # Find significant deviations from the mean
-        mean_intensity = float(np.mean(smoothed_profile.astype(np.float64)))
-        std_intensity = float(np.std(smoothed_profile.astype(np.float64)))
+        # Simple density = darkness × saturation
+        density = darkness * saturation
         
-        # Create mask for bands with significant brightness variations
-        band_mask = np.zeros_like(lightness, dtype=bool)
+        return density
+    
+    def _detect_low_density_regions(self, density_map: np.ndarray) -> np.ndarray:
+        """Detect regions with significantly lower color density"""
+        # Calculate statistics
+        mean_density = np.mean(density_map)
+        std_density = np.std(density_map)
         
-        for y in range(h):
-            if abs(smoothed_profile[y] - mean_intensity) > std_intensity:
-                band_mask[y, :] = True
+        # Threshold for low density (surface treatment problems)
+        low_density_threshold = mean_density - (std_density * 1.5)
+        
+        # Create binary mask
+        low_density_mask = density_map < low_density_threshold
+        
+        # Clean up small isolated regions (these might be noise)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        cleaned_mask = cv2.morphologyEx(low_density_mask.astype(np.uint8) * 255, 
+                                       cv2.MORPH_OPEN, kernel, iterations=1)
+        
+        # Connect nearby low-density regions
+        kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        connected_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel_large, iterations=2)
+        
+        return np.greater(connected_mask, 0)
+    
+    def _detect_horizontal_bands(self, density_map: np.ndarray) -> np.ndarray:
+        """Detect horizontal bands of varying density (common in surface treatment defects)"""
+        h, w = density_map.shape
+        
+        # Calculate horizontal density profiles
+        horizontal_profile = np.mean(density_map, axis=1)
+        
+        # Smooth the profile to reduce noise
+        if h > 10:
+            window_length = min(21, h // 5 * 2 + 1)  # Ensure odd number
+            if window_length >= 3:
+                smoothed_profile = signal.savgol_filter(horizontal_profile, window_length, 2)
+            else:
+                smoothed_profile = horizontal_profile
+        else:
+            smoothed_profile = horizontal_profile
+        
+        # Find significant deviations from the median (more robust than mean)
+        median_density = float(np.median(smoothed_profile.astype(np.float64)))
+        mad = float(np.median(np.abs(smoothed_profile.astype(np.float64) - median_density)))
+        
+        # Create mask for bands with significant density variations
+        band_mask = np.zeros_like(density_map, dtype=bool)
+        
+        if mad > 0:
+            threshold = self.band_detection_sensitivity * mad
+            for y in range(h):
+                if abs(smoothed_profile[y] - median_density) > threshold:
+                    band_mask[y, :] = True
         
         # Clean up the band mask
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
-        band_mask = cv2.morphologyEx(band_mask.astype(np.uint8) * 255, 
-                                   cv2.MORPH_CLOSE, kernel, iterations=2)
+        if np.any(band_mask):
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 7))
+            band_mask_uint8 = cv2.morphologyEx(band_mask.astype(np.uint8) * 255, 
+                                              cv2.MORPH_CLOSE, kernel, iterations=2)
+            band_mask = np.greater(band_mask_uint8, 0)
         
-        return np.greater(band_mask.astype(np.uint8), 0)
+        return band_mask
     
-    def _calculate_uniformity_score(self, defect_mask: np.ndarray, shape: Tuple[int, int]) -> float:
-        """Calculate how uniformly defects are distributed across the head"""
-        h, w = shape
+    def _calculate_defect_distribution(self, defect_mask: np.ndarray) -> float:
+        """Calculate how widely distributed defects are across the head region"""
+        h, w = defect_mask.shape
         
-        # Divide head into grid and check defect presence in each cell
-        grid_size = 8
+        # Divide into a grid and check how many grid cells contain defects
+        grid_size = 6  # 6x6 grid for good coverage
         cell_h = h // grid_size
         cell_w = w // grid_size
         
@@ -340,7 +372,7 @@ class SurfaceTreatmentDetector:
             for j in range(grid_size):
                 y_start = i * cell_h
                 y_end = min((i + 1) * cell_h, h)
-                x_start = j * cell_w
+                x_start = j * cell_w  
                 x_end = min((j + 1) * cell_w, w)
                 
                 cell = defect_mask[y_start:y_end, x_start:x_end]
@@ -349,13 +381,125 @@ class SurfaceTreatmentDetector:
                     if np.any(cell):
                         cells_with_defects += 1
         
-        return cells_with_defects / total_cells if total_cells > 0 else 0
+        return cells_with_defects / total_cells if total_cells > 0 else 0.0
     
-    def _calculate_coverage_score(self, defect_mask: np.ndarray, shape: Tuple[int, int]) -> float:
-        """Calculate the percentage of head area covered by defects"""
-        total_pixels = shape[0] * shape[1]
-        defect_pixels = np.sum(defect_mask)
-        return defect_pixels / total_pixels
+    def _extract_colored_region_from_head(self, head_image: np.ndarray) -> Tuple[np.ndarray, Optional[Tuple[int, int, int, int]]]:
+        """Extract only the colored region from the head image to avoid analyzing white background"""
+        # Convert to HSV for better color segmentation
+        hsv = cv2.cvtColor(head_image, cv2.COLOR_BGR2HSV)
+        
+        # Create mask for non-white regions (printed areas)
+        # More conservative thresholds to focus on actual printed areas
+        lower_bound = np.array([0, 40, 0])      # Higher saturation threshold
+        upper_bound = np.array([180, 255, 220]) # Avoid very bright areas
+        
+        colored_mask = cv2.inRange(hsv, lower_bound, upper_bound)
+        
+        # Clean up the mask
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        colored_mask = cv2.morphologyEx(colored_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        colored_mask = cv2.morphologyEx(colored_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        
+        # Find the largest connected component
+        contours, _ = cv2.findContours(colored_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return np.zeros_like(colored_mask), None
+        
+        # Keep only significant contours
+        significant_contours = [c for c in contours if cv2.contourArea(c) > 500]
+        
+        if not significant_contours:
+            return np.zeros_like(colored_mask), None
+        
+        # Create final mask with all significant colored regions
+        final_mask = np.zeros_like(colored_mask)
+        for contour in significant_contours:
+            cv2.fillPoly(final_mask, [contour], (255,))
+        
+        # Get bounding box of colored region
+        x, y, w, h = cv2.boundingRect(np.vstack(significant_contours))
+        
+        return final_mask, (x, y, w, h)
+    
+    def _detect_horizontal_bands_conservative(self, density_map: np.ndarray, colored_mask: np.ndarray) -> np.ndarray:
+        """Conservative horizontal band detection focused on colored regions"""
+        h, w = density_map.shape
+        
+        # Calculate horizontal density profiles only for colored pixels
+        band_mask = np.zeros_like(density_map, dtype=bool)
+        
+        for y in range(h):
+            row_colored = colored_mask[y, :] > 0
+            if np.sum(row_colored) < w * 0.1:  # Skip rows with too few colored pixels
+                continue
+                
+            row_density = density_map[y, row_colored]
+            if len(row_density) == 0:
+                continue
+                
+            row_mean = np.mean(row_density)
+            
+            # Compare with neighboring rows
+            neighbor_densities = []
+            for dy in [-2, -1, 1, 2]:  # Check 2 rows above and below
+                ny = y + dy
+                if 0 <= ny < h:
+                    neighbor_colored = colored_mask[ny, :] > 0
+                    if np.sum(neighbor_colored) > 0:
+                        neighbor_density = density_map[ny, neighbor_colored]
+                        neighbor_densities.extend(neighbor_density)
+            
+            if len(neighbor_densities) > 0:
+                neighbor_mean = np.mean(neighbor_densities)
+                
+                # Only flag as band if significantly different from neighbors
+                if abs(row_mean - neighbor_mean) > 0.1:  # Conservative threshold
+                    band_mask[y, row_colored] = True
+        
+        return band_mask
+    
+    def _calculate_defect_distribution_in_colored_region(self, defect_mask: np.ndarray, colored_mask: np.ndarray) -> float:
+        """Calculate distribution of defects within the colored region only"""
+        # Get bounding box of colored region
+        colored_coords = np.where(colored_mask > 0)
+        if len(colored_coords[0]) == 0:
+            return 0.0
+            
+        min_y, max_y = np.min(colored_coords[0]), np.max(colored_coords[0])
+        min_x, max_x = np.min(colored_coords[1]), np.max(colored_coords[1])
+        
+        colored_height = max_y - min_y + 1
+        colored_width = max_x - min_x + 1
+        
+        # Divide colored region into grid
+        grid_size = 4  # Smaller grid for more focused analysis
+        cell_h = colored_height // grid_size
+        cell_w = colored_width // grid_size
+        
+        cells_with_defects = 0
+        total_cells = 0
+        
+        for i in range(grid_size):
+            for j in range(grid_size):
+                y_start = min_y + i * cell_h
+                y_end = min(min_y + (i + 1) * cell_h, max_y + 1)
+                x_start = min_x + j * cell_w
+                x_end = min(min_x + (j + 1) * cell_w, max_x + 1)
+                
+                # Check if this cell has colored pixels
+                cell_colored = colored_mask[y_start:y_end, x_start:x_end]
+                if np.sum(cell_colored) < cell_colored.size * 0.3:  # Skip cells with too few colored pixels
+                    continue
+                    
+                total_cells += 1
+                
+                # Check if this cell has defects
+                cell_defects = defect_mask[y_start:y_end, x_start:x_end]
+                if np.any(cell_defects):
+                    cells_with_defects += 1
+        
+        return cells_with_defects / total_cells if total_cells > 0 else 0.0
     
     def _create_defect_list(self, head_defects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Create detailed defect list"""
@@ -370,9 +514,9 @@ class SurfaceTreatmentDetector:
                 'head_index': head_defect['head_index'],
                 'location': (x + w//2, y + h//2),  # Center of head
                 'bbox': head_defect['head_bbox'],
-                'coverage': float(head_defect['coverage']),
-                'uniformity': float(head_defect['uniformity']),
-                'brightness_bands': float(head_defect['brightness_bands']),
+                'average_density': float(head_defect['average_density']),
+                'density_std': float(head_defect['density_std']),
+                'low_density_ratio': float(head_defect['low_density_ratio']),
                 'severity': head_defect['severity']
             })
         
@@ -410,7 +554,7 @@ class SurfaceTreatmentDetector:
             
             # Add defect information
             severity_color = (0, 0, 255) if head_defect['severity'] == 'high' else (0, 165, 255)
-            text = f"DEFECT: {head_defect['coverage']:.1%}"
+            text = f"DEFECT: {head_defect['average_density']:.2f}"
             cv2.putText(vis, text, (x + 5, y + h - 10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, severity_color, 2)
         

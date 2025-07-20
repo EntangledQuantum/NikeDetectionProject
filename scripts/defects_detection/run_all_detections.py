@@ -188,17 +188,17 @@ class DetectorFactory:
         """Create surface treatment detector with appropriate settings"""
         if sensitivity == 'low':
             return SurfaceTreatmentDetector(
-                uniformity_threshold=0.8,
-                porosity_threshold=0.2,
-                brightness_variation_threshold=0.4,
-                min_head_coverage=0.5
+                density_threshold=0.2,
+                band_detection_sensitivity=0.3,
+                head_comparison_threshold=0.15,
+                min_defect_area_ratio=0.4
             )
         elif sensitivity == 'high':
             return SurfaceTreatmentDetector(
-                uniformity_threshold=0.6,
-                porosity_threshold=0.1,
-                brightness_variation_threshold=0.2,
-                min_head_coverage=0.3
+                density_threshold=0.1,
+                band_detection_sensitivity=0.15,
+                head_comparison_threshold=0.05,
+                min_defect_area_ratio=0.2
             )
         else:  # medium
             return SurfaceTreatmentDetector()  # Use defaults
