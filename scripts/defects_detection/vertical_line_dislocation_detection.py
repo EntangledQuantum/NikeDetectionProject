@@ -15,20 +15,20 @@ import os
 class VerticalLineDislocationDetector:
     """Detects vertical line dislocations using kernel-based vertical tracking"""
     
-    def __init__(self, kernel_size=20, search_range=10,
-                 delta_x_threshold=15, sensitivity='medium', debug=False):
+    def __init__(self, kernel_size=20, delta_x_threshold=15, 
+                 vertical_line_strength=0.3, sensitivity='medium', debug=True):
         """
         Args:
             kernel_size: Size of the tracking kernel (square)
-            search_range: Horizontal search range when line is lost
-            delta_x_threshold: Maximum allowed deviation from mean X position
+            delta_x_threshold: Maximum allowed deviation from last X position
+            vertical_line_strength: Minimum strength required for vertical line detection
             sensitivity: Detection sensitivity level
-            debug: Whether to draw debug visualization
+            debug: Whether to draw debug visualization (always True for kernel boxes)
         """
         self.kernel_size = kernel_size
-        self.search_range = search_range
         self.delta_x_threshold = delta_x_threshold
-        self.debug = debug
+        self.vertical_line_strength = vertical_line_strength
+        self.debug = True  # Always show debug for kernel visualization
         self.step_size = kernel_size  # Vertical step to avoid overlap
         
         print(f"Vertical Line Dislocation Detector - Sensitivity: {sensitivity}")
@@ -36,136 +36,118 @@ class VerticalLineDislocationDetector:
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
             self.kernel_size = 15
-            self.search_range = 15
             self.delta_x_threshold = 10
             self.step_size = 15
-            self.line_threshold = 0.25  # Require 25% pixels for a valid line (aggressive)
-            self.strong_line_threshold = 0.40  # Require 40% pixels to change X position
-            self.max_x_drift = 8  # Maximum X drift per step
-            self.stability_weight = 0.7  # Weight for previous position (higher = more stable)
+            self.vertical_line_strength = 0.02  # Much lower threshold for Sobel responses
         elif sensitivity == 'low':
-            self.kernel_size = 50
-            self.search_range = 10  
-            self.delta_x_threshold = 25
-            self.step_size = 45
-            self.line_threshold = 0.20  # Only 20% pixels needed (lenient)
-            self.strong_line_threshold = 0.05  # Require 5% pixels to change X position
-            self.max_x_drift = 5  # Maximum X drift per step
-            self.stability_weight = 0.7  # Weight for previous position
+            self.kernel_size = 60  # Updated from user's change
+            self.delta_x_threshold = 500
+            self.step_size = 60
+            self.vertical_line_strength = 0.3  # Much lower threshold for Sobel responses
+            print("low sensitivity")
         else:  # medium
-            self.line_threshold = 0.10  # 10% pixels needed (balanced)
-            self.strong_line_threshold = 0.20  # Require 20% pixels to change X position
-            self.max_x_drift = 10  # Maximum X drift per step
-            self.stability_weight = 0.65  # Weight for previous position
+            self.vertical_line_strength = 0.03  # Much lower threshold for Sobel responses
+        
+        # Create vertical line detection filter
+        self.vertical_filter = self._create_vertical_line_filter()
     
-    def scan_for_vertical_lines(self, binary_image):
-        """Scan image to find vertical lines by scanning horizontally"""
-        height, width = binary_image.shape
+    def _create_vertical_line_filter(self):
+        """Create a stronger vertical edge detection filter"""
+        # Use a stronger 5x5 vertical edge filter for better detection
+        vertical_filter = np.array([
+            [-1, -1, 0, 1, 1],
+            [-2, -2, 0, 2, 2],
+            [-3, -3, 0, 3, 3], 
+            [-2, -2, 0, 2, 2],
+            [-1, -1, 0, 1, 1]
+        ], dtype=np.float32)
         
-        # For stripe images, we expect one main vertical line
-        # Scan horizontally across the image to find the vertical line
-        x_positions = []
+        if self.debug:
+            print(f"Created stronger 5x5 vertical edge filter:")
+            print(vertical_filter)
         
-        # Sample at different Y positions to find where the vertical line is
-        sample_y_positions = np.linspace(self.kernel_size // 2, 
-                                       height - self.kernel_size // 2, 
-                                       min(10, height // self.kernel_size))
-        
-        for y in sample_y_positions:
-            y = int(y)
-            # Scan horizontally at this Y position
-            for x in range(self.kernel_size // 2, width - self.kernel_size // 2, self.step_size):
-                # Extract kernel region
-                y1 = max(0, y - self.kernel_size // 2)
-                y2 = min(height, y + self.kernel_size // 2)
-                x1 = max(0, x - self.kernel_size // 2)
-                x2 = min(width, x + self.kernel_size // 2)
-                
-                kernel_region = binary_image[y1:y2, x1:x2]
-                
-                # Check if there's a vertical line in kernel
-                white_pixels = np.sum(kernel_region > 0)
-                total_pixels = (y2 - y1) * (x2 - x1)
-                
-                if white_pixels > total_pixels * self.line_threshold:
-                    # Found a line, calculate X centroid
-                    y_indices, x_indices = np.where(kernel_region > 0)
-                    if len(x_indices) > 0:
-                        local_x_center = np.mean(x_indices)
-                        global_x = x1 + int(local_x_center)
-                        x_positions.append(global_x)
-                        break  # Found the line at this Y, move to next Y
-        
-        if x_positions:
-            # Calculate the expected X position of the vertical line
-            expected_x = int(np.mean(x_positions))
-            if self.debug:
-                print(f"Found vertical line at expected X position: {expected_x}")
-            return expected_x
-        else:
-            if self.debug:
-                print("No vertical line found in initial scan")
-            return width // 2  # Default to center if no line found
+        return vertical_filter
     
-    def track_vertical_line(self, binary_image, expected_x):
-        """Track the vertical line from top to bottom using kernel"""
-        height, width = binary_image.shape
-        kernel_states = []  # For debug visualization
+
+    
+    def track_vertical_line_with_filter_response(self, filter_response):
+        """Track vertical line using the pre-computed filter response across entire image"""
+        height, width = filter_response.shape
+        kernel_states = []  # For debug visualization - show all kernel positions
         defects = []
         
-        # Starting position - start from the top
-        y = self.kernel_size // 2
-        x = expected_x
-        
-        # Track X positions for mean calculation
-        x_positions = []  # Store X positions for mean calculation
-        running_mean_x = expected_x  # Running mean of X positions
+        # Track last encountered X position for deviation calculation
+        last_x = None
         
         # Track if we're currently in a dislocation
         in_dislocation = False
         dislocation_start_y = None
         
+        # Start from top and move down by kernel size each time
+        y = self.kernel_size // 2
+        
         while y < height - self.kernel_size // 2:
-            # Extract kernel region
-            y1 = max(0, y - self.kernel_size // 2)
-            y2 = min(height, y + self.kernel_size // 2)
-            x1 = max(0, x - self.kernel_size // 2)
-            x2 = min(width, x + self.kernel_size // 2)
+            # Scan horizontally across the entire width using kernel-sized steps
+            best_x = None
+            best_response = 0.0
             
-            kernel_region = binary_image[y1:y2, x1:x2]
-             
-            # Check if there's a line in kernel
-            white_pixels = np.sum(kernel_region > 0)
-            total_pixels = (y2 - y1) * (x2 - x1)
-            has_line = white_pixels > total_pixels * self.line_threshold
+            # Apply kernels across the width until we find a line
+            x = self.kernel_size // 2
+            found_line_in_row = False
             
-            if has_line:
-                # Calculate centroid of line pixels in kernel
-                y_indices, x_indices = np.where(kernel_region > 0)
-                if len(x_indices) > 0:
-                    # Calculate new X position from line centroid
-                    local_x_center = np.mean(x_indices)
-                    new_x = x1 + int(local_x_center)
-                    
-                    # Apply stability logic for X position
-                    if white_pixels > total_pixels * self.strong_line_threshold:
-                        # Strong signal - allow X position change but limit drift
-                        x_drift = abs(new_x - x)
-                        if x_drift <= self.max_x_drift:
-                            # Apply weighted average for stability
-                            x = int(self.stability_weight * x + (1 - self.stability_weight) * new_x)
-                        else:
-                            # Too much drift - stay at previous position
-                            if self.debug:
-                                print(f"Prevented large X drift: {x_drift} pixels at Y={y}")
-                    else:
-                        # Weak signal - stay at previous X position
-                        if self.debug:
-                            print(f"Weak line signal - maintaining X position at Y={y}")
-                    
-                    # Check for dislocation
-                    deviation = abs(x - running_mean_x)
+            while x < width - self.kernel_size // 2 and not found_line_in_row:
+                # Extract kernel-sized region from filter response
+                y1 = max(0, y - self.kernel_size // 2)
+                y2 = min(height, y + self.kernel_size // 2)
+                x1 = max(0, x - self.kernel_size // 2)
+                x2 = min(width, x + self.kernel_size // 2)
+                
+                # Get the filter response for this kernel region
+                kernel_region = filter_response[y1:y2, x1:x2]
+                
+                # Calculate average response in this kernel region
+                avg_response = np.mean(kernel_region)
+                
+                # Check if this kernel detects a vertical line
+                has_line = avg_response > self.vertical_line_strength
+                
+                # Record kernel state for visualization
+                kernel_states.append({
+                    'x': x,
+                    'y': y,
+                    'has_line': has_line,
+                    'is_scanning': True,
+                    'is_best': has_line,  # First detection is the best
+                    'response': avg_response,
+                    'bbox': (x1, y1, x2, y2)
+                })
+                
+                # If we found a line, stop scanning this row
+                if has_line:
+                    best_response = avg_response
+                    best_x = x
+                    found_line_in_row = True
+                    if self.debug:
+                        print(f"Y={y}: Found line at X={x}, response={avg_response:.3f} - STOPPING row scan")
+                else:
+                    # Move to next kernel position horizontally
+                    x += self.kernel_size
+            
+            # Process the best detection for this Y level
+            if best_x is not None:
+                # Found vertical line at best_x
+                current_x = best_x
+                
+                if last_x is not None:
+                    # Calculate deviation from last known X position
+                    deviation = abs(current_x - last_x)
                     is_dislocated = deviation > self.delta_x_threshold
+                    
+                    # Mark the best kernel as dislocated if needed
+                    for state in kernel_states:
+                        if state['y'] == y and state.get('is_best', False):
+                            state['is_dislocated'] = is_dislocated
+                            state['deviation'] = deviation
                     
                     if is_dislocated:
                         if not in_dislocation:
@@ -173,7 +155,7 @@ class VerticalLineDislocationDetector:
                             in_dislocation = True
                             dislocation_start_y = y
                             if self.debug:
-                                print(f"Dislocation started at Y={y}, X={x}, deviation={deviation:.1f}")
+                                print(f"DISLOCATION STARTED: Y={y}, X={current_x}, deviation={deviation:.1f} from last_x={last_x}")
                     else:
                         if in_dislocation:
                             # End of dislocation - record it
@@ -181,77 +163,43 @@ class VerticalLineDislocationDetector:
                                 'type': 'vertical_line_dislocation',
                                 'start_y': dislocation_start_y,
                                 'end_y': y,
-                                'x_position': x,
-                                'location': (x, (dislocation_start_y + y) // 2),
+                                'x_position': current_x,
+                                'location': (current_x, (dislocation_start_y + y) // 2),
                                 'deviation': deviation,
                                 'length': y - dislocation_start_y
                             })
                             
-                            # Reset mean calculation from this point
-                            x_positions = [x]  # Reset with current position
-                            running_mean_x = x  # Reset mean
-                            in_dislocation = False
-                            
                             if self.debug:
-                                print(f"Dislocation ended at Y={y}, recorded defect")
-                        else:
-                            # Normal line - update running mean
-                            x_positions.append(x)
-                            # Keep only recent positions for mean calculation
-                            if len(x_positions) > 10:
-                                x_positions = x_positions[-10:]
-                            running_mean_x = np.mean(x_positions)
+                                print(f"DISLOCATION ENDED: Y={y}, recorded defect")
+                            
+                            in_dislocation = False
+                else:
+                    # First line found - no deviation to calculate
+                    deviation = 0
+                    is_dislocated = False
+                    # Mark the best kernel as first line
+                    for state in kernel_states:
+                        if state['y'] == y and state.get('is_best', False):
+                            state['is_dislocated'] = False
+                            state['deviation'] = 0
                     
-                    # Record kernel state for visualization
-                    kernel_states.append({
-                        'x': x,
-                        'y': y,
-                        'has_line': True,
-                        'is_dislocated': is_dislocated,
-                        'deviation': deviation,
-                        'bbox': (x1, y1, x2, y2)
-                    })
-            else:
-                # No line found - try searching horizontally
-                found = False
-                best_x = x
-                max_pixels = 0
-                
-                for dx in range(-self.search_range, self.search_range + 1):
-                    test_x = x + dx
-                    if 0 <= test_x - self.kernel_size // 2 and test_x + self.kernel_size // 2 < width:
-                        test_x1 = test_x - self.kernel_size // 2
-                        test_x2 = test_x + self.kernel_size // 2
-                        test_region = binary_image[y1:y2, test_x1:test_x2]
-                        
-                        white_pixels = np.sum(test_region > 0)
-                        if white_pixels > max_pixels:
-                            max_pixels = white_pixels
-                            best_x = test_x
-                        
-                        if white_pixels > (self.kernel_size * self.kernel_size) * self.line_threshold:
-                            # Found line at different X
-                            x = test_x
-                            found = True
-                            break
-                
-                if not found:
-                    # No line found even after searching - stay at previous position
                     if self.debug:
-                        print(f"No line found at Y={y}, maintaining X={x}")
+                        print(f"FIRST LINE: Y={y}, X={current_x}")
                 
-                # Record kernel state for missing line (red box)
-                kernel_states.append({
-                    'x': x,
-                    'y': y,
-                    'has_line': found,
-                    'is_dislocated': False,
-                    'deviation': 0,
-                    'bbox': (x - self.kernel_size//2, y1, x + self.kernel_size//2, y2)
-                })
+                # Update last known X position
+                last_x = current_x
+                
+                if self.debug:
+                    status = "DISLOCATED" if is_dislocated else "NORMAL"
+                    print(f"RESULT: X={current_x}, deviation={deviation:.1f}, response={best_response:.3f} [{status}]")
             
-            # Move to next position vertically
-            y += self.step_size
+            # else:
+            #     # No vertical line found at this Y level
+            #     if self.debug:
+            #         print(f"NO LINE FOUND at Y={y}")
+            
+            # Move to next position vertically by kernel size
+            y += self.kernel_size  # Move by full kernel size
         
         # Handle case where dislocation extends to end of image
         if in_dislocation:
@@ -259,51 +207,102 @@ class VerticalLineDislocationDetector:
                 'type': 'vertical_line_dislocation',
                 'start_y': dislocation_start_y,
                 'end_y': y,
-                'x_position': x,
-                'location': (x, (dislocation_start_y + y) // 2),
-                'deviation': abs(x - running_mean_x),
+                'x_position': last_x,
+                'location': (last_x, (dislocation_start_y + y) // 2),
+                'deviation': abs(last_x - (defects[0]['x_position'] if defects else width//2)),
                 'length': y - dislocation_start_y
             })
+            
+            if self.debug:
+                print(f"FINAL DISLOCATION: Extended to end of image")
         
         return kernel_states, defects
     
-    def detect(self, image):
-        """Main detection method"""
-        # Convert to grayscale if needed
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image.copy()
+    def apply_vertical_filter_to_entire_image(self, image):
+        """Apply vertical edge filter to entire image using proper convolution"""
+        # Apply the vertical edge filter using OpenCV filter2D (proper convolution)
+        filter_response = cv2.filter2D(image, cv2.CV_32F, self.vertical_filter)
         
-        # Enhance contrast
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        
-        # Binary threshold
-        binary = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
-                                      cv2.THRESH_BINARY, 21, -5)
-        
-        # Invert if necessary (lines should be white)
-        if np.mean(binary) > 127:
-            binary = cv2.bitwise_not(binary)
-        
-        # Find the expected vertical line position
-        expected_x = self.scan_for_vertical_lines(binary)
+        # Take absolute value to get edge strength (traditional approach)
+        filter_response = np.abs(filter_response)
         
         if self.debug:
-            print(f"Starting vertical line tracking at X={expected_x}")
+            print(f"Applied vertical edge filter to entire image, response range: {filter_response.min():.3f} to {filter_response.max():.3f}")
         
-        # Track the vertical line
-        kernel_states, defects = self.track_vertical_line(binary, expected_x)
+        return filter_response
+    
+    def save_filter_response_image(self, filter_response, output_path="vertical_filter_response.jpg"):
+        """Save the vertical filter response as an image for debugging"""
+        # Enhance contrast by scaling the response
+        enhanced_response = filter_response * 10  # Scale up for better visibility
+        
+        # Clip to reasonable range
+        enhanced_response = np.clip(enhanced_response, 0, 1)
+        
+        # Normalize to 0-255 range for saving
+        normalized_response = (enhanced_response * 255).astype(np.uint8)
+        
+        # Apply colormap for better visualization
+        colored_response = cv2.applyColorMap(normalized_response, cv2.COLORMAP_JET)
+        
+        # Save the image
+        cv2.imwrite(output_path, colored_response)
+        
+        if self.debug:
+            print(f"Saved enhanced vertical filter response image to: {output_path}")
+            print(f"Original response range: {filter_response.min():.6f} to {filter_response.max():.6f}")
+            print(f"Enhanced response range: {enhanced_response.min():.6f} to {enhanced_response.max():.6f}")
+        
+        return output_path
+
+    def detect(self, image):
+        """Main detection method - expects grayscale image from run_all_detections.py"""
+        # Image should already be grayscale from ImagePreprocessor.load_and_convert_to_grayscale()
+        if len(image.shape) == 3:
+            raise ValueError("Expected grayscale image, but received color image. Check run_all_detections.py preprocessing.")
+        
+        gray = image.copy()
+        
+        # Apply Gaussian blur to reduce noise before edge detection
+        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+        
+        # Enhance contrast for better vertical edge detection
+        clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(blurred)
+        
+        # Normalize image to 0-1 range for filter convolution
+        normalized = enhanced.astype(np.float32) / 255.0
+        
+        # Apply vertical line filter to entire image
+        filter_response = self.apply_vertical_filter_to_entire_image(normalized)
+        
+        # Save filter response image for debugging
+        filter_image_path = self.save_filter_response_image(filter_response)
+        
+        if self.debug:
+            print(f"Image shape: {image.shape}, processing with kernel size: {self.kernel_size}")
+            print(f"Vertical line strength threshold: {self.vertical_line_strength}")
+            print(f"Delta X threshold: {self.delta_x_threshold}")
+            print(f"Applied convolution filter to entire image")
+            print(f"Filter response image saved to: {filter_image_path}")
+        
+        # Track the vertical line through the entire image using the filter response
+        kernel_states, defects = self.track_vertical_line_with_filter_response(filter_response)
         
         # Create visualization
         visualization = self.create_visualization(image, defects, kernel_states)
+        
+        if self.debug:
+            print(f"Detection complete: Found {len(defects)} dislocations")
+            for i, defect in enumerate(defects):
+                print(f"  Dislocation {i+1}: Y={defect['start_y']}-{defect['end_y']}, "
+                      f"X={defect['x_position']}, deviation={defect['deviation']:.1f}")
         
         # Return tuple format (visualization, defects)
         return visualization, defects
     
     def create_visualization(self, original, defects, kernel_states=None):
-        """Create visualization with detected defects highlighted"""
+        """Create visualization with detected defects highlighted - ALWAYS show kernel boxes"""
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
@@ -312,8 +311,8 @@ class VerticalLineDislocationDetector:
         # Create overlay
         overlay = vis.copy()
         
-        # Draw debug kernels if enabled
-        if self.debug and kernel_states:
+        # Always draw kernel boxes to show the scanning process from LEFT TO RIGHT
+        if kernel_states:
             for state in kernel_states:
                 x = state['x']
                 y = state['y']
@@ -325,40 +324,82 @@ class VerticalLineDislocationDetector:
                 x2 = min(vis.shape[1], x2)
                 y2 = min(vis.shape[0], y2)
                 
-                # Draw kernel box with appropriate color
-                if state.get('is_dislocated', False):
-                    color = (0, 0, 255)  # Red for dislocated sections
-                elif state['has_line']:
-                    color = (0, 255, 0)  # Green for normal vertical line
+                # Determine color and thickness based on scanning state
+                if state.get('is_scanning', False):
+                    # This is a scanning kernel - show the scanning process
+                    if state.get('is_best', False):
+                        # This is the best response kernel
+                        if state.get('is_dislocated', False):
+                            color = (0, 0, 255)  # RED for dislocated best kernel
+                            thickness = 4  # Extra thick for dislocated best
+                        else:
+                            color = (0, 255, 0)  # GREEN for normal best kernel
+                            thickness = 3  # Thick for best kernel
+                    elif state.get('has_line', False):
+                        color = (0, 255, 255)  # YELLOW for detected but not best
+                        thickness = 2
+                    else:
+                        color = (128, 128, 128)  # GRAY for scanning with no detection
+                        thickness = 1
                 else:
-                    color = (0, 165, 255)  # Orange for missing line
+                    # Legacy kernel state handling
+                    if state.get('is_dislocated', False):
+                        color = (0, 0, 255)  # RED for dislocated sections
+                        thickness = 3
+                    elif state['has_line']:
+                        color = (0, 255, 0)  # GREEN for normal vertical line
+                        thickness = 2
+                    else:
+                        color = (0, 165, 255)  # ORANGE for missing line
+                        thickness = 2
                 
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+                # Draw kernel box
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
                 
-                # Draw centroid as small circle
-                cv2.circle(overlay, (x, y), 3, (0, 0, 255), -1)
-            
-            # In debug mode, blend lightly to see kernels clearly
-            result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
-            return result
+                # Draw centroid as small circle for important kernels
+                if state.get('is_best', False) or state.get('is_dislocated', False):
+                    cv2.circle(overlay, (x, y), 4, color, -1)
+                
+                # Only show text in debug mode and only for important kernels
+                if self.debug:
+                    # Add deviation text for dislocated kernels
+                    if state.get('is_dislocated', False) and state.get('deviation', 0) > 0:
+                        text = f"D{int(state['deviation'])}"  # Use 'D' instead of delta symbol
+                        cv2.putText(overlay, text, (x1, y1-8), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.4, (0, 0, 255), 1)
+                    
+                    # Add response value only for kernels that detect lines
+                    if 'response' in state and state.get('has_line', False):
+                        response_text = f"{state['response']:.3f}"
+                        text_y = y2 + 12
+                        
+                        # Color code based on response strength
+                        if state['response'] > self.vertical_line_strength:
+                            text_color = (0, 255, 0)  # Green for above threshold
+                        else:
+                            text_color = (128, 128, 128)  # Gray for below threshold
+                        
+                        cv2.putText(overlay, response_text, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 
+                                   0.3, text_color, 1)
         
-        # Draw defects when not in debug mode
-        for defect in defects:
-            if defect['type'] == 'vertical_line_dislocation':
-                start_y = defect['start_y']
-                end_y = defect['end_y']
-                x = defect['x_position']
-                
-                # Draw filled red rectangle overlay for dislocation segment
-                thickness = 30  # Thickness of the dislocation indicator
-                cv2.rectangle(overlay, 
-                            (x - thickness, start_y), 
-                            (x + thickness, end_y), 
-                            (0, 0, 255),  # Red color
-                            -1)  # Filled rectangle
+        # Only draw defect regions when NOT in debug mode
+        if not self.debug:
+            for defect in defects:
+                if defect['type'] == 'vertical_line_dislocation':
+                    start_y = defect['start_y']
+                    end_y = defect['end_y']
+                    x = defect['x_position']
+                    
+                    # Draw filled red rectangle overlay for dislocation segment
+                    thickness = 20  # Thickness of the dislocation indicator
+                    cv2.rectangle(overlay, 
+                                (x - thickness, start_y), 
+                                (x + thickness, end_y), 
+                                (0, 0, 255),  # Red color
+                                -1)  # Filled rectangle
         
-        # Blend with original to show the affected areas
-        result = cv2.addWeighted(vis, 0.5, overlay, 0.5, 0)
+        # Blend with original to show both kernels and defects
+        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
         
         return result
 
@@ -405,6 +446,7 @@ def main():
     # Initialize detector
     detector = VerticalLineDislocationDetector(
         delta_x_threshold=args.delta_x_threshold,
+        vertical_line_strength=0.3,  # Default strength
         sensitivity=args.sensitivity,
         debug=args.debug
     )
