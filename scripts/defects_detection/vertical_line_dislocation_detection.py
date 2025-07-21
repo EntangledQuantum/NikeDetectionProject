@@ -52,18 +52,17 @@ class VerticalLineDislocationDetector:
         self.vertical_filter = self._create_vertical_line_filter()
     
     def _create_vertical_line_filter(self):
-        """Create a stronger vertical edge detection filter"""
-        # Use a stronger 5x5 vertical edge filter for better detection
+        """Create standard Sobel vertical edge detection filter"""
+        # Use the standard Sobel vertical edge detector from web research
+        # This is the proven method for detecting vertical edges
         vertical_filter = np.array([
-            [-1, -1, 0, 1, 1],
-            [-2, -2, 0, 2, 2],
-            [-3, -3, 0, 3, 3], 
-            [-2, -2, 0, 2, 2],
-            [-1, -1, 0, 1, 1]
+            [-1, 0, 1],
+            [-2, 0, 2],
+            [-1, 0, 1]
         ], dtype=np.float32)
         
         if self.debug:
-            print(f"Created stronger 5x5 vertical edge filter:")
+            print(f"Created standard Sobel vertical edge filter:")
             print(vertical_filter)
         
         return vertical_filter
@@ -232,26 +231,27 @@ class VerticalLineDislocationDetector:
         return filter_response
     
     def save_filter_response_image(self, filter_response, output_path="vertical_filter_response.jpg"):
-        """Save the vertical filter response as an image for debugging"""
-        # Enhance contrast by scaling the response
-        enhanced_response = filter_response * 10  # Scale up for better visibility
+        """Save the vertical filter response as black background with white edges"""
+        # Apply threshold to get binary edge map
+        # Use a low threshold to capture all significant edges
+        edge_threshold = np.percentile(filter_response, 95)  # Top 5% of responses
         
-        # Clip to reasonable range
-        enhanced_response = np.clip(enhanced_response, 0, 1)
+        # Create binary edge image: white edges on black background
+        edge_image = np.zeros_like(filter_response, dtype=np.uint8)
+        edge_image[filter_response > edge_threshold] = 255
         
-        # Normalize to 0-255 range for saving
-        normalized_response = (enhanced_response * 255).astype(np.uint8)
+        # Apply morphological closing to connect nearby edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))  # Vertical kernel
+        edge_image = cv2.morphologyEx(edge_image, cv2.MORPH_CLOSE, kernel)
         
-        # Apply colormap for better visualization
-        colored_response = cv2.applyColorMap(normalized_response, cv2.COLORMAP_JET)
-        
-        # Save the image
-        cv2.imwrite(output_path, colored_response)
+        # Save the binary edge image
+        cv2.imwrite(output_path, edge_image)
         
         if self.debug:
-            print(f"Saved enhanced vertical filter response image to: {output_path}")
+            print(f"Saved binary edge image (black bg, white edges) to: {output_path}")
+            print(f"Edge threshold used: {edge_threshold:.6f}")
             print(f"Original response range: {filter_response.min():.6f} to {filter_response.max():.6f}")
-            print(f"Enhanced response range: {enhanced_response.min():.6f} to {enhanced_response.max():.6f}")
+            print(f"Edges detected: {np.sum(edge_image > 0)} pixels")
         
         return output_path
 
