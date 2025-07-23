@@ -26,6 +26,7 @@ from enum import Enum
 from surface_treatment_detection import SurfaceTreatmentDetector
 from debris_detection import DebrisDetector
 from line_defect_detection import LineDefectDetector
+from stripe_misalignment_detection import StripeMisalignmentDetector
 
 
 class ImageType(Enum):
@@ -191,6 +192,11 @@ class DetectorFactory:
         # Enable debug mode for high sensitivity to see detected lines
         debug = False
         return LineDefectDetector(sensitivity=sensitivity, debug=debug)
+    
+    @staticmethod
+    def create_stripe_misalignment_detector(sensitivity: str) -> StripeMisalignmentDetector:
+        """Create stripe misalignment detector with appropriate settings"""
+        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=True)
 
 
 class DetectionStrategy(ABC):
@@ -211,12 +217,13 @@ class StripeDetectionStrategy(DetectionStrategy):
     """Detection strategy for stripe images"""
     
     def get_required_detectors(self) -> List[str]:
-        return ['surface_treatment', 'debris']
+        return ['stripe_misalignment']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
-            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'debris': DetectorFactory.create_debris_detector(sensitivity)
+            # 'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
+            # 'debris': DetectorFactory.create_debris_detector(sensitivity),
+            'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity)
         }
 
 
@@ -324,6 +331,15 @@ class SingleImageProcessor:
                 elif detector_name == 'debris':
                     original, gray, denoised, enhanced = ImagePreprocessor.preprocess_for_debris(image_path)
                     result_img, defects = detector.detect(enhanced)
+                elif detector_name == 'stripe_misalignment':
+                    # For stripe misalignment, pass the original image
+                    # The detector has its own edge detection preprocessing
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original)
+                    
+                    # Save debug images if available
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
                 else:
                     # Fallback to original image loading
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
@@ -657,8 +673,8 @@ def main():
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
-    print(f"  - Stripe images: Surface Treatment, Debris")
-    print(f"  - Island images: (Overspray disabled)")
+    print(f"  - Stripe images: Surface Treatment, Debris, Stripe Misalignment")
+    print(f"  - Island images: Line Defect")
     print(f"  - Unknown images: Surface Treatment, Debris")
     print("=" * 60)
     
