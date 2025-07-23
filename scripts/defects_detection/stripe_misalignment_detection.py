@@ -51,9 +51,9 @@ class StripeMisalignmentDetector:
             self.line_detection_threshold = 0.20  # Less sensitive to line detection
             self.defect_threshold = 20  # Larger misalignment needed for defect
         else:  # medium
-            self.kernel_size = 50
-            self.step_size = 30
-            self.line_detection_threshold = 0.15
+            self.kernel_size = 70
+            self.step_size = 35
+            self.line_detection_threshold = 0.20
             self.defect_threshold = 10
     
     def preprocess_with_edge_detection(self, image):
@@ -104,38 +104,41 @@ class StripeMisalignmentDetector:
                 for result in row_results:
                     x_pos = result['x_center']
                     
-                    # If this is the first line detection, just record it
-                    if not line_detected:
-                        line_detected = True
-                        previous_x_pos = x_pos
-                        result['is_defect'] = False
-                        if self.debug:
-                            print(f"First line detected at Y={y}, X={x_pos}")
-                    else:
-                        # Calculate delta from previous position
-                        x_delta = abs(x_pos - previous_x_pos)
-                        result['x_delta'] = x_delta
-                        
-                        # Check if this is a defect
-                        if x_delta > self.defect_threshold:
-                            result['is_defect'] = True
-                            defects.append({
-                                'type': 'stripe_misalignment',
-                                'y': y,
-                                'x': x_pos,
-                                'x_delta': int(x_delta),
-                                'previous_x': previous_x_pos,
-                                'location': (x_pos, y),
-                                'threshold': self.defect_threshold
-                            })
-                            if self.debug:
-                                print(f"Misalignment detected at Y={y}: X delta={x_delta} > threshold={self.defect_threshold}")
-                        else:
+                    # If x_pos is None, this row has no line detected
+                    if x_pos is not None:
+                        # If this is the first line detection, just record it
+                        if not line_detected:
+                            line_detected = True
+                            previous_x_pos = x_pos
                             result['is_defect'] = False
-                        
-                        # Update previous position
-                        previous_x_pos = x_pos
+                            if self.debug:
+                                print(f"First line detected at Y={y}, X={x_pos}")
+                        else:
+                            # Calculate delta from previous position
+                            x_delta = abs(x_pos - previous_x_pos)
+                            result['x_delta'] = x_delta
+                            
+                            # Check if this is a defect
+                            if x_delta > self.defect_threshold:
+                                result['is_defect'] = True
+                                defects.append({
+                                    'type': 'stripe_misalignment',
+                                    'y': y,
+                                    'x': x_pos,
+                                    'x_delta': int(x_delta),
+                                    'previous_x': previous_x_pos,
+                                    'location': (x_pos, y),
+                                    'threshold': self.defect_threshold
+                                })
+                                if self.debug:
+                                    print(f"Misalignment detected at Y={y}: X delta={x_delta} > threshold={self.defect_threshold}")
+                            else:
+                                result['is_defect'] = False
+                            
+                            # Update previous position
+                            previous_x_pos = x_pos
                     
+                    # Always add kernels for debug visualization
                     kernel_states.extend(result['kernels'])
             
             # Move to next row
@@ -176,15 +179,15 @@ class StripeMisalignmentDetector:
                     line_found_in_row = True
                     line_start_x = x
                 line_end_x = x
-                
-                # Record kernel state for debug
-                if self.debug:
-                    kernels_in_row.append({
-                        'x': x,
-                        'y': y,
-                        'has_line': True,
-                        'bbox': (x1, y1, x2, y2)
-                    })
+            
+            # Record kernel state for debug - ALL kernels, not just with lines
+            if self.debug:
+                kernels_in_row.append({
+                    'x': x,
+                    'y': y,
+                    'has_line': has_line,
+                    'bbox': (x1, y1, x2, y2)
+                })
             
             # Move to next position
             x += self.step_size
@@ -199,6 +202,16 @@ class StripeMisalignmentDetector:
                 'line_end': line_end_x,
                 'kernels': kernels_in_row
             })
+        else:
+            # Even if no line found, still return kernels for debug visualization
+            if self.debug and kernels_in_row:
+                row_results.append({
+                    'y': y,
+                    'x_center': None,
+                    'line_start': None,
+                    'line_end': None,
+                    'kernels': kernels_in_row
+                })
         
         return row_results
     
@@ -240,16 +253,22 @@ class StripeMisalignmentDetector:
                 x2 = min(vis.shape[1], x2)
                 y2 = min(vis.shape[0], y2)
                 
-                # Draw kernel box - green for normal, red for defects
-                color = (0, 255, 0)  # Default green
+                # Determine color based on kernel state
+                if not state.get('has_line', False):
+                    # Grey for kernels that didn't detect a line
+                    color = (128, 128, 128)
+                else:
+                    # Green for normal, red for defects
+                    color = (0, 255, 0)  # Default green
+                    
+                    # Check if this kernel is part of a defect
+                    for defect in defects:
+                        if abs(state['y'] - defect['y']) < self.kernel_size // 2 and abs(state['x'] - defect['x']) < self.kernel_size:
+                            color = (0, 0, 255)  # Red for defect
+                            break
                 
-                # Check if this kernel is part of a defect
-                for defect in defects:
-                    if abs(state['y'] - defect['y']) < self.kernel_size // 2:
-                        color = (0, 0, 255)  # Red for defect
-                        break
-                
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 1)
+                # Draw with thicker lines (3 pixels instead of 1)
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 3)
             
             # Blend lightly to see kernels clearly
             result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)

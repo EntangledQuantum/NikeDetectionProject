@@ -45,10 +45,12 @@ The Stripe Misalignment Detection algorithm is designed to detect misalignments 
 
 ### Debug Mode (debug=True)
 - Saves edge-detected image
-- Shows kernel visualization with:
-  - Green boxes: Normal line detection
+- Shows ALL kernel positions with thicker borders (3px) for better visibility
+- Color coding:
+  - Grey boxes: Kernels where no line was detected
+  - Green boxes: Normal line detection (no misalignment)
   - Red boxes: Misalignment detected
-- Shows kernel positions and detection status
+- Shows kernel positions and detection status in console output
 
 ### Normal Mode (debug=False)
 - Highlights defective regions in red
