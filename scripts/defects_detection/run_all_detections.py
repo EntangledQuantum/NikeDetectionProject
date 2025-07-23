@@ -26,7 +26,6 @@ from enum import Enum
 from surface_treatment_detection import SurfaceTreatmentDetector
 from debris_detection import DebrisDetector
 from line_defect_detection import LineDefectDetector
-from vertical_line_dislocation_detection import VerticalLineDislocationDetector
 
 
 class ImageType(Enum):
@@ -192,34 +191,6 @@ class DetectorFactory:
         # Enable debug mode for high sensitivity to see detected lines
         debug = False
         return LineDefectDetector(sensitivity=sensitivity, debug=debug)
-    
-    @staticmethod
-    def create_vertical_line_dislocation_detector(sensitivity: str) -> VerticalLineDislocationDetector:
-        """Create vertical line dislocation detector with appropriate settings"""
-        if sensitivity == 'low':
-            return VerticalLineDislocationDetector(
-                kernel_size=80,
-                delta_x_threshold=25,
-                vertical_line_strength=0.5,
-                sensitivity=sensitivity,
-                debug=True
-            )
-        elif sensitivity == 'high':
-            return VerticalLineDislocationDetector(
-                kernel_size=15,
-                delta_x_threshold=10,
-                vertical_line_strength=0.2,
-                sensitivity=sensitivity,
-                debug=True
-            )
-        else:  # medium
-            return VerticalLineDislocationDetector(
-                kernel_size=20,
-                delta_x_threshold=15,
-                vertical_line_strength=0.3,
-                sensitivity=sensitivity,
-                debug=True
-            )
 
 
 class DetectionStrategy(ABC):
@@ -240,11 +211,12 @@ class StripeDetectionStrategy(DetectionStrategy):
     """Detection strategy for stripe images"""
     
     def get_required_detectors(self) -> List[str]:
-        return ['vertical_line_dislocation']
+        return ['surface_treatment', 'debris']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
-            'vertical_line_dislocation': DetectorFactory.create_vertical_line_dislocation_detector(sensitivity)
+            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
+            'debris': DetectorFactory.create_debris_detector(sensitivity)
         }
 
 
@@ -338,7 +310,7 @@ class SingleImageProcessor:
     def _process_full_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
                              image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
         """Process full-sized images"""
-        print(f"Full image (size: {file_size/(1024*1024):.1f}MB)")
+        print(f"    Full image (size: {file_size/(1024*1024):.1f}MB), using normal processing...")
         
         detections = {}
         
@@ -352,9 +324,6 @@ class SingleImageProcessor:
                 elif detector_name == 'debris':
                     original, gray, denoised, enhanced = ImagePreprocessor.preprocess_for_debris(image_path)
                     result_img, defects = detector.detect(enhanced)
-                elif detector_name == 'vertical_line_dislocation':
-                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
-                    result_img, defects = detector.detect(gray)
                 else:
                     # Fallback to original image loading
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)

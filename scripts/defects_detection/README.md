@@ -4,11 +4,10 @@ A comprehensive suite of computer vision algorithms for detecting various printi
 
 ## Overview
 
-This system detects four critical types of printing defects:
+This system detects three critical types of printing defects:
 - **Overspray**: Ink scattered outside intended areas, appearing as dots trailing printed regions
 - **Surface Treatment Issues**: Poor surface energy causing ink to combine into irregular drops, leaving areas with no ink
 - **Debris**: Foreign particles (dirt, fibers, etc.) causing dark spots with blank rings or contamination patterns
-- **Vertical Line Dislocation**: Displacement or shifting of vertical line edges in stripe images
 
 ## Features
 
@@ -63,7 +62,6 @@ input_folder/
     │   ├── overspray_visualization.jpg
     │   ├── surface_treatment_visualization.jpg
     │   ├── debris_visualization.jpg
-    │   ├── vertical_line_dislocation_visualization.jpg
     │   ├── gray_spots_visualization.jpg
     │   ├── edge_defects_visualization.jpg
     │   ├── banding_visualization.jpg
@@ -103,12 +101,6 @@ The system automatically detects large images and processes them efficiently:
 - **Parameters**: Halo detection thresholds, particle size ranges, contrast analysis
 - **Output**: Contaminated regions with debris particles and their effects
 
-### 4. Vertical Line Dislocation Detection (`vertical_line_dislocation_detection.py`)
-- **Purpose**: Detects displacement or shifting of vertical line edges in stripe images
-- **Method**: Uses kernel-based vertical tracking to follow vertical lines and detect deviations from expected position
-- **Parameters**: Kernel size, delta X threshold (maximum allowed deviation), search range, sensitivity level
-- **Output**: Highlighted regions showing where vertical lines have shifted from their expected position
-
 ## Individual Algorithm Usage
 
 Each detection algorithm can also be used standalone:
@@ -126,27 +118,6 @@ result, defects = detector.detect(image)
 # Visualize results
 visualization = detector.visualize_detections(image, defects)
 cv2.imwrite('output.png', visualization)
-```
-
-For vertical line dislocation detection in stripe images:
-
-```python
-from vertical_line_dislocation_detection import VerticalLineDislocationDetector
-
-# Initialize detector
-detector = VerticalLineDislocationDetector(
-    delta_x_threshold=15,  # Maximum allowed deviation
-    sensitivity='medium',
-    debug=False
-)
-
-# Process single image
-image = cv2.imread('path/to/stripe_image.tiff')
-result_img, defects = detector.detect(image)
-
-# Save results
-cv2.imwrite('dislocation_result.jpg', result_img)
-print(f"Found {len(defects)} vertical line dislocations")
 ```
 
 ## Sensitivity Levels
@@ -186,14 +157,9 @@ The JSON report includes:
       "defects": [{"location": [x, y], "size": 5}, ...],
       "visualization_path": "output/scan001/overspray_visualization.jpg"
     },
-    "surface_treatment": {...},
-    "debris": {...},
-    "vertical_line_dislocation": {
-      "count": 3,
-      "defects": [{"location": [x, y], "start_y": 100, "end_y": 200, "deviation": 12.5}, ...],
-      "visualization_path": "output/scan001/vertical_line_dislocation_visualization.jpg"
-    },
-    "edge_defects": {...},
+            "surface_treatment": {...},
+        "debris": {...},
+        "edge_defects": {...},
     "banding": {...},
     "streak": {...}
   }
