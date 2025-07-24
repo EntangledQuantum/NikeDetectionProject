@@ -80,7 +80,7 @@ def test_custom_parameters():
     
     # Create detector with custom parameters
     detector = StripeMisalignmentDetector(
-        kernel_size=40,              # Custom kernel size
+        kernel_size=40,              # Custom kernel size (ignored if width/height specified)
         step_size=40,                # No overlap
         line_detection_threshold=0.12,  # 12% of pixels needed to detect line
         defect_threshold=8,          # 8 pixel delta considered misalignment
@@ -102,9 +102,47 @@ def test_custom_parameters():
     print(f"Custom parameter test completed. Found {len(defects)} misalignments.")
 
 
+def test_rectangular_kernel():
+    """Test with rectangular kernel instead of square"""
+    print("\nTesting with rectangular kernel...")
+    
+    image_path = "path/to/your/stripe_image.tiff"  # Update with your image path
+    output_dir = "stripe_misalignment_rectangular"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create detector with rectangular kernel
+    # Wider horizontally to catch vertical lines better
+    detector = StripeMisalignmentDetector(
+        kernel_width=60,             # Wider kernel
+        kernel_height=30,            # Shorter kernel
+        step_size=60,                # Move by kernel width
+        line_detection_threshold=0.15,
+        defect_threshold=10,
+        debug=True
+    )
+    
+    # Load and process image
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Error: Could not load image from {image_path}")
+        return
+    
+    visualization, defects = detector.detect(image)
+    
+    # Save results
+    cv2.imwrite(os.path.join(output_dir, "rectangular_kernel_result.jpg"), 
+                visualization, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    
+    print(f"Rectangular kernel test completed. Found {len(defects)} misalignments.")
+    print(f"Kernel dimensions: {detector.kernel_width}x{detector.kernel_height} (WxH)")
+
+
 if __name__ == "__main__":
     # Run main example
     main()
     
     # Uncomment to test custom parameters
-    # test_custom_parameters() 
+    # test_custom_parameters()
+    
+    # Uncomment to test rectangular kernel
+    # test_rectangular_kernel() 

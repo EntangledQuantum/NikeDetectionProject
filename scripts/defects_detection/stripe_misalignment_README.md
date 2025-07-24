@@ -35,8 +35,10 @@ The Stripe Misalignment Detection algorithm is designed to detect misalignments 
 
 ### Custom Parameters
 
-- **kernel_size**: Size of the scanning kernel (square)
-- **step_size**: Horizontal step size (defaults to kernel_size for no overlap)
+- **kernel_size**: Size of the scanning kernel (square) - ignored if width/height specified
+- **kernel_width**: Width of the kernel (optional, for rectangular kernels)
+- **kernel_height**: Height of the kernel (optional, for rectangular kernels)
+- **step_size**: Horizontal step size (defaults to kernel_width for no overlap)
 - **line_detection_threshold**: Minimum ratio of pixels to classify as line (0.0-1.0)
 - **defect_threshold**: Minimum X position delta to consider as defect (in pixels)
 - **debug**: Enable debug visualization
@@ -63,11 +65,12 @@ The detector is automatically integrated into `run_all_detections.py` and will r
 
 ## Standalone Usage
 
+### Using Square Kernels (Default)
 ```python
 from stripe_misalignment_detection import StripeMisalignmentDetector
 import cv2
 
-# Create detector
+# Create detector with square kernels
 detector = StripeMisalignmentDetector(
     sensitivity='medium',  # or 'low', 'high'
     debug=True
@@ -83,6 +86,23 @@ cv2.imwrite('result.jpg', visualization)
 # Process defects
 for defect in defects:
     print(f"Misalignment at Y={defect['y']}, X delta={defect['x_delta']}px")
+```
+
+### Using Rectangular Kernels
+```python
+# Create detector with rectangular kernels
+# Useful for detecting vertical lines - wider horizontally
+detector = StripeMisalignmentDetector(
+    kernel_width=60,    # Wider to catch vertical lines
+    kernel_height=30,   # Shorter vertically
+    step_size=60,       # Move by kernel width
+    line_detection_threshold=0.15,
+    defect_threshold=10,
+    debug=True
+)
+
+# Process image
+visualization, defects = detector.detect(image)
 ```
 
 ## Example Results

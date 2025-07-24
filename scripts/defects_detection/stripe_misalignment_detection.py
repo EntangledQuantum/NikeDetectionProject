@@ -19,19 +19,30 @@ from edge_detector import detect_edges_enhanced
 class StripeMisalignmentDetector:
     """Detects misalignment in vertical stripe patterns using grid-based kernel scanning"""
     
-    def __init__(self, kernel_size=50, step_size=None, line_detection_threshold=0.15,
+    def __init__(self, kernel_size=50, kernel_width=None, kernel_height=None, 
+                 step_size=None, line_detection_threshold=0.15,
                  defect_threshold=10, sensitivity='medium', debug=False):
         """
         Args:
-            kernel_size: Size of the scanning kernel (square)
-            step_size: Horizontal step size (defaults to kernel_size for no overlap)
+            kernel_size: Size of the scanning kernel (square) - ignored if width/height specified
+            kernel_width: Width of the kernel (optional, defaults to kernel_size)
+            kernel_height: Height of the kernel (optional, defaults to kernel_size)
+            step_size: Horizontal step size (defaults to kernel_width for no overlap)
             line_detection_threshold: Minimum ratio of pixels to classify as line
             defect_threshold: Minimum x position delta to consider as defect
             sensitivity: Detection sensitivity level
             debug: Whether to draw debug visualization
         """
-        self.kernel_size = kernel_size
-        self.step_size = step_size if step_size else kernel_size
+        # Handle rectangular kernels
+        if kernel_width is not None and kernel_height is not None:
+            self.kernel_width = kernel_width
+            self.kernel_height = kernel_height
+        else:
+            # Fall back to square kernel
+            self.kernel_width = kernel_size
+            self.kernel_height = kernel_size
+        
+        self.step_size = step_size if step_size else self.kernel_width
         self.line_detection_threshold = line_detection_threshold
         self.defect_threshold = defect_threshold
         self.debug = debug
@@ -41,18 +52,21 @@ class StripeMisalignmentDetector:
         
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
-            self.kernel_size = 30
+            self.kernel_width = 30
+            self.kernel_height = 30
             self.step_size = 30
             self.line_detection_threshold = 0.10  # More sensitive to line detection
             self.defect_threshold = 5  # Smaller misalignment considered defect
         elif sensitivity == 'low':
-            self.kernel_size = 70
+            self.kernel_width = 70
+            self.kernel_height = 70
             self.step_size = 70
             self.line_detection_threshold = 0.20  # Less sensitive to line detection
             self.defect_threshold = 20  # Larger misalignment needed for defect
         else:  # medium
-            self.kernel_size = 70
-            self.step_size = 35
+            self.kernel_width = 3
+            self.kernel_height = 60
+            self.step_size = 3
             self.line_detection_threshold = 0.20
             self.defect_threshold = 10
     
@@ -94,9 +108,9 @@ class StripeMisalignmentDetector:
         previous_x_pos = None
         
         # Start from top of image
-        y = self.kernel_size // 2
+        y = self.kernel_height // 2
         
-        while y < height - self.kernel_size // 2:
+        while y < height - self.kernel_height // 2:
             row_results = self.scan_row(binary_image, y)
             
             if row_results:
@@ -142,30 +156,29 @@ class StripeMisalignmentDetector:
                     kernel_states.extend(result['kernels'])
             
             # Move to next row
-            y += self.kernel_size
+            y += self.kernel_height
         
         return kernel_states, defects
     
     def scan_row(self, binary_image, y):
-        """Scan a single row to find vertical line"""
+        """Scan a single row to find vertical line - stops at first detection"""
         height, width = binary_image.shape
         row_results = []
         
         # Extract row region
-        y1 = max(0, y - self.kernel_size // 2)
-        y2 = min(height, y + self.kernel_size // 2)
+        y1 = max(0, y - self.kernel_height // 2)
+        y2 = min(height, y + self.kernel_height // 2)
         
         # Scan horizontally
-        x = self.kernel_size // 2
+        x = self.kernel_width // 2
         line_found_in_row = False
-        line_start_x = None
-        line_end_x = None
+        line_x_position = None
         kernels_in_row = []
         
-        while x < width - self.kernel_size // 2:
+        while x < width - self.kernel_width // 2:
             # Extract kernel region
-            x1 = max(0, x - self.kernel_size // 2)
-            x2 = min(width, x + self.kernel_size // 2)
+            x1 = max(0, x - self.kernel_width // 2)
+            x2 = min(width, x + self.kernel_width // 2)
             
             kernel_region = binary_image[y1:y2, x1:x2]
             
@@ -174,13 +187,7 @@ class StripeMisalignmentDetector:
             total_pixels = (y2 - y1) * (x2 - x1)
             has_line = white_pixels > total_pixels * self.line_detection_threshold
             
-            if has_line:
-                if not line_found_in_row:
-                    line_found_in_row = True
-                    line_start_x = x
-                line_end_x = x
-            
-            # Record kernel state for debug - ALL kernels, not just with lines
+            # Record kernel state for debug - ALL kernels scanned
             if self.debug:
                 kernels_in_row.append({
                     'x': x,
@@ -189,17 +196,27 @@ class StripeMisalignmentDetector:
                     'bbox': (x1, y1, x2, y2)
                 })
             
+            if has_line and not line_found_in_row:
+                # First detection in this row - record position and stop scanning
+                line_found_in_row = True
+                line_x_position = x
+                if self.debug:
+                    print(f"Line detected at Y={y}, X={x} - stopping row scan")
+                
+                # If not in debug mode, we can break here since we found the line
+                if not self.debug:
+                    break
+            
             # Move to next position
             x += self.step_size
         
-        # If line was found in this row, calculate center position
+        # Return results
         if line_found_in_row:
-            x_center = (line_start_x + line_end_x) // 2
             row_results.append({
                 'y': y,
-                'x_center': x_center,
-                'line_start': line_start_x,
-                'line_end': line_end_x,
+                'x_center': line_x_position,  # Using the first detection position
+                'line_start': line_x_position,
+                'line_end': line_x_position,
                 'kernels': kernels_in_row
             })
         else:
@@ -263,7 +280,7 @@ class StripeMisalignmentDetector:
                     
                     # Check if this kernel is part of a defect
                     for defect in defects:
-                        if abs(state['y'] - defect['y']) < self.kernel_size // 2 and abs(state['x'] - defect['x']) < self.kernel_size:
+                        if abs(state['y'] - defect['y']) < self.kernel_height // 2 and abs(state['x'] - defect['x']) < self.kernel_width:
                             color = (0, 0, 255)  # Red for defect
                             break
                 

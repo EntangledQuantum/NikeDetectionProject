@@ -196,7 +196,7 @@ class DetectorFactory:
     @staticmethod
     def create_stripe_misalignment_detector(sensitivity: str) -> StripeMisalignmentDetector:
         """Create stripe misalignment detector with appropriate settings"""
-        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=True)
+        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=False)
 
 
 class DetectionStrategy(ABC):
