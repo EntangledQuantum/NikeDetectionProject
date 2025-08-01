@@ -47,7 +47,7 @@ class LineDefectDetector:
             self.max_y_drift = 8  # Maximum Y drift per step
             self.stability_weight = 0.7  # Weight for previous position (higher = more stable)
             self.jagged_threshold = 5  # More sensitive to jagged lines
-        elif sensitivity == 'low':
+        elif sensitivity == 'medium':
             self.kernel_size = 50
             self.search_range = 10  
             self.min_gap_size = 30
@@ -56,13 +56,13 @@ class LineDefectDetector:
             self.strong_line_threshold = 0.05  # Require 35% pixels to change Y position
             self.max_y_drift = 0.1  # Maximum Y drift per step
             self.stability_weight = 0.7  # Weight for previous position
-            self.jagged_threshold = 3  # Less sensitive to jagged lines
-        else:  # medium
+            self.jagged_threshold = 4  # Less sensitive to jagged lines
+        else:  # low
             self.line_threshold = 0.10  # 10% pixels needed (balanced)
             self.strong_line_threshold = 0.20  # Require 20% pixels to change Y position
             self.max_y_drift = 10  # Maximum Y drift per step
             self.stability_weight = 0.65  # Weight for previous position
-            self.jagged_threshold = 8  # Moderate sensitivity to jagged lines
+            self.jagged_threshold = 8  # high sensitivity to jagged lines
     
     def scan_for_lines(self, binary_image):
         """Scan image to find all horizontal lines"""
@@ -438,6 +438,6 @@ class LineDefectDetector:
                             -1)  # Filled rectangle
         
         # Blend with original to create overlay effect
-        result = cv2.addWeighted(vis, 0.5, overlay, 0.5, 0)
+        result = cv2.addWeighted(vis, 0.8, overlay, 0.2, 0)
         
         return result 

@@ -64,9 +64,9 @@ class StripeMisalignmentDetector:
             self.line_detection_threshold = 0.20  # Less sensitive to line detection
             self.defect_threshold = 20  # Larger misalignment needed for defect
         else:  # medium
-            self.kernel_width = 3
+            self.kernel_width = 5
             self.kernel_height = 60
-            self.step_size = 3
+            self.step_size = 5
             self.line_detection_threshold = 0.20
             self.defect_threshold = 10
     
@@ -288,7 +288,7 @@ class StripeMisalignmentDetector:
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 3)
             
             # Blend lightly to see kernels clearly
-            result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+            result = cv2.addWeighted(vis, 0.8, overlay, 0.2, 0)
             
             # Save edge detected image
             edge_vis = cv2.cvtColor(edge_image, cv2.COLOR_GRAY2BGR)
@@ -302,7 +302,7 @@ class StripeMisalignmentDetector:
                 x = defect['x']
                 
                 # Draw filled red rectangle overlay for misalignment
-                thickness = 30  # Height of the misalignment indicator
+                thickness = 100  # Height of the misalignment indicator
                 width = 100  # Width of the misalignment indicator
                 
                 cv2.rectangle(overlay,
@@ -317,7 +317,7 @@ class StripeMisalignmentDetector:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             
             # Blend with original
-            result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
+            result = cv2.addWeighted(vis, 0.8, overlay, 0.2, 0)
             
             return result
     
