@@ -24,7 +24,6 @@ from enum import Enum
 
 # Import detection modules
 from surface_treatment_detection import SurfaceTreatmentDetector
-from debris_detection import DebrisDetector
 from line_defect_detection import LineDefectDetector
 from stripe_misalignment_detection import StripeMisalignmentDetector
 from overspray_detection import OversprayDetector
@@ -113,14 +112,6 @@ class ImagePreprocessor:
         original, gray = cls.load_and_convert_to_grayscale(image_path)
         enhanced = cls.enhance_contrast(gray, clip_limit=2.0)
         return original, gray, enhanced
-    
-    @classmethod
-    def preprocess_for_debris(cls, image_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Preprocessing pipeline for debris detection"""
-        original, gray = cls.load_and_convert_to_grayscale(image_path)
-        denoised = cls.apply_noise_reduction(gray, 'median')
-        enhanced = cls.enhance_contrast(denoised, clip_limit=3.0)
-        return original, gray, denoised, enhanced
 
 
 class ImageTypeClassifier:
@@ -166,26 +157,6 @@ class DetectorFactory:
                 kernel_size=12
             )
     
-    @staticmethod
-    def create_debris_detector(sensitivity: str) -> DebrisDetector:
-        """Create debris detector with appropriate settings"""
-        if sensitivity == 'low':
-            return DebrisDetector(
-                halo_threshold=40, 
-                region_size_range=(150, 1500), 
-                kernel_size=18
-            )
-        elif sensitivity == 'high':
-            return DebrisDetector(
-                halo_threshold=18, 
-                region_size_range=(50, 4500), 
-                kernel_size=22
-            )
-        else:  # medium
-            return DebrisDetector(
-                region_size_range=(100, 1200), 
-                kernel_size=15
-            )
     
     @staticmethod
     def create_line_defect_detector(sensitivity: str) -> LineDefectDetector:
@@ -228,7 +199,6 @@ class StripeDetectionStrategy(DetectionStrategy):
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
             # 'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            # 'debris': DetectorFactory.create_debris_detector(sensitivity),
             'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
            # 'overspray': DetectorFactory.create_overspray_detector(sensitivity)
         }
@@ -254,12 +224,11 @@ class UnknownDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         # Only run safe detectors for unknown types
-        return ['surface_treatment', 'debris']
+        return ['surface_treatment']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
             'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'debris': DetectorFactory.create_debris_detector(sensitivity)
         }
 
 
@@ -335,9 +304,6 @@ class SingleImageProcessor:
                 # Preprocess based on detector type
                 if detector_name == 'surface_treatment':
                     original, gray, enhanced = ImagePreprocessor.preprocess_for_surface_treatment(image_path)
-                    result_img, defects = detector.detect(enhanced)
-                elif detector_name == 'debris':
-                    original, gray, denoised, enhanced = ImagePreprocessor.preprocess_for_debris(image_path)
                     result_img, defects = detector.detect(enhanced)
                 elif detector_name == 'stripe_misalignment':
                     # For stripe misalignment, pass the original image
@@ -688,7 +654,7 @@ def main():
     print(f"Detection routing:")
     print(f"  - Stripe images: Stripe Misalignment, Overspray")
     print(f"  - Island images: Line Defect, Overspray")
-    print(f"  - Unknown images: Surface Treatment, Debris")
+    print(f"  - Unknown images: Surface Treatment")
     print("=" * 60)
     
     pipeline.process_folder(args.input_folder)
