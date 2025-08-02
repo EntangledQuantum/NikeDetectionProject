@@ -179,19 +179,10 @@ class DetectorFactory:
     @staticmethod
     def create_debris_island_detector(sensitivity: str) -> DebrisIslandDetector:
         """Create debris island detector with appropriate settings"""
-        # You can adjust these parameters based on your specific images
-        # Note: If your coordinate system has Y increasing upward (mathematical convention),
-        # the detector will convert to image coordinates (Y increasing downward)
+        # All parameters are handled internally based on sensitivity
         return DebrisIslandDetector(
-            first_line_x=77.80282,       # Starting X position of first line
-            first_line_y=-27.17143,     # Starting Y position of first line (negative will be converted)
-            delta_y=102.19031,            # Vertical distance between lines
-            search_step=5,         # Step size for searching
-            max_batch_checking=5,  # Number of lines to verify
-            line_thickness=3,      # Thickness for visualization
             sensitivity=sensitivity,
-            debug=True,
-            invert_y_axis=True     # Y increases upward in the source coordinate system
+            debug=True               # Enable debug visualization
         )
 
 
@@ -344,6 +335,10 @@ class SingleImageProcessor:
                     # The detector handles its own preprocessing
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
                     result_img, defects = detector.detect(original)
+                    
+                    # Save debug images if available
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
                 else:
                     # Fallback to original image loading
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
