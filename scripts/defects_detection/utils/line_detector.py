@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import json
 import os
+import math
 from pathlib import Path
 
 
@@ -26,10 +27,10 @@ class LineDetector:
         self.exclusion_zones = []  # Will be populated when detecting lines
         
         # Fixed constants for line detection validation
-        self.Y_DELTA_MIN = 95
-        self.Y_DELTA_MAX = 105
+        self.Y_DELTA_MIN = 93
+        self.Y_DELTA_MAX = 107
         self.SLOPE_MIN = 0.0150
-        self.SLOPE_MAX = 0.0211
+        self.SLOPE_MAX = 0.0219
         
         # Set all parameters based on sensitivity
         if sensitivity == 'high':
@@ -45,11 +46,11 @@ class LineDetector:
             self.line_detection_threshold = 0.20
             self.min_detection_count = 3  # Require more detections
         else:  # medium (default)
-            self.kernel_width = 10
-            self.kernel_height = 30
-            self.num_vertical_scans = 50
+            self.kernel_width = 20
+            self.kernel_height = 10
+            self.num_vertical_scans = 30
             self.line_detection_threshold = 0.05
-            self.min_detection_count = 10
+            self.min_detection_count = 5
         
     def load_exclusion_zones(self, image_path):
         """Load exclusion zones from JSON file with same name as image"""
@@ -342,18 +343,34 @@ class LineDetector:
             
             if debug:
                 print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
+                print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
             
-            # Scan within the Y-delta window, fitting as many kernels as possible
+            # Scan within the Y-delta window, fitting as many kernels as needed to cover the full window
             line_found = False
             search_y = next_y_min
-            kernels_in_window = max(1, int((next_y_max - next_y_min) // self.kernel_height))
+            y_window_size = next_y_max - next_y_min
+            kernels_in_window = math.ceil(y_window_size / self.kernel_height)
             
+            if debug:
+                print(f"    LEFT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
+            
+            kernels_actually_scanned = 0
+            best_row_detections = []
+            best_row_count = 0
+            best_row_y = None
+            
+            # Scan ALL kernel rows in the window to find the best one
             for kernel_step in range(kernels_in_window):
                 current_scan_y = int(search_y + kernel_step * self.kernel_height)
                 if current_scan_y > next_y_max:
+                    if debug:
+                        print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
                     break
+                kernels_actually_scanned += 1
+                if debug:
+                    print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
                 
-                line_detections = []
+                row_line_detections = []
                 
                 # Check all x positions at this y level
                 for x_pos in x_positions:
@@ -384,7 +401,7 @@ class LineDetector:
                             if len(y_indices) > 0:
                                 local_y_center = np.mean(y_indices)
                                 line_y = y1 + int(local_y_center)
-                                line_detections.append({
+                                row_line_detections.append({
                                     'x': adjusted_x,
                                     'y': line_y,
                                     'strength': pixel_ratio,
@@ -400,17 +417,30 @@ class LineDetector:
                             'pixel_ratio': pixel_ratio
                         })
                 
-                # Check if we found enough detections to constitute a line
-                if len(line_detections) >= self.min_detection_count:
-                    # Use leftmost detection as the line position
-                    leftmost_line = min(line_detections, key=lambda l: l['x'])
-                    detected_lines.append(leftmost_line)
-                    last_detected_y = leftmost_line['y']
-                    line_sequence += 1
-                    line_found = True
-                    if debug:
-                        print(f"    Real line found: {len(line_detections)} detections, using leftmost at x={leftmost_line['x']}, y={leftmost_line['y']}")
-                    break  # Only one line per Y-delta window
+                # Track the best row (most detections)
+                if len(row_line_detections) > best_row_count:
+                    best_row_detections = row_line_detections
+                    best_row_count = len(row_line_detections)
+                    best_row_y = current_scan_y
+                
+                if debug:
+                    print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
+            
+            # Use the best row if it meets minimum detection count
+            if best_row_count >= self.min_detection_count:
+                # Use leftmost detection as the line position
+                leftmost_line = min(best_row_detections, key=lambda l: l['x'])
+                detected_lines.append(leftmost_line)
+                last_detected_y = leftmost_line['y']
+                line_sequence += 1
+                line_found = True
+                if debug:
+                    print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using leftmost at x={leftmost_line['x']}, y={leftmost_line['y']}")
+            elif debug:
+                print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
+            
+            if debug:
+                print(f"    LEFT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
             
             # If no line found in the window, create ghost line
             if not line_found:
@@ -535,18 +565,34 @@ class LineDetector:
             
             if debug:
                 print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
+                print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
             
-            # Scan within the Y-delta window, fitting as many kernels as possible
+            # Scan within the Y-delta window, fitting as many kernels as needed to cover the full window
             line_found = False
             search_y = next_y_min
-            kernels_in_window = max(1, int((next_y_max - next_y_min) // self.kernel_height))
+            y_window_size = next_y_max - next_y_min
+            kernels_in_window = math.ceil(y_window_size / self.kernel_height)
             
+            if debug:
+                print(f"    RIGHT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
+            
+            kernels_actually_scanned = 0
+            best_row_detections = []
+            best_row_count = 0
+            best_row_y = None
+            
+            # Scan ALL kernel rows in the window to find the best one
             for kernel_step in range(kernels_in_window):
                 current_scan_y = int(search_y + kernel_step * self.kernel_height)
                 if current_scan_y > next_y_max:
+                    if debug:
+                        print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
                     break
+                kernels_actually_scanned += 1
+                if debug:
+                    print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
                 
-                line_detections = []
+                row_line_detections = []
                 
                 # Check all x positions at this y level
                 for x_pos in x_positions:
@@ -577,7 +623,7 @@ class LineDetector:
                             if len(y_indices) > 0:
                                 local_y_center = np.mean(y_indices)
                                 line_y = y1 + int(local_y_center)
-                                line_detections.append({
+                                row_line_detections.append({
                                     'x': adjusted_x,
                                     'y': line_y,
                                     'strength': pixel_ratio,
@@ -593,17 +639,30 @@ class LineDetector:
                             'pixel_ratio': pixel_ratio
                         })
                 
-                # Check if we found enough detections to constitute a line
-                if len(line_detections) >= self.min_detection_count:
-                    # Use rightmost detection as the line position
-                    rightmost_line = max(line_detections, key=lambda l: l['x'])
-                    detected_lines.append(rightmost_line)
-                    last_detected_y = rightmost_line['y']
-                    line_sequence += 1
-                    line_found = True
-                    if debug:
-                        print(f"    Real line found: {len(line_detections)} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
-                    break  # Only one line per Y-delta window
+                # Track the best row (most detections)
+                if len(row_line_detections) > best_row_count:
+                    best_row_detections = row_line_detections
+                    best_row_count = len(row_line_detections)
+                    best_row_y = current_scan_y
+                
+                if debug:
+                    print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
+            
+            # Use the best row if it meets minimum detection count
+            if best_row_count >= self.min_detection_count:
+                # Use rightmost detection as the line position
+                rightmost_line = max(best_row_detections, key=lambda l: l['x'])
+                detected_lines.append(rightmost_line)
+                last_detected_y = rightmost_line['y']
+                line_sequence += 1
+                line_found = True
+                if debug:
+                    print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
+            elif debug:
+                print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
+            
+            if debug:
+                print(f"    RIGHT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
             
             # If no line found in the window, create ghost line
             if not line_found:
