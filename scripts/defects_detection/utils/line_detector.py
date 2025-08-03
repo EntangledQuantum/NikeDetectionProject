@@ -27,8 +27,15 @@ class LineDetector:
         self.exclusion_zones = []  # Will be populated when detecting lines
         
         # Fixed constants for line detection validation
+        """ 
+        old values:
+
         self.Y_DELTA_MIN = 93
         self.Y_DELTA_MAX = 107
+
+        """
+        self.Y_DELTA_MIN = 85
+        self.Y_DELTA_MAX = 120
         self.SLOPE_MIN = 0.0150
         self.SLOPE_MAX = 0.0219
         
@@ -46,10 +53,10 @@ class LineDetector:
             self.line_detection_threshold = 0.20
             self.min_detection_count = 3  # Require more detections
         else:  # medium (default)
-            self.kernel_width = 20
+            self.kernel_width = 10
             self.kernel_height = 10
             self.num_vertical_scans = 30
-            self.line_detection_threshold = 0.05
+            self.line_detection_threshold = 0.3
             self.min_detection_count = 5
         
     def load_exclusion_zones(self, image_path):

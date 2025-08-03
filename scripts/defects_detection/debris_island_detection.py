@@ -34,27 +34,28 @@ class DebrisIslandDetector(BaseDetector):
         # Set debris detection parameters based on sensitivity
         if sensitivity == 'high':
             self.line_thickness = 5
-            self.debris_threshold = 80  # Lower threshold - more sensitive to dark regions
-            self.debris_min_area = 10  # Detect smaller debris
+            self.background_threshold = 140  # More aggressive - treat more as background
+            self.debris_min_area = 5  # Detect smaller debris
         elif sensitivity == 'low':
             self.line_thickness = 5
-            self.debris_threshold = 120  # Higher threshold - less sensitive
+            self.background_threshold = 100  # Less aggressive - darker threshold for background
             self.debris_min_area = 50  # Only detect larger debris
         else:  # medium (default)
             self.line_thickness = 20
-            self.debris_threshold = 1.0  # Medium threshold
+            self.background_threshold = 120  # Medium aggressiveness
             self.debris_min_area = 10  # Medium size requirement
         
         # Store debug images
         self._debug_kernel_image = None
         self._debug_lines_removed_image = None
         self._debug_debris_mask = None
+        self._debug_enhanced_debris_mask = None
         self._debug_line_points_image = None
         
         # Print configuration
         print(f"Debris Island Detector Configuration:")
         print(f"  Line thickness for removal: {self.line_thickness}")
-        print(f"  Debris threshold: {self.debris_threshold}")
+        print(f"  Background threshold: {self.background_threshold} (anything above = background)")
         print(f"  Min debris area: {self.debris_min_area}px²")
     
 
@@ -231,17 +232,38 @@ class DebrisIslandDetector(BaseDetector):
         return lines_removed
     
     def detect_debris(self, lines_removed_image):
-        """Detect debris (dark regions) in the image after lines are removed"""
-        # Apply threshold to find dark regions
-        _, dark_regions = cv2.threshold(lines_removed_image, self.debris_threshold, 255, cv2.THRESH_BINARY_INV)
+        """Detect debris (dark regions) with aggressive contrast enhancement"""
+        # Convert background colors to grayscale values for reference:
+        # rgb(193, 179, 157) -> grayscale ≈ 180
+        # rgb(142, 131, 115) -> grayscale ≈ 133
+        # We'll treat anything above the configured threshold as background (to be ignored/white)
+        # and anything below the threshold as potential debris (to be highlighted/black)
         
-        # Apply morphological operations to clean up noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        dark_regions = cv2.morphologyEx(dark_regions, cv2.MORPH_CLOSE, kernel)
-        dark_regions = cv2.morphologyEx(dark_regions, cv2.MORPH_OPEN, kernel)
+        if self.debug:
+            print(f"Original image range: {lines_removed_image.min()} to {lines_removed_image.max()}")
+            print(f"Using background threshold: {self.background_threshold} (anything above = background, below = debris)")
         
-        # Find contours of dark regions
-        contours, _ = cv2.findContours(dark_regions, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Apply aggressive contrast enhancement
+        # Step 1: Use configured background threshold - anything above this is background
+        background_threshold = self.background_threshold
+        
+        # Step 2: Create binary mask - anything darker than background becomes debris
+        # Use inverse threshold so debris (dark) becomes white (255) and background becomes black (0)
+        _, debris_mask = cv2.threshold(lines_removed_image, background_threshold, 255, cv2.THRESH_BINARY_INV)
+        
+        if self.debug:
+            print(f"Debris mask after aggressive thresholding: {np.sum(debris_mask > 0)} white pixels (potential debris)")
+        
+        # Step 3: Clean up the mask with morphological operations (single filter as requested)
+        # Use closing to fill small gaps and connect nearby debris
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        debris_mask = cv2.morphologyEx(debris_mask, cv2.MORPH_CLOSE, kernel)
+        
+        if self.debug:
+            print(f"Debris mask after morphological cleaning: {np.sum(debris_mask > 0)} white pixels")
+        
+        # Find contours of debris regions
+        contours, _ = cv2.findContours(debris_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Filter contours by area
         debris_contours = []
@@ -251,7 +273,10 @@ class DebrisIslandDetector(BaseDetector):
             if area > self.debris_min_area:
                 debris_contours.append(contour)
         
-        return debris_contours, dark_regions
+        if self.debug:
+            print(f"Found {len(contours)} total contours, {len(debris_contours)} above minimum area ({self.debris_min_area}px²)")
+        
+        return debris_contours, debris_mask
     
     def create_debris_visualization(self, image, debris_contours, matched_lines):
         """Create visualization highlighting debris regions"""
@@ -326,7 +351,7 @@ class DebrisIslandDetector(BaseDetector):
                 print(f"Detected {len(debris_contours)} debris regions after removing {len(matched_lines)} lines")
                 # Store debug images
                 self._debug_lines_removed_image = lines_removed
-                self._debug_debris_mask = dark_regions
+                self._debug_enhanced_debris_mask = dark_regions
         else:
             # No lines detected, just show original
             if len(image.shape) == 2:
@@ -423,11 +448,11 @@ class DebrisIslandDetector(BaseDetector):
                 cv2.imwrite(lines_removed_path, self._debug_lines_removed_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(lines_removed_path)
             
-            # Save debris mask
-            if hasattr(self, '_debug_debris_mask') and self._debug_debris_mask is not None:
-                debris_mask_path = os.path.join(output_dir, f"{base_name}_debris_mask.jpg")
-                cv2.imwrite(debris_mask_path, self._debug_debris_mask, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                debug_paths.append(debris_mask_path)
+            # Save enhanced debris mask
+            if hasattr(self, '_debug_enhanced_debris_mask') and self._debug_enhanced_debris_mask is not None:
+                enhanced_debris_path = os.path.join(output_dir, f"{base_name}_enhanced_debris.jpg")
+                cv2.imwrite(enhanced_debris_path, self._debug_enhanced_debris_mask, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                debug_paths.append(enhanced_debris_path)
             
             # Save line points debug image
             if hasattr(self, '_debug_line_points_image') and self._debug_line_points_image is not None:
