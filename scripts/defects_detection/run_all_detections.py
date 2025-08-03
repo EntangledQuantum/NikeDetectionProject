@@ -331,10 +331,10 @@ class SingleImageProcessor:
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
                     result_img, defects = detector.detect(original)
                 elif detector_name == 'debris_island':
-                    # For debris island detection, pass the original image
-                    # The detector handles its own preprocessing
+                    # For debris island detection, pass the original image and image path
+                    # The detector handles its own preprocessing and can load exclusion zones
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
-                    result_img, defects = detector.detect(original)
+                    result_img, defects = detector.detect(original, image_path)
                     
                     # Save debug images if available
                     if hasattr(detector, 'save_debug_images'):

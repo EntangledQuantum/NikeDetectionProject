@@ -9,6 +9,9 @@ Date: 2024
 
 import cv2
 import numpy as np
+import json
+import os
+from pathlib import Path
 
 
 class LineDetector:
@@ -20,6 +23,7 @@ class LineDetector:
             sensitivity: Detection sensitivity level ('low', 'medium', 'high')
         """
         self.sensitivity = sensitivity
+        self.exclusion_zones = []  # Will be populated when detecting lines
         
         # Set all parameters based on sensitivity
         if sensitivity == 'high':
@@ -44,9 +48,130 @@ class LineDetector:
             self.min_detection_count = 10
             self.min_distance = 50
         
-        # Prefixed Constants 
+    def load_exclusion_zones(self, image_path):
+        """Load exclusion zones from JSON file with same name as image"""
+        try:
+            # Get JSON file path (same name as image, different extension)
+            image_path = Path(image_path)
+            json_path = image_path.with_suffix('.json')
+            
+            if not json_path.exists():
+                self.exclusion_zones = []
+                return
+            
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            
+            # Extract exclusion zones from JSON
+            self.exclusion_zones = []
+            if 'exclusion_zones' in data:
+                for zone in data['exclusion_zones']:
+                    bbox = zone.get('bounding_box_pixels', {})
+                    
+                    # Convert coordinates like tiff_extractor.py does:
+                    # Convert to positive values if negative and ensure proper ordering
+                    raw_top_x = float(bbox.get('top_x', 0))
+                    raw_top_y = float(bbox.get('top_y', 0))
+                    raw_bottom_x = float(bbox.get('bottom_x', 0))
+                    raw_bottom_y = float(bbox.get('bottom_y', 0))
+                    
+                    x1 = int(min(abs(raw_top_x), abs(raw_bottom_x)))
+                    y1 = int(min(abs(raw_top_y), abs(raw_bottom_y)))
+                    x2 = int(max(abs(raw_top_x), abs(raw_bottom_x)))
+                    y2 = int(max(abs(raw_top_y), abs(raw_bottom_y)))
+                    
+                    self.exclusion_zones.append({
+                        'top_x': x1,
+                        'top_y': y1,
+                        'bottom_x': x2,
+                        'bottom_y': y2,
+                        'name': zone.get('name', 'unnamed')
+                    })
+            
+            if self.exclusion_zones:
+                print(f"Loaded {len(self.exclusion_zones)} exclusion zones from {json_path}")
+                for i, zone in enumerate(self.exclusion_zones):
+                    print(f"  Zone {i+1} '{zone['name']}': ({zone['top_x']}, {zone['top_y']}) to ({zone['bottom_x']}, {zone['bottom_y']})")
+            
+        except Exception as e:
+            print(f"Warning: Could not load exclusion zones from {json_path}: {e}")
+            self.exclusion_zones = []
     
-    def scan_vertical_column(self, binary_image, x_position, scan_from_top=True):
+    def is_in_exclusion_zone(self, x, y, width, height):
+        """Check if a kernel region overlaps with any exclusion zone"""
+        for zone in self.exclusion_zones:
+            # Convert zone coordinates to proper order
+            zone_x1 = min(zone['top_x'], zone['bottom_x'])
+            zone_y1 = min(zone['top_y'], zone['bottom_y'])
+            zone_x2 = max(zone['top_x'], zone['bottom_x'])
+            zone_y2 = max(zone['top_y'], zone['bottom_y'])
+            
+            # Kernel boundaries
+            kernel_x1 = x - width // 2
+            kernel_y1 = y - height // 2
+            kernel_x2 = x + width // 2
+            kernel_y2 = y + height // 2
+            
+            # Check for overlap
+            if (kernel_x1 < zone_x2 and kernel_x2 > zone_x1 and
+                kernel_y1 < zone_y2 and kernel_y2 > zone_y1):
+                return True, zone
+        
+        return False, None
+    
+    def get_exclusion_zones_for_side(self, image_width, side='left'):
+        """Get exclusion zones that affect the specified side (left or right)"""
+        relevant_zones = []
+        
+        for zone in self.exclusion_zones:
+            zone_x1 = min(zone['top_x'], zone['bottom_x'])
+            zone_x2 = max(zone['top_x'], zone['bottom_x'])
+            zone_center_x = (zone_x1 + zone_x2) / 2
+            
+            # Determine if zone is on left or right half of image
+            if side == 'left' and zone_center_x < image_width / 2:
+                relevant_zones.append(zone)
+            elif side == 'right' and zone_center_x >= image_width / 2:
+                relevant_zones.append(zone)
+        
+        return relevant_zones
+    
+    def adjust_x_position_for_exclusions(self, x_position, y_position, image_width, side='left', debug=False):
+        """Adjust x position to avoid exclusion zones"""
+        # Check if current position is in an exclusion zone
+        in_zone, zone = self.is_in_exclusion_zone(x_position, y_position, self.kernel_width, self.kernel_height)
+        
+        if not in_zone:
+            return x_position  # No adjustment needed
+        
+        if debug:
+            print(f"    Kernel at ({x_position}, {y_position}) overlaps with exclusion zone '{zone['name']}'")
+        
+        # Adjust position based on side
+        if side == 'left':
+            # For left side, move right to avoid the zone
+            zone_right = max(zone['top_x'], zone['bottom_x'])
+            new_x = zone_right + self.kernel_width // 2 + 5  # Small buffer
+            # Make sure we don't go too far right
+            if new_x < image_width - self.kernel_width // 2:
+                if debug:
+                    print(f"    Shifted LEFT scanner from x={x_position} to x={new_x} (moved right to avoid zone)")
+                return new_x
+        else:  # right side
+            # For right side, move left to avoid the zone
+            zone_left = min(zone['top_x'], zone['bottom_x'])
+            new_x = zone_left - self.kernel_width // 2 - 5  # Small buffer
+            # Make sure we don't go too far left
+            if new_x > self.kernel_width // 2:
+                if debug:
+                    print(f"    Shifted RIGHT scanner from x={x_position} to x={new_x} (moved left to avoid zone)")
+                return new_x
+        
+        if debug:
+            print(f"    Could not adjust position for zone '{zone['name']}' - keeping original x={x_position}")
+        return x_position  # Return original if adjustment is not possible
+    
+    def scan_vertical_column(self, binary_image, x_position, scan_from_top=True, debug=False):
         """Scan a vertical column to find all horizontal lines"""
         height, width = binary_image.shape
         detected_lines = []
@@ -63,11 +188,18 @@ class LineDetector:
             y = self.kernel_height // 2
         
         while y < height - self.kernel_height // 2:
-            # Extract kernel region
+            # Adjust x position if it's in an exclusion zone
+            adjusted_x = x_position
+            if hasattr(self, 'exclusion_zones') and self.exclusion_zones:
+                # Determine which side we're scanning from based on x_position
+                side = 'left' if x_position < width / 2 else 'right'
+                adjusted_x = self.adjust_x_position_for_exclusions(x_position, y, width, side, debug)
+            
+            # Extract kernel region with adjusted x position
             y1 = max(0, y - self.kernel_height // 2)
             y2 = min(height, y + self.kernel_height // 2)
-            x1 = max(0, x_position - self.kernel_width // 2)
-            x2 = min(width, x_position + self.kernel_width // 2)
+            x1 = max(0, adjusted_x - self.kernel_width // 2)
+            x2 = min(width, adjusted_x + self.kernel_width // 2)
             
             kernel_region = binary_image[y1:y2, x1:x2]
             
@@ -86,14 +218,14 @@ class LineDetector:
                         local_y_center = np.mean(y_indices)
                         line_y = y1 + int(local_y_center)
                         detected_lines.append({
-                            'x': x_position,
+                            'x': adjusted_x,  # Use adjusted x position
                             'y': line_y,
                             'strength': pixel_ratio
                         })
                 
-                # Record kernel state for debug
+                # Record kernel state for debug (use adjusted position)
                 kernel_states.append({
-                    'x': x_position,
+                    'x': adjusted_x,
                     'y': y,
                     'has_line': has_line,
                     'bbox': (x1, y1, x2, y2),
@@ -124,7 +256,7 @@ class LineDetector:
             if x_position >= width - self.kernel_width // 2:
                 break
             
-            lines, states = self.scan_vertical_column(binary_image, x_position)
+            lines, states = self.scan_vertical_column(binary_image, x_position, True, debug)
             
             if debug:
                 print(f"Left scan {i} at x={x_position}: Found {len(lines)} lines")
@@ -179,7 +311,7 @@ class LineDetector:
             if x_position < self.kernel_width // 2:
                 break
             
-            lines, states = self.scan_vertical_column(binary_image, x_position)
+            lines, states = self.scan_vertical_column(binary_image, x_position, True, debug)
             
             if debug:
                 print(f"Right scan {i} at x={x_position}: Found {len(lines)} lines")
@@ -246,17 +378,22 @@ class LineDetector:
         
         return matched_lines
     
-    def detect_lines(self, image, debug=False):
+    def detect_lines(self, image, debug=False, image_path=None):
         """
         Detect lines in the image
         
         Args:
             image: Input image (can be grayscale or color)
             debug: Whether to print debug information
+            image_path: Path to the image file (for loading exclusion zones)
             
         Returns:
             tuple: (matched_lines, left_lines, right_lines, left_kernel_states, right_kernel_states)
         """
+        # Load exclusion zones if image path is provided
+        if image_path:
+            self.load_exclusion_zones(image_path)
+        
         # Convert to grayscale if needed
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)

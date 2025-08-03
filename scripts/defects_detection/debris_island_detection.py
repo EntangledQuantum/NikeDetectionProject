@@ -126,6 +126,27 @@ class DebrisIslandDetector(BaseDetector):
         cv2.putText(overlay, f"Min line distance: {self.line_detector.min_distance}px", (10, 150), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
+        # Draw exclusion zones if they exist
+        if hasattr(self.line_detector, 'exclusion_zones') and self.line_detector.exclusion_zones:
+            for i, zone in enumerate(self.line_detector.exclusion_zones):
+                # Convert zone coordinates to proper order
+                x1 = min(zone['top_x'], zone['bottom_x'])
+                y1 = min(zone['top_y'], zone['bottom_y'])
+                x2 = max(zone['top_x'], zone['bottom_x'])
+                y2 = max(zone['top_y'], zone['bottom_y'])
+                
+                # Draw exclusion zone as magenta rectangle
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 0, 255), 3)
+                
+                # Add zone label
+                label = f"Exclusion {i+1}: {zone.get('name', 'unnamed')}"
+                cv2.putText(overlay, label, (x1, y1-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+            
+            # Add exclusion zone legend
+            cv2.putText(overlay, f"Magenta: {len(self.line_detector.exclusion_zones)} Exclusion zones", (10, 180), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+        
         # Blend with original
         debug_vis = cv2.addWeighted(debug_vis, 0.6, overlay, 0.4, 0)
         
@@ -242,10 +263,10 @@ class DebrisIslandDetector(BaseDetector):
         
         return result
     
-    def detect(self, image):
+    def detect(self, image, image_path=None):
         """Main detection method"""
         # Use line detector to find lines
-        matched_lines, left_lines, right_lines, left_kernels, right_kernels = self.line_detector.detect_lines(image, self.debug)
+        matched_lines, left_lines, right_lines, left_kernels, right_kernels = self.line_detector.detect_lines(image, self.debug, image_path)
         
         # Remove lines from image and detect debris
         if matched_lines:

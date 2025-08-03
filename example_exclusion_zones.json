@@ -1,0 +1,31 @@
+{
+  "exclusion_zones": [
+    {
+      "name": "stamp_top_left",
+      "bounding_box_pixels": {
+        "top_x": 100,
+        "top_y": 50,
+        "bottom_x": 300,
+        "bottom_y": 200
+      }
+    },
+    {
+      "name": "watermark_bottom_right",
+      "bounding_box_pixels": {
+        "top_x": 4000,
+        "top_y": 3000,
+        "bottom_x": 4500,
+        "bottom_y": 3300
+      }
+    },
+    {
+      "name": "special_character_middle",
+      "bounding_box_pixels": {
+        "top_x": 2000,
+        "top_y": 1500,
+        "bottom_x": 2200,
+        "bottom_y": 1700
+      }
+    }
+  ]
+}
