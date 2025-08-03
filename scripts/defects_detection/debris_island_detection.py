@@ -23,6 +23,7 @@ class DebrisIslandDetector(BaseDetector):
             sensitivity: Detection sensitivity level ('low', 'medium', 'high')
             debug: Whether to enable debug visualization
         """
+        super().__init__()  # Initialize BaseDetector with exclusion zone support
         self.debug = debug
         self.sensitivity = sensitivity
         
@@ -231,6 +232,31 @@ class DebrisIslandDetector(BaseDetector):
         
         return lines_removed
     
+    def _is_debris_in_exclusion_zone(self, contour):
+        """Check if a debris contour overlaps with any exclusion zone"""
+        # Access exclusion zones from line detector
+        if not hasattr(self.line_detector, 'exclusion_zones') or not self.line_detector.exclusion_zones:
+            return False
+        
+        # Get bounding box of the contour for checking
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        for zone in self.line_detector.exclusion_zones:
+            # Convert zone coordinates to proper order
+            zone_x1 = min(zone['top_x'], zone['bottom_x'])
+            zone_y1 = min(zone['top_y'], zone['bottom_y'])
+            zone_x2 = max(zone['top_x'], zone['bottom_x'])
+            zone_y2 = max(zone['top_y'], zone['bottom_y'])
+            
+            # Check if debris bounding box overlaps with exclusion zone
+            if (x < zone_x2 and x + w > zone_x1 and
+                y < zone_y2 and y + h > zone_y1):
+                if self.debug:
+                    print(f"    Debris at ({x}, {y}) excluded by zone '{zone['name']}'")
+                return True
+        
+        return False
+    
     def detect_debris(self, lines_removed_image):
         """Detect debris (dark regions) with aggressive contrast enhancement"""
         # Convert background colors to grayscale values for reference:
@@ -265,16 +291,23 @@ class DebrisIslandDetector(BaseDetector):
         # Find contours of debris regions
         contours, _ = cv2.findContours(debris_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Filter contours by area
+        # Filter contours by area and exclusion zones
         debris_contours = []
+        excluded_contours = []
         
         for contour in contours:
             area = cv2.contourArea(contour)
             if area > self.debris_min_area:
-                debris_contours.append(contour)
+                # Check if debris is in exclusion zone
+                if self._is_debris_in_exclusion_zone(contour):
+                    excluded_contours.append(contour)
+                else:
+                    debris_contours.append(contour)
         
         if self.debug:
             print(f"Found {len(contours)} total contours, {len(debris_contours)} above minimum area ({self.debris_min_area}px²)")
+            if excluded_contours:
+                print(f"Excluded {len(excluded_contours)} debris contours in exclusion zones")
         
         return debris_contours, debris_mask
     
@@ -316,8 +349,27 @@ class DebrisIslandDetector(BaseDetector):
             cv2.putText(result, f"{int(area)}", (x, y-5), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         
+        # Draw exclusion zones if they exist
+        if hasattr(self.line_detector, 'exclusion_zones') and self.line_detector.exclusion_zones:
+            for i, zone in enumerate(self.line_detector.exclusion_zones):
+                # Convert zone coordinates to proper order
+                x1 = min(zone['top_x'], zone['bottom_x'])
+                y1 = min(zone['top_y'], zone['bottom_y'])
+                x2 = max(zone['top_x'], zone['bottom_x'])
+                y2 = max(zone['top_y'], zone['bottom_y'])
+                
+                # Draw exclusion zone as magenta rectangle
+                cv2.rectangle(result, (x1, y1), (x2, y2), (255, 0, 255), 3)
+                
+                # Add zone label
+                label = f"Exclusion {i+1}: {zone.get('name', 'unnamed')}"
+                cv2.putText(result, label, (x1, y1-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+        
         # Add text summary with shadow effect
         text = f"Lines: {len(matched_lines)} | Debris: {len(debris_contours)} regions"
+        if hasattr(self.line_detector, 'exclusion_zones') and self.line_detector.exclusion_zones:
+            text += f" | Exclusions: {len(self.line_detector.exclusion_zones)}"
         # Shadow
         cv2.putText(result, text, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
         # Main text
@@ -349,6 +401,8 @@ class DebrisIslandDetector(BaseDetector):
             
             if self.debug:
                 print(f"Detected {len(debris_contours)} debris regions after removing {len(matched_lines)} lines")
+                if hasattr(self.line_detector, 'exclusion_zones') and self.line_detector.exclusion_zones:
+                    print(f"Exclusion zones loaded: {len(self.line_detector.exclusion_zones)} zones")
                 # Store debug images
                 self._debug_lines_removed_image = lines_removed
                 self._debug_enhanced_debris_mask = dark_regions
