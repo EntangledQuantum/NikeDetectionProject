@@ -24,8 +24,10 @@ from enum import Enum
 
 # Import detection modules
 from surface_treatment_detection import SurfaceTreatmentDetector
-from debris_detection import DebrisDetector
 from line_defect_detection import LineDefectDetector
+from stripe_misalignment_detection import StripeMisalignmentDetector
+from overspray_detection import OversprayDetector
+from debris_island_detection import DebrisIslandDetector
 
 
 class ImageType(Enum):
@@ -111,14 +113,6 @@ class ImagePreprocessor:
         original, gray = cls.load_and_convert_to_grayscale(image_path)
         enhanced = cls.enhance_contrast(gray, clip_limit=2.0)
         return original, gray, enhanced
-    
-    @classmethod
-    def preprocess_for_debris(cls, image_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Preprocessing pipeline for debris detection"""
-        original, gray = cls.load_and_convert_to_grayscale(image_path)
-        denoised = cls.apply_noise_reduction(gray, 'median')
-        enhanced = cls.enhance_contrast(denoised, clip_limit=3.0)
-        return original, gray, denoised, enhanced
 
 
 class ImageTypeClassifier:
@@ -164,26 +158,6 @@ class DetectorFactory:
                 kernel_size=12
             )
     
-    @staticmethod
-    def create_debris_detector(sensitivity: str) -> DebrisDetector:
-        """Create debris detector with appropriate settings"""
-        if sensitivity == 'low':
-            return DebrisDetector(
-                halo_threshold=40, 
-                region_size_range=(150, 1500), 
-                kernel_size=18
-            )
-        elif sensitivity == 'high':
-            return DebrisDetector(
-                halo_threshold=18, 
-                region_size_range=(50, 4500), 
-                kernel_size=22
-            )
-        else:  # medium
-            return DebrisDetector(
-                region_size_range=(100, 1200), 
-                kernel_size=15
-            )
     
     @staticmethod
     def create_line_defect_detector(sensitivity: str) -> LineDefectDetector:
@@ -191,6 +165,25 @@ class DetectorFactory:
         # Enable debug mode for high sensitivity to see detected lines
         debug = False
         return LineDefectDetector(sensitivity=sensitivity, debug=debug)
+    
+    @staticmethod
+    def create_stripe_misalignment_detector(sensitivity: str) -> StripeMisalignmentDetector:
+        """Create stripe misalignment detector with appropriate settings"""
+        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=False)
+    
+    @staticmethod
+    def create_overspray_detector(sensitivity: str) -> OversprayDetector:
+        """Create overspray detector with appropriate settings"""
+        return OversprayDetector(sensitivity=sensitivity, debug=True)
+    
+    @staticmethod
+    def create_debris_island_detector(sensitivity: str) -> DebrisIslandDetector:
+        """Create debris island detector with appropriate settings"""
+        # All parameters are handled internally based on sensitivity
+        return DebrisIslandDetector(
+            sensitivity=sensitivity,
+            debug=True               # Enable debug visualization
+        )
 
 
 class DetectionStrategy(ABC):
@@ -211,12 +204,13 @@ class StripeDetectionStrategy(DetectionStrategy):
     """Detection strategy for stripe images"""
     
     def get_required_detectors(self) -> List[str]:
-        return ['surface_treatment', 'debris']
+        return ['stripe_misalignment'] #, 'overspray']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
-            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'debris': DetectorFactory.create_debris_detector(sensitivity)
+            # 'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
+            'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
+           # 'overspray': DetectorFactory.create_overspray_detector(sensitivity)
         }
 
 
@@ -224,13 +218,15 @@ class IslandDetectionStrategy(DetectionStrategy):
     """Detection strategy for island images"""
     
     def get_required_detectors(self) -> List[str]:
-        # Only run line defect detector for island images
-        return ['line_defect']
+        # Run debris_island and overspray detectors for island images
+        return ['debris_island' ] #, 'overspray'] #, 'line_defect']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        # Return line defect detector for island images
+        # Return debris_island and overspray detectors for island images
         return {
-            'line_defect': DetectorFactory.create_line_defect_detector(sensitivity)
+            'debris_island': DetectorFactory.create_debris_island_detector(sensitivity),
+            #'line_defect': DetectorFactory.create_line_defect_detector(sensitivity),
+            #'overspray': DetectorFactory.create_overspray_detector(sensitivity)
         }
 
 
@@ -239,12 +235,11 @@ class UnknownDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         # Only run safe detectors for unknown types
-        return ['surface_treatment', 'debris']
+        return ['surface_treatment']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         return {
             'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'debris': DetectorFactory.create_debris_detector(sensitivity)
         }
 
 
@@ -321,9 +316,29 @@ class SingleImageProcessor:
                 if detector_name == 'surface_treatment':
                     original, gray, enhanced = ImagePreprocessor.preprocess_for_surface_treatment(image_path)
                     result_img, defects = detector.detect(enhanced)
-                elif detector_name == 'debris':
-                    original, gray, denoised, enhanced = ImagePreprocessor.preprocess_for_debris(image_path)
-                    result_img, defects = detector.detect(enhanced)
+                elif detector_name == 'stripe_misalignment':
+                    # For stripe misalignment, pass the original image
+                    # The detector has its own edge detection preprocessing
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original)
+                    
+                    # Save debug images if available
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
+                elif detector_name == 'overspray':
+                    # For overspray, pass the original image
+                    # The detector has its own preprocessing for scatter detection
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original)
+                elif detector_name == 'debris_island':
+                    # For debris island detection, pass the original image and image path
+                    # The detector handles its own preprocessing and can load exclusion zones
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original, image_path)
+                    
+                    # Save debug images if available
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
                 else:
                     # Fallback to original image loading
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
@@ -657,9 +672,9 @@ def main():
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
-    print(f"  - Stripe images: Surface Treatment, Debris")
-    print(f"  - Island images: (Overspray disabled)")
-    print(f"  - Unknown images: Surface Treatment, Debris")
+    print(f"  - Stripe images: Stripe Misalignment")
+    print(f"  - Island images: Debris Island, Overspray")
+    print(f"  - Unknown images: Surface Treatment")
     print("=" * 60)
     
     pipeline.process_folder(args.input_folder)
