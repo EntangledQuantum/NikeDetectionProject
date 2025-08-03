@@ -43,6 +43,8 @@ class LineDetector:
             self.line_detection_threshold = 0.05
             self.min_detection_count = 10
             self.min_distance = 50
+        
+        # Prefixed Constants 
     
     def scan_vertical_column(self, binary_image, x_position, scan_from_top=True):
         """Scan a vertical column to find all horizontal lines"""

@@ -49,6 +49,7 @@ class DebrisIslandDetector(BaseDetector):
         self._debug_kernel_image = None
         self._debug_lines_removed_image = None
         self._debug_debris_mask = None
+        self._debug_line_points_image = None
         
         # Print configuration
         print(f"Debris Island Detector Configuration:")
@@ -127,6 +128,31 @@ class DebrisIslandDetector(BaseDetector):
         
         # Blend with original
         debug_vis = cv2.addWeighted(debug_vis, 0.6, overlay, 0.4, 0)
+        
+        return debug_vis
+    
+    def create_line_points_visualization(self, image, matched_lines, left_lines, right_lines):
+        """Create a simple visualization showing ALL detected line points with dots"""
+        if len(image.shape) == 2:
+            debug_vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        else:
+            debug_vis = image.copy()
+        
+        # Draw dots for ALL left-side detections (red)
+        for left_pt in left_lines:
+            cv2.circle(debug_vis, (left_pt['x'], left_pt['y']), 15, (0, 0, 255), -1)  # Red dot
+        
+        # Draw dots for ALL right-side detections (green)  
+        for right_pt in right_lines:
+            cv2.circle(debug_vis, (right_pt['x'], right_pt['y']), 15, (0, 255, 0), -1)  # Green dot
+        
+        # Add legend
+        cv2.putText(debug_vis, "Red: ALL left detections", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(debug_vis, "Green: ALL right detections", (10, 70), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(debug_vis, f"Left: {len(left_lines)} | Right: {len(right_lines)} | Matched: {len(matched_lines)}", (10, 110), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         return debug_vis
     
@@ -253,9 +279,12 @@ class DebrisIslandDetector(BaseDetector):
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             debris_contours = []
         
-        # Create debug kernel visualization if debug mode is enabled
+        # Create debug visualizations if debug mode is enabled
         if self.debug:
             self._debug_kernel_image = self.create_debug_kernel_visualization(image, left_kernels, right_kernels, matched_lines)
+            # Create line points debug image - show ALL detections (left_lines and right_lines)
+            if left_lines or right_lines:
+                self._debug_line_points_image = self.create_line_points_visualization(image, matched_lines, left_lines, right_lines)
         
         # Prepare defects/results
         defects = []
@@ -320,5 +349,11 @@ class DebrisIslandDetector(BaseDetector):
                 debris_mask_path = os.path.join(output_dir, f"{base_name}_debris_mask.jpg")
                 cv2.imwrite(debris_mask_path, self._debug_debris_mask, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(debris_mask_path)
+            
+            # Save line points debug image
+            if hasattr(self, '_debug_line_points_image') and self._debug_line_points_image is not None:
+                line_points_path = os.path.join(output_dir, f"{base_name}_line_points.jpg")
+                cv2.imwrite(line_points_path, self._debug_line_points_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                debug_paths.append(line_points_path)
         
         return debug_paths if debug_paths else None
