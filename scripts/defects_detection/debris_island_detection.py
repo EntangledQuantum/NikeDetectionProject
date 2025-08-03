@@ -68,27 +68,45 @@ class DebrisIslandDetector(BaseDetector):
         
         overlay = debug_vis.copy()
         
-        # First draw the lines
+        # First draw the lines with different colors based on validity and type
         for i, match in enumerate(matched_lines):
             left_pt = match['left']
             right_pt = match['right']
+            valid_slope = match.get('valid_slope', True)
+            left_type = match.get('left_type', 'real')
+            right_type = match.get('right_type', 'real')
+            
+            # Choose color based on validity and line types
+            if not valid_slope:
+                line_color = (0, 0, 255)  # Red for invalid slope
+                line_thickness = self.line_thickness
+            elif left_type == 'ghost' or right_type == 'ghost':
+                line_color = (255, 165, 0)  # Orange for ghost lines
+                line_thickness = max(2, self.line_thickness // 2)  # Thinner for ghost
+            else:
+                line_color = (0, 255, 0)  # Green for valid real lines
+                line_thickness = self.line_thickness
             
             # Draw the line from left detection to right detection
             cv2.line(overlay, (left_pt['x'], left_pt['y']), 
                     (right_pt['x'], right_pt['y']), 
-                    (0, 255, 0), self.line_thickness)
+                    line_color, line_thickness)
             
-            # Draw dots at detection points
-            cv2.circle(overlay, (left_pt['x'], left_pt['y']), 5, (255, 0, 0), -1)  # Blue dot on left
-            cv2.circle(overlay, (right_pt['x'], right_pt['y']), 5, (0, 0, 255), -1)  # Red dot on right
+            # Draw dots at detection points with different colors for ghost/real
+            left_dot_color = (128, 128, 255) if left_type == 'ghost' else (255, 0, 0)  # Light blue for ghost, blue for real
+            right_dot_color = (255, 128, 128) if right_type == 'ghost' else (0, 0, 255)  # Light red for ghost, red for real
+            
+            cv2.circle(overlay, (left_pt['x'], left_pt['y']), 5, left_dot_color, -1)
+            cv2.circle(overlay, (right_pt['x'], right_pt['y']), 5, right_dot_color, -1)
             
             if i < 5:  # Show info for first 5 lines
-                # Add text showing the delta
+                # Add text showing the delta and slope
                 mid_x = (left_pt['x'] + right_pt['x']) // 2
                 mid_y = (left_pt['y'] + right_pt['y']) // 2
-                cv2.putText(overlay, f"dY={match['y_delta']:.0f}", 
-                           (mid_x - 30, mid_y - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                slope_text = f"dY={match['y_delta']:.0f}, S={match['slope']:.4f}"
+                cv2.putText(overlay, slope_text, 
+                           (mid_x - 50, mid_y - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
         
         # Draw left kernels
         for state in left_kernels:
@@ -115,15 +133,19 @@ class DebrisIslandDetector(BaseDetector):
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
         
         # Add legend
-        cv2.putText(overlay, "Green: Left kernels with lines", (10, 30), 
+        cv2.putText(overlay, "Green: Valid real lines", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.putText(overlay, "Yellow: Right kernels with lines", (10, 60), 
+        cv2.putText(overlay, "Orange: Ghost lines", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+        cv2.putText(overlay, "Red: Invalid slopes", (10, 90), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(overlay, "Yellow: Right kernels with lines", (10, 120), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        cv2.putText(overlay, "Gray: Kernels without lines", (10, 90), 
+        cv2.putText(overlay, "Gray: Kernels without lines", (10, 150), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 2)
-        cv2.putText(overlay, f"Min detections required: {self.line_detector.min_detection_count}", (10, 120), 
+        cv2.putText(overlay, f"Y-delta range: {self.line_detector.Y_DELTA_MIN}-{self.line_detector.Y_DELTA_MAX}", (10, 180), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(overlay, f"Min line distance: {self.line_detector.min_distance}px", (10, 150), 
+        cv2.putText(overlay, f"Slope range: {self.line_detector.SLOPE_MIN:.4f}-{self.line_detector.SLOPE_MAX:.4f}", (10, 210), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
         # Draw exclusion zones if they exist
@@ -159,38 +181,52 @@ class DebrisIslandDetector(BaseDetector):
         else:
             debug_vis = image.copy()
         
-        # Draw dots for ALL left-side detections (red)
-        for left_pt in left_lines:
-            cv2.circle(debug_vis, (left_pt['x'], left_pt['y']), 15, (0, 0, 255), -1)  # Red dot
+        # Count different types
+        left_real = [l for l in left_lines if l.get('type', 'real') == 'real']
+        left_ghost = [l for l in left_lines if l.get('type', 'real') == 'ghost']
+        right_real = [l for l in right_lines if l.get('type', 'real') == 'real']
+        right_ghost = [l for l in right_lines if l.get('type', 'real') == 'ghost']
         
-        # Draw dots for ALL right-side detections (green)  
+        # Draw dots for left-side detections
+        for left_pt in left_lines:
+            dot_color = (128, 128, 255) if left_pt.get('type', 'real') == 'ghost' else (0, 0, 255)  # Light blue for ghost, red for real
+            cv2.circle(debug_vis, (left_pt['x'], left_pt['y']), 15, dot_color, -1)
+        
+        # Draw dots for right-side detections  
         for right_pt in right_lines:
-            cv2.circle(debug_vis, (right_pt['x'], right_pt['y']), 15, (0, 255, 0), -1)  # Green dot
+            dot_color = (128, 255, 128) if right_pt.get('type', 'real') == 'ghost' else (0, 255, 0)  # Light green for ghost, green for real
+            cv2.circle(debug_vis, (right_pt['x'], right_pt['y']), 15, dot_color, -1)
         
         # Add legend
-        cv2.putText(debug_vis, "Red: ALL left detections", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-        cv2.putText(debug_vis, "Green: ALL right detections", (10, 70), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        cv2.putText(debug_vis, f"Left: {len(left_lines)} | Right: {len(right_lines)} | Matched: {len(matched_lines)}", (10, 110), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(debug_vis, "Red: Real left detections", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(debug_vis, "Light Blue: Ghost left detections", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 255), 2)
+        cv2.putText(debug_vis, "Green: Real right detections", (10, 90), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_vis, "Light Green: Ghost right detections", (10, 120), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 255, 128), 2)
+        cv2.putText(debug_vis, f"Left: {len(left_real)}r+{len(left_ghost)}g | Right: {len(right_real)}r+{len(right_ghost)}g | Matched: {len(matched_lines)}", (10, 160), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         return debug_vis
     
     def remove_lines_from_image(self, gray_image, matched_lines):
-        """Remove detected lines by painting them white"""
+        """Remove detected lines by painting them white (only valid slopes)"""
         # Create a copy to work on
         lines_removed = gray_image.copy()
         
-        # Paint each line white with the specified thickness
+        # Paint each line white with the specified thickness (only valid slopes)
         for match in matched_lines:
-            left_pt = match['left']
-            right_pt = match['right']
-            
-            # Draw white line to remove it
-            cv2.line(lines_removed, (left_pt['x'], left_pt['y']), 
-                    (right_pt['x'], right_pt['y']), 
-                    255, self.line_thickness * 2)  # Make it thicker to ensure complete removal
+            # Only remove lines with valid slopes
+            if match.get('valid_slope', True):
+                left_pt = match['left']
+                right_pt = match['right']
+                
+                # Draw white line to remove it
+                cv2.line(lines_removed, (left_pt['x'], left_pt['y']), 
+                        (right_pt['x'], right_pt['y']), 
+                        255, self.line_thickness * 2)  # Make it thicker to ensure complete removal
         
         return lines_removed
     
@@ -227,13 +263,14 @@ class DebrisIslandDetector(BaseDetector):
         # Create overlay for highlighting
         overlay = vis.copy()
         
-        # First draw the detected lines in green (for reference)
+        # First draw the detected lines (for reference) - only valid slopes
         for match in matched_lines:
-            left_pt = match['left']
-            right_pt = match['right']
-            cv2.line(overlay, (left_pt['x'], left_pt['y']), 
-                    (right_pt['x'], right_pt['y']), 
-                    (0, 255, 0), self.line_thickness)
+            if match.get('valid_slope', True):  # Only show valid slope lines
+                left_pt = match['left']
+                right_pt = match['right']
+                cv2.line(overlay, (left_pt['x'], left_pt['y']), 
+                        (right_pt['x'], right_pt['y']), 
+                        (0, 255, 0), self.line_thickness)
         
         # Create a separate overlay for debris
         debris_overlay = vis.copy()
@@ -315,6 +352,16 @@ class DebrisIslandDetector(BaseDetector):
             # Get line statistics from line detector
             line_stats = self.line_detector.get_line_statistics(matched_lines)
             
+            # Count valid vs invalid lines
+            valid_lines = [l for l in matched_lines if l.get('valid_slope', True)]
+            invalid_lines = [l for l in matched_lines if not l.get('valid_slope', True)]
+            
+            # Count real vs ghost lines
+            left_real = len([l for l in left_lines if l.get('type', 'real') == 'real'])
+            left_ghost = len([l for l in left_lines if l.get('type', 'real') == 'ghost'])
+            right_real = len([l for l in right_lines if l.get('type', 'real') == 'real'])
+            right_ghost = len([l for l in right_lines if l.get('type', 'real') == 'ghost'])
+            
             defects.append({
                 'type': 'lines_detected',
                 'line_count': line_stats['line_count'],
@@ -322,11 +369,22 @@ class DebrisIslandDetector(BaseDetector):
                 'std_y_delta': line_stats['std_y_delta'],
                 'left_detections': len(left_lines),
                 'right_detections': len(right_lines),
-                'matched_lines': len(matched_lines)
+                'matched_lines': len(matched_lines),
+                'valid_lines': len(valid_lines),
+                'invalid_lines': len(invalid_lines),
+                'left_real': left_real,
+                'left_ghost': left_ghost,
+                'right_real': right_real,
+                'right_ghost': right_ghost
             })
             
             if self.debug:
-                print(f"Line statistics: avg delta_y={line_stats['average_y_delta']:.1f}, std={line_stats['std_y_delta']:.1f}")
+                print(f"FINAL LINE STATISTICS:")
+                print(f"  Total matched lines: {len(matched_lines)}")
+                print(f"  Valid slopes: {len(valid_lines)}, Invalid slopes: {len(invalid_lines)}")
+                print(f"  Left side: {left_real} real + {left_ghost} ghost = {len(left_lines)} total")
+                print(f"  Right side: {right_real} real + {right_ghost} ghost = {len(right_lines)} total")
+                print(f"  Line statistics: avg delta_y={line_stats['average_y_delta']:.1f}, std={line_stats['std_y_delta']:.1f}")
         
         # Add debris detection results
         if 'debris_contours' in locals() and debris_contours:
