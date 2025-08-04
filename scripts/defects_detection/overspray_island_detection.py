@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import os
 from detector_base import BaseDetector
+from utils.image_saver import save_image
 from utils.line_detector import LineDetector
 
 
@@ -652,45 +653,21 @@ class OversprayIslandDetector(BaseDetector):
         debug_paths = []
         
         if self.debug:
-            # Save lines removed image
-            if hasattr(self, '_debug_lines_removed_image') and self._debug_lines_removed_image is not None:
-                lines_removed_path = os.path.join(output_dir, f"{base_name}_overspray_lines_removed.jpg")
-                cv2.imwrite(lines_removed_path, self._debug_lines_removed_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                debug_paths.append(lines_removed_path)
-                print(f"    Lines removed image saved to: {lines_removed_path}")
-            
-            # Save colored regions mask
-            if hasattr(self, '_debug_debris_mask') and self._debug_debris_mask is not None:
-                colored_mask_path = os.path.join(output_dir, f"{base_name}_overspray_colored_mask.jpg")
-                cv2.imwrite(colored_mask_path, self._debug_debris_mask, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                debug_paths.append(colored_mask_path)
-                print(f"    Colored regions mask saved to: {colored_mask_path}")
-            # Save region visualization
-            if hasattr(self, '_debug_clustering_image') and self._debug_clustering_image is not None:
-                regions_path = os.path.join(output_dir, f"{base_name}_overspray_regions.jpg")
-                cv2.imwrite(regions_path, self._debug_clustering_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                debug_paths.append(regions_path)
-                print(f"    Region visualization saved to: {regions_path}")
-            # Save individual debug masks for analysis
-            if hasattr(self, '_debug_mask1_stored') and self._debug_mask1_stored is not None:
-                mask1_path = os.path.join(output_dir, f"{base_name}_overspray_mask1_not_white.jpg")
-                cv2.imwrite(mask1_path, self._debug_mask1_stored, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                debug_paths.append(mask1_path)
-                print(f"    Mask 1 saved to: {mask1_path}")
-            if hasattr(self, '_debug_mask2_stored') and self._debug_mask2_stored is not None:
-                mask2_path = os.path.join(output_dir, f"{base_name}_overspray_mask2_colored_areas.jpg")
-                cv2.imwrite(mask2_path, self._debug_mask2_stored, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                debug_paths.append(mask2_path)
-                print(f"    Mask 2 saved to: {mask2_path}")
-            if hasattr(self, '_debug_mask3_stored') and self._debug_mask3_stored is not None:
-                mask3_path = os.path.join(output_dir, f"{base_name}_overspray_mask3_final.jpg")
-                cv2.imwrite(mask3_path, self._debug_mask3_stored, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                debug_paths.append(mask3_path)
-                print(f"    Mask 3 saved to: {mask3_path}")
-            # # Save line points debug image
-            # if hasattr(self, '_debug_line_points_image') and self._debug_line_points_image is not None:
-            #     line_points_path = os.path.join(output_dir, f"{base_name}_line_points.jpg")
-            #     cv2.imwrite(line_points_path, self._debug_line_points_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            #     debug_paths.append(line_points_path)
-        
+            images_to_save = {
+                '_debug_lines_removed_image': 'overspray_lines_removed',
+                '_debug_debris_mask': 'overspray_colored_mask',
+                '_debug_clustering_image': 'overspray_regions',
+                '_debug_mask1_stored': 'overspray_mask1_not_white',
+                '_debug_mask2_stored': 'overspray_mask2_colored_areas',
+                '_debug_mask3_stored': 'overspray_mask3_final',
+                '_debug_line_points_image': 'overspray_line_points'
+            }
+
+            for attr, suffix in images_to_save.items():
+                image = getattr(self, attr, None)
+                if image is not None:
+                    saved_path = save_image(output_dir, base_name, image, suffix)
+                    if saved_path:
+                        debug_paths.append(saved_path)
+
         return debug_paths if debug_paths else None

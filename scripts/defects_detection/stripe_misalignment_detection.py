@@ -9,11 +9,9 @@ Date: 2024
 import cv2
 import numpy as np
 import os
-import sys
 
-# Add the utils directory to path to import edge_detector
-sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
-from edge_detector import detect_edges_enhanced
+from utils.image_saver import save_image
+from utils.edge_detector import detect_edges_enhanced
 
 
 class StripeMisalignmentDetector:
@@ -323,8 +321,8 @@ class StripeMisalignmentDetector:
     
     def save_debug_images(self, output_dir, base_name):
         """Save debug images if debug mode is enabled"""
-        if self.debug and hasattr(self, '_debug_edge_image'):
-            edge_path = os.path.join(output_dir, f"{base_name}_edge_detected.jpg")
-            cv2.imwrite(edge_path, self._debug_edge_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            return edge_path
+        if self.debug:
+            image = getattr(self, '_debug_edge_image', None)
+            saved_path = save_image(output_dir, base_name, image, 'edge_detected')
+            return saved_path
         return None 
