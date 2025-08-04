@@ -491,14 +491,8 @@ class OversprayIslandDetector(BaseDetector):
         # Create overlay
         overlay = vis.copy()
         
-        # Draw detected lines in green (for reference)
-        for match in matched_lines:
-            if match.get('valid_slope', True):
-                left_pt = match['left']
-                right_pt = match['right']
-                cv2.line(overlay, (left_pt['x'], left_pt['y']), 
-                        (right_pt['x'], right_pt['y']), 
-                        (0, 255, 0), max(2, self.line_thickness // 2))
+        # Don't draw lines in final visualization - focus only on overspray
+        # (Lines are already removed/painted white in processing)
         
         # Highlight overspray regions in red
         for i, region in enumerate(overspray_regions):
@@ -530,7 +524,7 @@ class OversprayIslandDetector(BaseDetector):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # Add summary
-        text = f"Lines: {len(matched_lines)} | Overspray regions: {len(overspray_regions)}"
+        text = f"Overspray regions: {len(overspray_regions)}"
         cv2.putText(overlay, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         
         return overlay

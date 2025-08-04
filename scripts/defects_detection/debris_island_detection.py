@@ -321,14 +321,8 @@ class DebrisIslandDetector(BaseDetector):
         # Create overlay for highlighting
         overlay = vis.copy()
         
-        # First draw the detected lines (for reference) - only valid slopes
-        for match in matched_lines:
-            if match.get('valid_slope', True):  # Only show valid slope lines
-                left_pt = match['left']
-                right_pt = match['right']
-                cv2.line(overlay, (left_pt['x'], left_pt['y']), 
-                        (right_pt['x'], right_pt['y']), 
-                        (0, 255, 0), self.line_thickness)
+        # Don't draw lines in final visualization - focus only on debris
+        # (Lines are already removed/painted white in processing)
         
         # Create a separate overlay for debris
         debris_overlay = vis.copy()
@@ -367,7 +361,7 @@ class DebrisIslandDetector(BaseDetector):
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
         
         # Add text summary with shadow effect
-        text = f"Lines: {len(matched_lines)} | Debris: {len(debris_contours)} regions"
+        text = f"Debris: {len(debris_contours)} regions"
         if hasattr(self.line_detector, 'exclusion_zones') and self.line_detector.exclusion_zones:
             text += f" | Exclusions: {len(self.line_detector.exclusion_zones)}"
         # Shadow
