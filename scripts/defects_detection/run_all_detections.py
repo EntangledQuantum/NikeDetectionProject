@@ -28,6 +28,7 @@ from line_defect_detection import LineDefectDetector
 from stripe_misalignment_detection import StripeMisalignmentDetector
 from overspray_detection import OversprayDetector
 from debris_island_detection import DebrisIslandDetector
+from overspray_island_detection import OversprayIslandDetector
 
 
 class ImageType(Enum):
@@ -184,6 +185,15 @@ class DetectorFactory:
             sensitivity=sensitivity,
             debug=True               # Enable debug visualization
         )
+    
+    @staticmethod
+    def create_overspray_island_detector(sensitivity: str) -> OversprayIslandDetector:
+        """Create overspray island detector with appropriate settings"""
+        # All parameters are handled internally based on sensitivity
+        return OversprayIslandDetector(
+            sensitivity=sensitivity,
+            debug=True               # Enable debug visualization
+        )
 
 
 class DetectionStrategy(ABC):
@@ -218,15 +228,14 @@ class IslandDetectionStrategy(DetectionStrategy):
     """Detection strategy for island images"""
     
     def get_required_detectors(self) -> List[str]:
-        # Run debris_island and overspray detectors for island images
-        return ['debris_island' ] #, 'overspray'] #, 'line_defect']
+        # Run debris_island and overspray_island detectors for island images
+        return ['debris_island', 'overspray_island']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        # Return debris_island and overspray detectors for island images
+        # Return debris_island and overspray_island detectors for island images
         return {
             'debris_island': DetectorFactory.create_debris_island_detector(sensitivity),
-            #'line_defect': DetectorFactory.create_line_defect_detector(sensitivity),
-            #'overspray': DetectorFactory.create_overspray_detector(sensitivity)
+            'overspray_island': DetectorFactory.create_overspray_island_detector(sensitivity)
         }
 
 
@@ -332,6 +341,15 @@ class SingleImageProcessor:
                     result_img, defects = detector.detect(original)
                 elif detector_name == 'debris_island':
                     # For debris island detection, pass the original image and image path
+                    # The detector handles its own preprocessing and can load exclusion zones
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original, image_path)
+                    
+                    # Save debug images if available
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
+                elif detector_name == 'overspray_island':
+                    # For overspray island detection, pass the original image and image path
                     # The detector handles its own preprocessing and can load exclusion zones
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
                     result_img, defects = detector.detect(original, image_path)
@@ -673,7 +691,7 @@ def main():
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
     print(f"  - Stripe images: Stripe Misalignment")
-    print(f"  - Island images: Debris Island, Overspray")
+    print(f"  - Island images: Debris Island, Overspray Island")
     print(f"  - Unknown images: Surface Treatment")
     print("=" * 60)
     
