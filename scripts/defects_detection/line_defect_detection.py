@@ -342,8 +342,8 @@ class LineDefectDetector:
         previous_scan_means = []  # Store mean Y positions of previous scans
         
         for i, start_y in enumerate(line_positions):
-            if self.debug:
-                print(f"Tracking line {i+1} starting at Y={start_y}")
+            # if self.debug:
+            #     print(f"Tracking line {i+1} starting at Y={start_y}")
             
             kernel_states, defects = self.track_line(binary, start_y, previous_scan_means)
             
@@ -358,11 +358,11 @@ class LineDefectDetector:
                     y_positions = [state['y'] for state in kernel_states]
                     mean_y = np.mean(y_positions)
                     previous_scan_means.append(mean_y)
-                    if self.debug:
-                        print(f"Line {i+1} mean Y: {mean_y:.1f}")
-            else:
-                if self.debug:
-                    print(f"Line {i+1} terminated due to overlap with previous scan")
+                    # if self.debug:
+                    #     print(f"Line {i+1} mean Y: {mean_y:.1f}")
+            
+                # if self.debug:
+                #     print(f"Line {i+1} terminated due to overlap with previous scan")
         
         # Create visualization
         visualization = self.create_visualization(image, all_defects, all_kernel_states)

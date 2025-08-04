@@ -487,25 +487,41 @@ class DebrisIslandDetector(BaseDetector):
             # Save kernel debug image
             if hasattr(self, '_debug_kernel_image') and self._debug_kernel_image is not None:
                 debug_path = os.path.join(output_dir, f"{base_name}_kernel_debug.jpg")
-                cv2.imwrite(debug_path, self._debug_kernel_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                operation_success = cv2.imwrite(debug_path, self._debug_kernel_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if operation_success:
+                    print(f"    Kernel debug image saved to: {debug_path}")
+                else:
+                    print(f"    Failed to save kernel debug image to: {debug_path}")
                 debug_paths.append(debug_path)
             
             # Save lines removed image
             if hasattr(self, '_debug_lines_removed_image') and self._debug_lines_removed_image is not None:
                 lines_removed_path = os.path.join(output_dir, f"{base_name}_lines_removed.jpg")
-                cv2.imwrite(lines_removed_path, self._debug_lines_removed_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                operation_success = cv2.imwrite(lines_removed_path, self._debug_lines_removed_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if operation_success:
+                    print(f"    Lines removed image saved to: {lines_removed_path}")
+                else:
+                    print(f"    Failed to save lines removed image to: {lines_removed_path}")
                 debug_paths.append(lines_removed_path)
             
             # Save enhanced debris mask
             if hasattr(self, '_debug_enhanced_debris_mask') and self._debug_enhanced_debris_mask is not None:
                 enhanced_debris_path = os.path.join(output_dir, f"{base_name}_enhanced_debris.jpg")
-                cv2.imwrite(enhanced_debris_path, self._debug_enhanced_debris_mask, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                operation_success = cv2.imwrite(enhanced_debris_path, self._debug_enhanced_debris_mask, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if operation_success:
+                    print(f"    Enhanced debris mask saved to: {enhanced_debris_path}")
+                else:
+                    print(f"    Failed to save enhanced debris mask to: {enhanced_debris_path}")
                 debug_paths.append(enhanced_debris_path)
             
             # Save line points debug image
             if hasattr(self, '_debug_line_points_image') and self._debug_line_points_image is not None:
                 line_points_path = os.path.join(output_dir, f"{base_name}_line_points.jpg")
-                cv2.imwrite(line_points_path, self._debug_line_points_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                operation_success = cv2.imwrite(line_points_path, self._debug_line_points_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if operation_success:
+                    print(f"    Line points debug image saved to: {line_points_path}")
+                else:
+                    print(f"    Failed to save line points debug image to: {line_points_path}")
                 debug_paths.append(line_points_path)
         
         return debug_paths if debug_paths else None

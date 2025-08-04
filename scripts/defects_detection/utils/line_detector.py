@@ -99,10 +99,10 @@ class LineDetector:
                         'name': zone.get('name', 'unnamed')
                     })
             
-            if self.exclusion_zones:
-                print(f"Loaded {len(self.exclusion_zones)} exclusion zones from {json_path}")
-                for i, zone in enumerate(self.exclusion_zones):
-                    print(f"  Zone {i+1} '{zone['name']}': ({zone['top_x']}, {zone['top_y']}) to ({zone['bottom_x']}, {zone['bottom_y']})")
+            # if self.exclusion_zones:
+            #     print(f"Loaded {len(self.exclusion_zones)} exclusion zones from {json_path}")
+            #     for i, zone in enumerate(self.exclusion_zones):
+            #         print(f"  Zone {i+1} '{zone['name']}': ({zone['top_x']}, {zone['top_y']}) to ({zone['bottom_x']}, {zone['bottom_y']})")
             
         except Exception as e:
             print(f"Warning: Could not load exclusion zones from {json_path}: {e}")
@@ -155,8 +155,8 @@ class LineDetector:
         if not in_zone:
             return x_position  # No adjustment needed
         
-        if debug:
-            print(f"    Kernel at ({x_position}, {y_position}) overlaps with exclusion zone '{zone['name']}'")
+        # if debug:
+        #     print(f"    Kernel at ({x_position}, {y_position}) overlaps with exclusion zone '{zone['name']}'")
         
         # Adjust position based on side
         if side == 'left':
@@ -165,8 +165,8 @@ class LineDetector:
             new_x = zone_right + self.kernel_width // 2 + 5  # Small buffer
             # Make sure we don't go too far right
             if new_x < image_width - self.kernel_width // 2:
-                if debug:
-                    print(f"    Shifted LEFT scanner from x={x_position} to x={new_x} (moved right to avoid zone)")
+                # if debug:
+                #     print(f"    Shifted LEFT scanner from x={x_position} to x={new_x} (moved right to avoid zone)")
                 return new_x
         else:  # right side
             # For right side, move left to avoid the zone
@@ -174,8 +174,8 @@ class LineDetector:
             new_x = zone_left - self.kernel_width // 2 - 5  # Small buffer
             # Make sure we don't go too far left
             if new_x > self.kernel_width // 2:
-                if debug:
-                    print(f"    Shifted RIGHT scanner from x={x_position} to x={new_x} (moved left to avoid zone)")
+                # if debug:
+                #     print(f"    Shifted RIGHT scanner from x={x_position} to x={new_x} (moved left to avoid zone)")
                 return new_x
         
         if debug:
@@ -348,9 +348,9 @@ class LineDetector:
             if next_y_max >= height - self.kernel_height // 2:
                 break
             
-            if debug:
-                print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
-                print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
+            #if debug:
+                # print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
+                # print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
             
             # Scan within the Y-delta window, fitting as many kernels as needed to cover the full window
             line_found = False
@@ -358,8 +358,8 @@ class LineDetector:
             y_window_size = next_y_max - next_y_min
             kernels_in_window = math.ceil(y_window_size / self.kernel_height)
             
-            if debug:
-                print(f"    LEFT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
+            # if debug:
+            #     print(f"    LEFT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
             
             kernels_actually_scanned = 0
             best_row_detections = []
@@ -370,12 +370,12 @@ class LineDetector:
             for kernel_step in range(kernels_in_window):
                 current_scan_y = int(search_y + kernel_step * self.kernel_height)
                 if current_scan_y > next_y_max:
-                    if debug:
-                        print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
+                    # if debug:
+                    #     print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
                     break
                 kernels_actually_scanned += 1
-                if debug:
-                    print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
+                # if debug:
+                #     print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
                 
                 row_line_detections = []
                 
@@ -430,8 +430,8 @@ class LineDetector:
                     best_row_count = len(row_line_detections)
                     best_row_y = current_scan_y
                 
-                if debug:
-                    print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
+                # if debug:
+                #     print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
             
             # Use the best row if it meets minimum detection count
             if best_row_count >= self.min_detection_count:
@@ -441,13 +441,13 @@ class LineDetector:
                 last_detected_y = leftmost_line['y']
                 line_sequence += 1
                 line_found = True
-                if debug:
-                    print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using leftmost at x={leftmost_line['x']}, y={leftmost_line['y']}")
-            elif debug:
-                print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
+                # if debug:   
+                #     print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using leftmost at x={leftmost_line['x']}, y={leftmost_line['y']}")
+            # elif debug:
+            #     print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
             
-            if debug:
-                print(f"    LEFT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
+            # if debug:
+            #     print(f"    LEFT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
             
             # If no line found in the window, create ghost line
             if not line_found:
@@ -462,13 +462,13 @@ class LineDetector:
                 detected_lines.append(ghost_line)
                 last_detected_y = ghost_y
                 line_sequence += 1
-                if debug:
-                    print(f"    Ghost line created at y={ghost_y}")
+                # if debug:
+                #     print(f"    Ghost line created at y={ghost_y}")
         
         if debug:
             real_lines = [l for l in detected_lines if l.get('type') == 'real']
             ghost_lines = [l for l in detected_lines if l.get('type') == 'ghost']
-            print(f"LEFT SIDE FINAL: {len(real_lines)} real lines, {len(ghost_lines)} ghost lines, total: {len(detected_lines)}")
+            # print(f"LEFT SIDE FINAL: {len(real_lines)} real lines, {len(ghost_lines)} ghost lines, total: {len(detected_lines)}")
         
         return detected_lines, all_kernel_states
     
@@ -497,8 +497,8 @@ class LineDetector:
         
         # Scan for first line
         while current_y < height - self.kernel_height // 2 and last_detected_y is None:
-            if debug:
-                print(f"  Scanning for FIRST line at y={current_y}")
+            # if debug:
+            #     print(f"  Scanning for FIRST line at y={current_y}")
             
             line_detections = []
             
@@ -554,8 +554,8 @@ class LineDetector:
                 detected_lines.append(rightmost_line)
                 last_detected_y = rightmost_line['y']
                 line_sequence += 1
-                if debug:
-                    print(f"    FIRST line found: {len(line_detections)} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
+                # if debug:
+                #     print(f"    FIRST line found: {len(line_detections)} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
                 break
             
             # Move to next y position
@@ -570,9 +570,9 @@ class LineDetector:
             if next_y_max >= height - self.kernel_height // 2:
                 break
             
-            if debug:
-                print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
-                print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
+            # if debug:
+            #     print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
+            #     print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
             
             # Scan within the Y-delta window, fitting as many kernels as needed to cover the full window
             line_found = False
@@ -580,8 +580,8 @@ class LineDetector:
             y_window_size = next_y_max - next_y_min
             kernels_in_window = math.ceil(y_window_size / self.kernel_height)
             
-            if debug:
-                print(f"    RIGHT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
+            # if debug:
+            #     print(f"    RIGHT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
             
             kernels_actually_scanned = 0
             best_row_detections = []
@@ -592,12 +592,12 @@ class LineDetector:
             for kernel_step in range(kernels_in_window):
                 current_scan_y = int(search_y + kernel_step * self.kernel_height)
                 if current_scan_y > next_y_max:
-                    if debug:
-                        print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
+                    # if debug:
+                    #     print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
                     break
                 kernels_actually_scanned += 1
-                if debug:
-                    print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
+                # if debug:
+                #     print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
                 
                 row_line_detections = []
                 
@@ -652,8 +652,8 @@ class LineDetector:
                     best_row_count = len(row_line_detections)
                     best_row_y = current_scan_y
                 
-                if debug:
-                    print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
+                # if debug:
+                #     print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
             
             # Use the best row if it meets minimum detection count
             if best_row_count >= self.min_detection_count:
@@ -663,13 +663,13 @@ class LineDetector:
                 last_detected_y = rightmost_line['y']
                 line_sequence += 1
                 line_found = True
-                if debug:
-                    print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
-            elif debug:
-                print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
+                # if debug:
+                #     print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
+            # elif debug:
+            #     print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
             
-            if debug:
-                print(f"    RIGHT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
+            # if debug:
+            #     print(f"    RIGHT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
             
             # If no line found in the window, create ghost line
             if not line_found:
@@ -684,8 +684,8 @@ class LineDetector:
                 detected_lines.append(ghost_line)
                 last_detected_y = ghost_y
                 line_sequence += 1
-                if debug:
-                    print(f"    Ghost line created at y={ghost_y}")
+                # if debug:
+                #     print(f"    Ghost line created at y={ghost_y}")
         
         if debug:
             real_lines = [l for l in detected_lines if l.get('type') == 'real']
@@ -736,7 +736,7 @@ class LineDetector:
                 validity = "VALID" if is_valid_slope else "INVALID"
                 left_type = left_line.get('type', 'real')
                 right_type = right_line.get('type', 'real')
-                print(f"Matched line {i}: Left({left_line['x']}, {left_line['y']}, {left_type}) -> Right({right_line['x']}, {right_line['y']}, {right_type}), slope={slope:.4f}, {validity}")
+                # print(f"Matched line {i}: Left({left_line['x']}, {left_line['y']}, {left_type}) -> Right({right_line['x']}, {right_line['y']}, {right_type}), slope={slope:.4f}, {validity}")
         
         if debug:
             print(f"\nMATCHING SUMMARY:")

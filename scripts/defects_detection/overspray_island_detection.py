@@ -103,8 +103,8 @@ class OversprayIslandDetector(BaseDetector):
             # Check if debris bounding box overlaps with exclusion zone
             if (x < zone_x2 and x + w > zone_x1 and
                 y < zone_y2 and y + h > zone_y1):
-                if self.debug:
-                    print(f"    Debris at ({cx}, {cy}) excluded by zone '{zone['name']}'")
+                # if self.debug:
+                #     print(f"    Debris at ({cx}, {cy}) excluded by zone '{zone['name']}'")
                 return True
         
         return False
@@ -657,35 +657,36 @@ class OversprayIslandDetector(BaseDetector):
                 lines_removed_path = os.path.join(output_dir, f"{base_name}_overspray_lines_removed.jpg")
                 cv2.imwrite(lines_removed_path, self._debug_lines_removed_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(lines_removed_path)
+                print(f"    Lines removed image saved to: {lines_removed_path}")
             
             # Save colored regions mask
             if hasattr(self, '_debug_debris_mask') and self._debug_debris_mask is not None:
                 colored_mask_path = os.path.join(output_dir, f"{base_name}_overspray_colored_mask.jpg")
                 cv2.imwrite(colored_mask_path, self._debug_debris_mask, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(colored_mask_path)
-            
+                print(f"    Colored regions mask saved to: {colored_mask_path}")
             # Save region visualization
             if hasattr(self, '_debug_clustering_image') and self._debug_clustering_image is not None:
                 regions_path = os.path.join(output_dir, f"{base_name}_overspray_regions.jpg")
                 cv2.imwrite(regions_path, self._debug_clustering_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(regions_path)
-            
+                print(f"    Region visualization saved to: {regions_path}")
             # Save individual debug masks for analysis
             if hasattr(self, '_debug_mask1_stored') and self._debug_mask1_stored is not None:
                 mask1_path = os.path.join(output_dir, f"{base_name}_overspray_mask1_not_white.jpg")
                 cv2.imwrite(mask1_path, self._debug_mask1_stored, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(mask1_path)
-            
+                print(f"    Mask 1 saved to: {mask1_path}")
             if hasattr(self, '_debug_mask2_stored') and self._debug_mask2_stored is not None:
                 mask2_path = os.path.join(output_dir, f"{base_name}_overspray_mask2_colored_areas.jpg")
                 cv2.imwrite(mask2_path, self._debug_mask2_stored, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(mask2_path)
-            
+                print(f"    Mask 2 saved to: {mask2_path}")
             if hasattr(self, '_debug_mask3_stored') and self._debug_mask3_stored is not None:
                 mask3_path = os.path.join(output_dir, f"{base_name}_overspray_mask3_final.jpg")
                 cv2.imwrite(mask3_path, self._debug_mask3_stored, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(mask3_path)
-            
+                print(f"    Mask 3 saved to: {mask3_path}")
             # # Save line points debug image
             # if hasattr(self, '_debug_line_points_image') and self._debug_line_points_image is not None:
             #     line_points_path = os.path.join(output_dir, f"{base_name}_line_points.jpg")

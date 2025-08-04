@@ -170,7 +170,7 @@ class DetectorFactory:
     @staticmethod
     def create_stripe_misalignment_detector(sensitivity: str) -> StripeMisalignmentDetector:
         """Create stripe misalignment detector with appropriate settings"""
-        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=False)
+        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=True)
     
     @staticmethod
     def create_overspray_detector(sensitivity: str) -> OversprayDetector:
@@ -229,13 +229,14 @@ class IslandDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         # Run debris_island and overspray_island detectors for island images
-        return ['debris_island', 'overspray_island']
+        return ['debris_island', 'line_defect']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         # Return debris_island and overspray_island detectors for island images
         return {
             'debris_island': DetectorFactory.create_debris_island_detector(sensitivity),
-            'overspray_island': DetectorFactory.create_overspray_island_detector(sensitivity)
+         #   'overspray_island': DetectorFactory.create_overspray_island_detector(sensitivity),
+            'line_defect': DetectorFactory.create_line_defect_detector(sensitivity)
         }
 
 
@@ -364,7 +365,11 @@ class SingleImageProcessor:
                 
                 # Save visualization
                 vis_path = os.path.join(output_dir, f"{detector_name}_visualization.jpg")
-                cv2.imwrite(vis_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                operation_success = cv2.imwrite(vis_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if operation_success:
+                    print(f"    Visualization saved to: {vis_path}")
+                else:
+                    print(f"    Failed to save visualization to: {vis_path}")
                 
                 # Clean defects for JSON serialization
                 cleaned_defects = self._clean_defect_data(defects)
