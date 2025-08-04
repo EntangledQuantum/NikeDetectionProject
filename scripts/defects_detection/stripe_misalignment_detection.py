@@ -66,7 +66,7 @@ class StripeMisalignmentDetector:
             self.kernel_height = 60
             self.step_size = 5
             self.line_detection_threshold = 0.20
-            self.defect_threshold = 10
+            self.defect_threshold = 20
     
     def preprocess_with_edge_detection(self, image):
         """Apply edge detection preprocessing to enhance vertical edges"""

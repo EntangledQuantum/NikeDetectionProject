@@ -48,7 +48,7 @@ class OversprayIslandDetector(BaseDetector):
             self.line_thickness = 15  # Thicker to ensure lines are fully covered
             self.background_threshold = 50  # Sensitivity to color detection
             self.overspray_min_area = 5000  # MINIMUM area to be considered overspray (user control)
-            self.overspray_max_distance = 500  # Maximum distance to group nearby regions
+            self.overspray_max_distance = 1000  # Maximum distance to group nearby regions
         
         # Store debug images
         self._debug_kernel_image = None

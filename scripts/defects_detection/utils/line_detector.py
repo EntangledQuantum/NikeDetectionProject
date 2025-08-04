@@ -38,26 +38,98 @@ class LineDetector:
         self.Y_DELTA_MAX = 120
         self.SLOPE_MIN = 0.0150
         self.SLOPE_MAX = 0.0219
+
+        self.IDEAL_IMAGE_WIDTH = 5163
+        self.IDEAL_IMAGE_HEIGHT = 44228
         
-        # Set all parameters based on sensitivity
+        # Set base parameters based on sensitivity (for ideal image size)
         if sensitivity == 'high':
-            self.kernel_width = 20
-            self.kernel_height = 20
-            self.num_vertical_scans = 7  # More scans for high sensitivity
+            self.base_kernel_width = 20
+            self.base_kernel_height = 20
+            self.base_num_vertical_scans = 7  # More scans for high sensitivity
             self.line_detection_threshold = 0.10
             self.min_detection_count = 2
         elif sensitivity == 'low':
-            self.kernel_width = 40
-            self.kernel_height = 40
-            self.num_vertical_scans = 3  # Fewer scans for low sensitivity
+            self.base_kernel_width = 40
+            self.base_kernel_height = 40
+            self.base_num_vertical_scans = 3  # Fewer scans for low sensitivity
             self.line_detection_threshold = 0.20
             self.min_detection_count = 3  # Require more detections
         else:  # medium (default)
-            self.kernel_width = 10
-            self.kernel_height = 10
-            self.num_vertical_scans = 30
+            self.base_kernel_width = 10
+            self.base_kernel_height = 10
+            self.base_num_vertical_scans = 30
             self.line_detection_threshold = 0.3
             self.min_detection_count = 5
+        
+        # These will be set dynamically based on actual image size
+        self.kernel_width = self.base_kernel_width
+        self.kernel_height = self.base_kernel_height
+        self.num_vertical_scans = self.base_num_vertical_scans
+
+    
+    def calculate_scaled_kernel_dimensions(self, image_width, image_height, debug=False):
+        """
+        Calculate scaled kernel dimensions based on image size compared to ideal dimensions
+        
+        Args:
+            image_width: Actual image width
+            image_height: Actual image height
+            debug: Whether to print scaling information
+            
+        Returns:
+            tuple: (scaled_kernel_width, scaled_kernel_height, scaled_num_vertical_scans)
+        """
+        # Calculate scaling factors
+        width_scale = image_width / self.IDEAL_IMAGE_WIDTH
+        height_scale = image_height / self.IDEAL_IMAGE_HEIGHT
+        
+        # Use the average of width and height scaling for balanced scaling
+        # This prevents extreme distortion if aspect ratio changes significantly
+        avg_scale = (width_scale + height_scale) / 2
+        
+        # Scale kernel dimensions (ensure minimum size of 1)
+        scaled_kernel_width = max(1, int(self.base_kernel_width * width_scale))
+        scaled_kernel_height = max(1, int(self.base_kernel_height * height_scale))
+        
+        # Scale number of vertical scans based on width (more width = more scans needed)
+        # But cap it to reasonable limits
+        scaled_num_scans = max(3, min(50, int(self.base_num_vertical_scans * width_scale)))
+        
+        if debug:
+            print(f"KERNEL SCALING:")
+            print(f"  Image size: {image_width}x{image_height} (vs ideal {self.IDEAL_IMAGE_WIDTH}x{self.IDEAL_IMAGE_HEIGHT})")
+            print(f"  Scale factors: width={width_scale:.3f}, height={height_scale:.3f}, avg={avg_scale:.3f}")
+            print(f"  Base kernel: {self.base_kernel_width}x{self.base_kernel_height}, scans={self.base_num_vertical_scans}")
+            print(f"  Scaled kernel: {scaled_kernel_width}x{scaled_kernel_height}, scans={scaled_num_scans}")
+            
+            if avg_scale > 1.5:
+                print(f"  NOTE: Image is {avg_scale:.1f}x larger than ideal - using larger kernels")
+            elif avg_scale < 0.5:
+                print(f"  NOTE: Image is {1/avg_scale:.1f}x smaller than ideal - using smaller kernels")
+        
+        return scaled_kernel_width, scaled_kernel_height, scaled_num_scans
+    
+    def update_kernel_dimensions_for_image(self, image_width, image_height, debug=False):
+        """
+        Update kernel dimensions for the current image size
+        
+        Args:
+            image_width: Actual image width
+            image_height: Actual image height
+            debug: Whether to print scaling information
+        """
+        self.kernel_width, self.kernel_height, self.num_vertical_scans = self.calculate_scaled_kernel_dimensions(
+            image_width, image_height, debug
+        )
+        
+        # Also update Y_DELTA values proportionally based on height scaling
+        height_scale = image_height / self.IDEAL_IMAGE_HEIGHT
+        self.Y_DELTA_MIN = max(10, int(85 * height_scale))  # Minimum 10 pixels
+        self.Y_DELTA_MAX = max(self.Y_DELTA_MIN + 10, int(120 * height_scale))  # Ensure max > min
+        
+        if debug:
+            print(f"  Updated Y_DELTA range: {self.Y_DELTA_MIN}-{self.Y_DELTA_MAX} (scaled by {height_scale:.3f})")
         
     def load_exclusion_zones(self, image_path):
         """Load exclusion zones from JSON file with same name as image"""
@@ -773,6 +845,10 @@ class LineDetector:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
             gray = image.copy()
+        
+        # Update kernel dimensions based on actual image size
+        height, width = gray.shape
+        self.update_kernel_dimensions_for_image(width, height, debug)
         
         # Apply threshold to get binary image (lines should be dark/black)
         _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)

@@ -229,13 +229,13 @@ class IslandDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         # Run debris_island and overspray_island detectors for island images
-        return ['debris_island', 'line_defect']
+        return ['debris_island', 'line_defect', 'overspray_island']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         # Return debris_island and overspray_island detectors for island images
         return {
             'debris_island': DetectorFactory.create_debris_island_detector(sensitivity),
-         #   'overspray_island': DetectorFactory.create_overspray_island_detector(sensitivity),
+            'overspray_island': DetectorFactory.create_overspray_island_detector(sensitivity),
             'line_defect': DetectorFactory.create_line_defect_detector(sensitivity)
         }
 
