@@ -15,21 +15,28 @@ from utils.edge_detector import detect_edges_enhanced
 
 
 class StripeMisalignmentDetector:
-    """Detects misalignment in vertical stripe patterns using grid-based kernel scanning"""
+    """Detect vertical stripe misalignment via kernel scanning and edge preprocessing.
+
+    The algorithm enhances vertical edges, then scans rows with a rectangular
+    kernel to find the first strong vertical line per row. It compares the x
+    positions across rows to flag significant lateral shifts as defects.
+    Sensitivity presets adjust kernel shape, step size, and thresholds.
+    """
     
     def __init__(self, kernel_size=50, kernel_width=None, kernel_height=None, 
                  step_size=None, line_detection_threshold=0.15,
                  defect_threshold=10, sensitivity='medium', debug=False):
-        """
+        """Configure kernel geometry, thresholds, and debug mode.
+
         Args:
-            kernel_size: Size of the scanning kernel (square) - ignored if width/height specified
-            kernel_width: Width of the kernel (optional, defaults to kernel_size)
-            kernel_height: Height of the kernel (optional, defaults to kernel_size)
-            step_size: Horizontal step size (defaults to kernel_width for no overlap)
-            line_detection_threshold: Minimum ratio of pixels to classify as line
-            defect_threshold: Minimum x position delta to consider as defect
-            sensitivity: Detection sensitivity level
-            debug: Whether to draw debug visualization
+            kernel_size: Square kernel size when width/height are not provided.
+            kernel_width: Explicit kernel width in pixels (overrides kernel_size).
+            kernel_height: Explicit kernel height in pixels (overrides kernel_size).
+            step_size: Horizontal step between kernel positions; defaults to width.
+            line_detection_threshold: Min white pixel ratio to qualify as a line.
+            defect_threshold: Min change in x between rows to be a misalignment.
+            sensitivity: One of {'low', 'medium', 'high'}.
+            debug: If True, draw kernel boxes and store edge image.
         """
         # Handle rectangular kernels
         if kernel_width is not None and kernel_height is not None:
@@ -69,7 +76,17 @@ class StripeMisalignmentDetector:
             self.defect_threshold = 20
     
     def preprocess_with_edge_detection(self, image):
-        """Apply edge detection preprocessing to enhance vertical edges"""
+        """Enhance vertical edges to facilitate robust line detection.
+
+        Returns a binary edge map after Gaussian blur, median filtering, Sobel
+        gradient on x, normalization, and thresholding.
+
+        Args:
+            image: Input image (BGR or grayscale).
+
+        Returns:
+            Binary uint8 image emphasizing vertical edges.
+        """
         # Convert to grayscale if needed
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -96,7 +113,14 @@ class StripeMisalignmentDetector:
         return edges_normalized
     
     def scan_grid(self, binary_image):
-        """Scan image in grid pattern to detect vertical line and misalignments"""
+        """Scan rows and collect misalignment defects across the image.
+
+        Args:
+            binary_image: Binary edge image from preprocessing.
+
+        Returns:
+            tuple: (kernel_states, defects)
+        """
         height, width = binary_image.shape
         kernel_states = []
         defects = []
@@ -159,7 +183,16 @@ class StripeMisalignmentDetector:
         return kernel_states, defects
     
     def scan_row(self, binary_image, y):
-        """Scan a single row to find vertical line - stops at first detection"""
+        """Scan a single row for the first strong vertical line position.
+
+        Args:
+            binary_image: Binary edge image.
+            y: Row center to scan around using kernel height.
+
+        Returns:
+            List[dict]: Row result entries including first line x position and
+            all kernel states when debug is True.
+        """
         height, width = binary_image.shape
         row_results = []
         
@@ -231,7 +264,14 @@ class StripeMisalignmentDetector:
         return row_results
     
     def detect(self, image):
-        """Main detection method"""
+        """Run stripe misalignment detection and produce a visualization.
+
+        Args:
+            image: Input image (BGR or grayscale).
+
+        Returns:
+            tuple: (visualization_bgr, defects)
+        """
         # Preprocess with edge detection
         edge_image = self.preprocess_with_edge_detection(image)
         
@@ -248,7 +288,20 @@ class StripeMisalignmentDetector:
         return visualization, defects
     
     def create_visualization(self, original, defects, kernel_states, edge_image):
-        """Create visualization with detected defects highlighted"""
+        """Create a visualization image showing misalignment highlights.
+
+        Draws kernel boxes in debug mode and filled red rectangles for defects
+        in non-debug mode. Stores the edge image for optional saving.
+
+        Args:
+            original: Original input image (BGR or grayscale).
+            defects: List of misalignment defect dicts.
+            kernel_states: Kernel placement states (debug only).
+            edge_image: Binary edge map from preprocessing.
+
+        Returns:
+            BGR visualization image.
+        """
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
@@ -320,7 +373,15 @@ class StripeMisalignmentDetector:
             return result
     
     def save_debug_images(self, output_dir, base_name):
-        """Save debug images if debug mode is enabled"""
+        """Save the preprocessed edge image when debug mode is enabled.
+
+        Args:
+            output_dir: Directory to save images.
+            base_name: Base filename used for output naming.
+
+        Returns:
+            str | None: Saved file path or None if not saved.
+        """
         if self.debug:
             image = getattr(self, '_debug_edge_image', None)
             saved_path = save_image(output_dir, base_name, image, 'edge_detected')

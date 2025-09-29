@@ -14,27 +14,34 @@ from pathlib import Path
 
 
 class BaseDetector:
-    """Base class for all defect detectors"""
+    """Abstract base class for all defect detectors.
+
+    Provides a minimal, consistent interface and helpers for handling
+    exclusion zones and standardizing detector outputs.
+    """
     
     def __init__(self):
-        """Initialize base detector with exclusion zone support"""
+        """Initialize base detector with exclusion zone storage."""
         self.exclusion_zones = []
     
     def detect(self, image, image_path=None):
-        """
-        Detect defects in the image
-        
+        """Detect defects in an image. To be implemented by subclasses.
+
         Args:
-            image: Input image (BGR or grayscale)
-            image_path: Optional path to the image file (for loading exclusion zones)
-            
+            image: Input image (BGR or grayscale).
+            image_path: Optional path to the image (used to load exclusion zones).
+
         Returns:
-            tuple: (visualization_image, defect_list)
+            tuple: (visualization_bgr, defects) where `defects` is a list of dicts.
         """
         raise NotImplementedError("Subclasses must implement detect method")
     
     def load_exclusion_zones(self, image_path):
-        """Load exclusion zones from JSON file with same name as image"""
+        """Load exclusion zones from a JSON sibling of the image path.
+
+        The JSON file should share the same stem as the image and contain an
+        `exclusion_zones` array with `bounding_box_pixels` fields.
+        """
         try:
             # Get JSON file path (same name as image, different extension)
             image_path = Path(image_path)
@@ -83,7 +90,10 @@ class BaseDetector:
             self.exclusion_zones = []
     
     def is_point_in_exclusion_zone(self, x, y):
-        """Check if a point falls within any exclusion zone"""
+        """Check whether a point lies inside any exclusion zone.
+
+        Returns a tuple (bool, zone_dict_or_None).
+        """
         for zone in self.exclusion_zones:
             zone_x1 = min(zone['top_x'], zone['bottom_x'])
             zone_y1 = min(zone['top_y'], zone['bottom_y'])
@@ -96,7 +106,10 @@ class BaseDetector:
         return False, None
     
     def is_region_in_exclusion_zone(self, x, y, width, height):
-        """Check if a rectangular region overlaps with any exclusion zone"""
+        """Check whether a rectangle overlaps any exclusion zone.
+
+        Returns a tuple (bool, zone_dict_or_None).
+        """
         for zone in self.exclusion_zones:
             zone_x1 = min(zone['top_x'], zone['bottom_x'])
             zone_y1 = min(zone['top_y'], zone['bottom_y'])
@@ -111,7 +124,7 @@ class BaseDetector:
         return False, None
     
     def draw_exclusion_zones(self, image):
-        """Draw exclusion zones on the image for visualization"""
+        """Overlay exclusion zones on a copy of the given image for debugging."""
         if not self.exclusion_zones:
             return image
         
@@ -135,12 +148,14 @@ class BaseDetector:
         return overlay
     
     def _standardize_output(self, result):
-        """
-        Standardize detector output to consistent format
-        
+        """Convert varied detector outputs into a standard (visualization, defects) tuple.
+
+        Accepts either a dict with keys {'visualization', 'defects'} or a
+        2-tuple of (visualization, defects). Raises if format is unexpected.
+
         Args:
-            result: Raw detector output (dict or other format)
-            
+            result: Raw output from a detector implementation.
+
         Returns:
             tuple: (visualization_image, defect_list)
         """
@@ -154,12 +169,11 @@ class BaseDetector:
             raise ValueError(f"Unexpected detector output format: {type(result)}")
     
     def detect_wrapper(self, image):
-        """
-        Wrapper that ensures consistent output format
-        
+        """Run `_detect_impl` and standardize its output format.
+
         Args:
-            image: Input image
-            
+            image: Input image.
+
         Returns:
             tuple: (visualization_image, defect_list)
         """
@@ -167,5 +181,5 @@ class BaseDetector:
         return self._standardize_output(result)
     
     def _detect_impl(self, image):
-        """Implementation of detection logic - to be overridden by subclasses"""
+        """Subclasses implement detection logic here and return raw results."""
         raise NotImplementedError("Subclasses must implement _detect_impl method") 

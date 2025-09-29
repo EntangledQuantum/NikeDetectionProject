@@ -13,18 +13,25 @@ import os
 
 
 class OversprayDetector:
-    """Detects overspray defects using kernel-based grid scanning"""
+    """Detect overspray defects by grid scanning and scatter analysis.
+
+    The detector preprocesses the image to a binary representation where spray
+    pixels are white, then slides a kernel across a grid to measure spatial
+    scatter of white pixels. Regions exceeding a scatter threshold are flagged
+    as overspray, and adjacent kernels can be merged into larger regions.
+    """
     
     def __init__(self, kernel_size=30, step_size=None, scatter_threshold=0.3,
                  min_pixels_threshold=0.05, sensitivity='medium', debug=False):
-        """
+        """Configure grid kernel size, step, and thresholds.
+
         Args:
-            kernel_size: Size of the scanning kernel (square)
-            step_size: Step size for grid scanning (defaults to kernel_size for no overlap)
-            scatter_threshold: Threshold for pixel scattering metric (0-1)
-            min_pixels_threshold: Minimum ratio of pixels needed in kernel to analyze
-            sensitivity: Detection sensitivity level
-            debug: Whether to draw debug visualization
+            kernel_size: Square kernel size in pixels for grid scanning.
+            step_size: Grid step in pixels; defaults to `kernel_size` (no overlap).
+            scatter_threshold: Threshold (0..1) for scatter metric to flag overspray.
+            min_pixels_threshold: Minimum white pixel ratio within kernel to analyze.
+            sensitivity: One of {'low', 'medium', 'high'}; adjusts defaults.
+            debug: If True, stores kernel states for visualization.
         """
         self.kernel_size = kernel_size
         self.step_size = step_size if step_size else kernel_size
@@ -52,7 +59,17 @@ class OversprayDetector:
             self.min_pixels_threshold = 0.05
     
     def preprocess_image(self, image):
-        """Preprocess image for overspray detection"""
+        """Preprocess input image into a binary mask for overspray analysis.
+
+        Steps: grayscale, CLAHE contrast enhancement, adaptive threshold, and
+        optional inversion so overspray pixels are white.
+
+        Args:
+            image: Input image (BGR or grayscale).
+
+        Returns:
+            Binary uint8 image with overspray pixels as white (255).
+        """
         # Convert to grayscale if needed
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -74,7 +91,17 @@ class OversprayDetector:
         return binary
     
     def calculate_scatter_metric(self, kernel_region):
-        """Calculate how scattered the pixels are in a kernel"""
+        """Compute a scatter score for white pixels within a kernel region.
+
+        Combines spread (std of coordinates normalized by kernel size) and
+        distance variance between sampled points, with weighting.
+
+        Args:
+            kernel_region: Binary kernel crop (uint8) from the preprocessed image.
+
+        Returns:
+            float in [0, 1] representing scatter; higher implies overspray-like.
+        """
         if kernel_region.size == 0:
             return 0
         
@@ -142,7 +169,16 @@ class OversprayDetector:
         return 0
     
     def scan_grid(self, binary_image):
-        """Scan entire image in grid pattern for overspray"""
+        """Slide kernel over a grid to identify overspray kernels.
+
+        Args:
+            binary_image: Preprocessed binary image with overspray pixels white.
+
+        Returns:
+            tuple: (kernel_states, defects)
+                - kernel_states: List of per-kernel diagnostics (when debug)
+                - defects: List of kernel-level detections or merged regions
+        """
         height, width = binary_image.shape
         kernel_states = []
         defects = []
@@ -204,7 +240,14 @@ class OversprayDetector:
         return kernel_states, defects
     
     def merge_nearby_defects(self, defects):
-        """Merge nearby defect kernels into larger regions"""
+        """Merge spatially adjacent kernel-level detections into regions.
+
+        Args:
+            defects: List of kernel-level overspray detections with bboxes.
+
+        Returns:
+            List of merged region dicts with bbox, area, center, and metrics.
+        """
         if not defects:
             return defects
         
@@ -256,7 +299,14 @@ class OversprayDetector:
         return merged_defects
     
     def detect(self, image):
-        """Main detection method"""
+        """Run overspray detection and return visualization plus defects.
+
+        Args:
+            image: Input image (BGR or grayscale).
+
+        Returns:
+            tuple: (visualization_bgr, defects)
+        """
         # Preprocess image
         binary = self.preprocess_image(image)
         
@@ -270,7 +320,16 @@ class OversprayDetector:
         return visualization, defects
     
     def create_visualization(self, original, defects, kernel_states=None):
-        """Create visualization with detected defects highlighted"""
+        """Create a visualization image highlighting overspray findings.
+
+        Args:
+            original: Original image (BGR or grayscale).
+            defects: List of defect dicts (kernel-level or merged regions).
+            kernel_states: Optional kernel state list for debug overlays.
+
+        Returns:
+            BGR image with overlays indicating overspray.
+        """
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:

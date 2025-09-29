@@ -16,16 +16,22 @@ from tqdm import tqdm
 
 
 class SurfaceTreatmentDetector:
-    """Detects surface treatment defects - irregular ink regions and void areas"""
+    """Detect surface-treatment issues: irregular drops and void (no-ink) areas.
+
+    This detector enhances contrast, finds high-contrast irregular drops and
+    missing-ink voids within expected printed coverage, and returns a
+    visualization that highlights the entirety of affected regions.
+    """
     
     def __init__(self, contrast_threshold=50, void_size_threshold=150, 
                  coalescence_threshold=300, kernel_size=10):
-        """
+        """Configure thresholds for drop/void detection and morphology.
+
         Args:
-            contrast_threshold: Minimum contrast for high-contrast regions
-            void_size_threshold: Minimum size for void areas
-            coalescence_threshold: Minimum size for coalesced ink regions
-            kernel_size: Size of morphological kernel for region analysis
+            contrast_threshold: Local stddev threshold for high-contrast drops.
+            void_size_threshold: Minimum connected area to consider as void.
+            coalescence_threshold: Minimum area to keep high-contrast regions.
+            kernel_size: Morphological kernel size (ellipse) for region shaping.
         """
         self.contrast_threshold = contrast_threshold
         self.void_size_threshold = void_size_threshold
@@ -33,7 +39,14 @@ class SurfaceTreatmentDetector:
         self.kernel_size = kernel_size
         
     def preprocess_image(self, image):
-        """Preprocess image for surface treatment detection"""
+        """Convert to grayscale and apply CLAHE for contrast enhancement.
+
+        Args:
+            image: Input image (BGR or grayscale).
+
+        Returns:
+            Tuple[ndarray, ndarray]: (gray, enhanced_gray).
+        """
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
@@ -46,7 +59,14 @@ class SurfaceTreatmentDetector:
         return gray, enhanced
     
     def detect_high_contrast_drops(self, image):
-        """Detect irregular high-contrast ink drops"""
+        """Detect irregular high-contrast drops using local std deviation.
+
+        Args:
+            image: Enhanced grayscale image.
+
+        Returns:
+            Tuple[ndarray, List[dict]]: (drop_mask, drop_properties)
+        """
         # Calculate local standard deviation
         kernel_size = 15
         kernel = np.ones((kernel_size, kernel_size)) / (kernel_size ** 2)
@@ -95,7 +115,14 @@ class SurfaceTreatmentDetector:
         return drop_mask, high_contrast_drops
     
     def detect_void_areas(self, image):
-        """Detect areas with missing ink (voids)"""
+        """Detect missing-ink voids within expected printed coverage.
+
+        Args:
+            image: Grayscale image.
+
+        Returns:
+            Tuple[ndarray, List[dict]]: (void_mask, void_properties)
+        """
         # Apply adaptive thresholding to find light areas
         adaptive_thresh = cv2.adaptiveThreshold(
             image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -153,7 +180,14 @@ class SurfaceTreatmentDetector:
         return void_mask, void_areas
     
     def detect_texture_irregularities(self, image):
-        """Detect texture irregularities using frequency analysis"""
+        """Detect texture anomalies via FFT radial profile analysis.
+
+        Args:
+            image: Grayscale image.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: (anomalies_boolean_mask, radial_profile)
+        """
         # Apply FFT to detect texture irregularities
         f_transform = np.fft.fft2(image)
         f_shift = np.fft.fftshift(f_transform)
@@ -175,7 +209,14 @@ class SurfaceTreatmentDetector:
         return anomalies, radial_prof
     
     def detect(self, image):
-        """Main detection method"""
+        """Run surface-treatment detection and return visualization and defects.
+
+        Args:
+            image: Input image (BGR or grayscale).
+
+        Returns:
+            tuple: (visualization_bgr, defects)
+        """
         # Preprocess
         gray, enhanced = self.preprocess_image(image)
         
@@ -216,7 +257,18 @@ class SurfaceTreatmentDetector:
         return visualization, all_defects
     
     def create_visualization(self, original, drop_mask, void_mask, drops, voids):
-        """Create visualization marking areas with NO INK - NO TEXT, JUST REGIONS"""
+        """Create visualization marking entire no-ink and high-contrast regions.
+
+        Args:
+            original: Original input image (BGR or grayscale).
+            drop_mask: Binary mask of high-contrast drops.
+            void_mask: Binary mask of void areas.
+            drops: List of detected drop properties.
+            voids: List of detected void properties.
+
+        Returns:
+            BGR visualization image with regions highlighted.
+        """
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
