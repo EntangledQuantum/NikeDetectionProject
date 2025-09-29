@@ -1,0 +1,881 @@
+"""
+Line Detection Utility for Island Images
+Detects horizontal slanted lines by scanning from both sides
+Can be used independently by other scripts
+
+Author: Assistant
+Date: 2024
+"""
+
+import cv2
+import numpy as np
+import json
+import os
+import math
+from pathlib import Path
+
+
+class LineDetector:
+    """Detects lines in island images by scanning from both sides"""
+    
+    def __init__(self, sensitivity='medium'):
+        """
+        Args:
+            sensitivity: Detection sensitivity level ('low', 'medium', 'high')
+        """
+        self.sensitivity = sensitivity
+        self.exclusion_zones = []  # Will be populated when detecting lines
+        
+        # Fixed constants for line detection validation
+        """ 
+        old values:
+
+        self.Y_DELTA_MIN = 93
+        self.Y_DELTA_MAX = 107
+
+        """
+        self.Y_DELTA_MIN = 85
+        self.Y_DELTA_MAX = 120
+        self.SLOPE_MIN = 0.0150
+        self.SLOPE_MAX = 0.0219
+
+        self.IDEAL_IMAGE_WIDTH = 5163
+        self.IDEAL_IMAGE_HEIGHT = 44228
+        
+        # Set base parameters based on sensitivity (for ideal image size)
+        if sensitivity == 'high':
+            self.base_kernel_width = 20
+            self.base_kernel_height = 20
+            self.base_num_vertical_scans = 7  # More scans for high sensitivity
+            self.line_detection_threshold = 0.10
+            self.min_detection_count = 2
+        elif sensitivity == 'low':
+            self.base_kernel_width = 40
+            self.base_kernel_height = 40
+            self.base_num_vertical_scans = 3  # Fewer scans for low sensitivity
+            self.line_detection_threshold = 0.20
+            self.min_detection_count = 3  # Require more detections
+        else:  # medium (default)
+            self.base_kernel_width = 10
+            self.base_kernel_height = 10
+            self.base_num_vertical_scans = 30
+            self.line_detection_threshold = 0.3
+            self.min_detection_count = 5
+        
+        # These will be set dynamically based on actual image size
+        self.kernel_width = self.base_kernel_width
+        self.kernel_height = self.base_kernel_height
+        self.num_vertical_scans = self.base_num_vertical_scans
+
+    
+    def calculate_scaled_kernel_dimensions(self, image_width, image_height, debug=False):
+        """
+        Calculate scaled kernel dimensions based on image size compared to ideal dimensions
+        
+        Args:
+            image_width: Actual image width
+            image_height: Actual image height
+            debug: Whether to print scaling information
+            
+        Returns:
+            tuple: (scaled_kernel_width, scaled_kernel_height, scaled_num_vertical_scans)
+        """
+        # Calculate scaling factors
+        width_scale = image_width / self.IDEAL_IMAGE_WIDTH
+        height_scale = image_height / self.IDEAL_IMAGE_HEIGHT
+        
+        # Use the average of width and height scaling for balanced scaling
+        # This prevents extreme distortion if aspect ratio changes significantly
+        avg_scale = (width_scale + height_scale) / 2
+        
+        # Scale kernel dimensions (ensure minimum size of 1)
+        scaled_kernel_width = max(1, int(self.base_kernel_width * width_scale))
+        scaled_kernel_height = max(1, int(self.base_kernel_height * height_scale))
+        
+        # Scale number of vertical scans based on width (more width = more scans needed)
+        # But cap it to reasonable limits
+        scaled_num_scans = max(3, min(50, int(self.base_num_vertical_scans * width_scale)))
+        
+        if debug:
+            print(f"KERNEL SCALING:")
+            print(f"  Image size: {image_width}x{image_height} (vs ideal {self.IDEAL_IMAGE_WIDTH}x{self.IDEAL_IMAGE_HEIGHT})")
+            print(f"  Scale factors: width={width_scale:.3f}, height={height_scale:.3f}, avg={avg_scale:.3f}")
+            print(f"  Base kernel: {self.base_kernel_width}x{self.base_kernel_height}, scans={self.base_num_vertical_scans}")
+            print(f"  Scaled kernel: {scaled_kernel_width}x{scaled_kernel_height}, scans={scaled_num_scans}")
+            
+            if avg_scale > 1.5:
+                print(f"  NOTE: Image is {avg_scale:.1f}x larger than ideal - using larger kernels")
+            elif avg_scale < 0.5:
+                print(f"  NOTE: Image is {1/avg_scale:.1f}x smaller than ideal - using smaller kernels")
+        
+        return scaled_kernel_width, scaled_kernel_height, scaled_num_scans
+    
+    def update_kernel_dimensions_for_image(self, image_width, image_height, debug=False):
+        """
+        Update kernel dimensions for the current image size
+        
+        Args:
+            image_width: Actual image width
+            image_height: Actual image height
+            debug: Whether to print scaling information
+        """
+        self.kernel_width, self.kernel_height, self.num_vertical_scans = self.calculate_scaled_kernel_dimensions(
+            image_width, image_height, debug
+        )
+        
+        # Also update Y_DELTA values proportionally based on height scaling
+        height_scale = image_height / self.IDEAL_IMAGE_HEIGHT
+        self.Y_DELTA_MIN = max(10, int(85 * height_scale))  # Minimum 10 pixels
+        self.Y_DELTA_MAX = max(self.Y_DELTA_MIN + 10, int(120 * height_scale))  # Ensure max > min
+        
+        if debug:
+            print(f"  Updated Y_DELTA range: {self.Y_DELTA_MIN}-{self.Y_DELTA_MAX} (scaled by {height_scale:.3f})")
+        
+    def load_exclusion_zones(self, image_path):
+        """Load exclusion zones from JSON file with same name as image"""
+        try:
+            # Get JSON file path (same name as image, different extension)
+            image_path = Path(image_path)
+            json_path = image_path.with_suffix('.json')
+            
+            if not json_path.exists():
+                self.exclusion_zones = []
+                return
+            
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            
+            # Extract exclusion zones from JSON
+            self.exclusion_zones = []
+            if 'exclusion_zones' in data:
+                for zone in data['exclusion_zones']:
+                    bbox = zone.get('bounding_box_pixels', {})
+                    
+                    # Convert coordinates like tiff_extractor.py does:
+                    # Convert to positive values if negative and ensure proper ordering
+                    raw_top_x = float(bbox.get('top_x', 0))
+                    raw_top_y = float(bbox.get('top_y', 0))
+                    raw_bottom_x = float(bbox.get('bottom_x', 0))
+                    raw_bottom_y = float(bbox.get('bottom_y', 0))
+                    
+                    x1 = int(min(abs(raw_top_x), abs(raw_bottom_x)))
+                    y1 = int(min(abs(raw_top_y), abs(raw_bottom_y)))
+                    x2 = int(max(abs(raw_top_x), abs(raw_bottom_x)))
+                    y2 = int(max(abs(raw_top_y), abs(raw_bottom_y)))
+                    
+                    self.exclusion_zones.append({
+                        'top_x': x1,
+                        'top_y': y1,
+                        'bottom_x': x2,
+                        'bottom_y': y2,
+                        'name': zone.get('name', 'unnamed')
+                    })
+            
+            # if self.exclusion_zones:
+            #     print(f"Loaded {len(self.exclusion_zones)} exclusion zones from {json_path}")
+            #     for i, zone in enumerate(self.exclusion_zones):
+            #         print(f"  Zone {i+1} '{zone['name']}': ({zone['top_x']}, {zone['top_y']}) to ({zone['bottom_x']}, {zone['bottom_y']})")
+            
+        except Exception as e:
+            print(f"Warning: Could not load exclusion zones from {json_path}: {e}")
+            self.exclusion_zones = []
+    
+    def is_in_exclusion_zone(self, x, y, width, height):
+        """Check if a kernel region overlaps with any exclusion zone"""
+        for zone in self.exclusion_zones:
+            # Convert zone coordinates to proper order
+            zone_x1 = min(zone['top_x'], zone['bottom_x'])
+            zone_y1 = min(zone['top_y'], zone['bottom_y'])
+            zone_x2 = max(zone['top_x'], zone['bottom_x'])
+            zone_y2 = max(zone['top_y'], zone['bottom_y'])
+            
+            # Kernel boundaries
+            kernel_x1 = x - width // 2
+            kernel_y1 = y - height // 2
+            kernel_x2 = x + width // 2
+            kernel_y2 = y + height // 2
+            
+            # Check for overlap
+            if (kernel_x1 < zone_x2 and kernel_x2 > zone_x1 and
+                kernel_y1 < zone_y2 and kernel_y2 > zone_y1):
+                return True, zone
+        
+        return False, None
+    
+    def get_exclusion_zones_for_side(self, image_width, side='left'):
+        """Get exclusion zones that affect the specified side (left or right)"""
+        relevant_zones = []
+        
+        for zone in self.exclusion_zones:
+            zone_x1 = min(zone['top_x'], zone['bottom_x'])
+            zone_x2 = max(zone['top_x'], zone['bottom_x'])
+            zone_center_x = (zone_x1 + zone_x2) / 2
+            
+            # Determine if zone is on left or right half of image
+            if side == 'left' and zone_center_x < image_width / 2:
+                relevant_zones.append(zone)
+            elif side == 'right' and zone_center_x >= image_width / 2:
+                relevant_zones.append(zone)
+        
+        return relevant_zones
+    
+    def adjust_x_position_for_exclusions(self, x_position, y_position, image_width, side='left', debug=False):
+        """Adjust x position to avoid exclusion zones"""
+        # Check if current position is in an exclusion zone
+        in_zone, zone = self.is_in_exclusion_zone(x_position, y_position, self.kernel_width, self.kernel_height)
+        
+        if not in_zone:
+            return x_position  # No adjustment needed
+        
+        # if debug:
+        #     print(f"    Kernel at ({x_position}, {y_position}) overlaps with exclusion zone '{zone['name']}'")
+        
+        # Adjust position based on side
+        if side == 'left':
+            # For left side, move right to avoid the zone
+            zone_right = max(zone['top_x'], zone['bottom_x'])
+            new_x = zone_right + self.kernel_width // 2 + 5  # Small buffer
+            # Make sure we don't go too far right
+            if new_x < image_width - self.kernel_width // 2:
+                # if debug:
+                #     print(f"    Shifted LEFT scanner from x={x_position} to x={new_x} (moved right to avoid zone)")
+                return new_x
+        else:  # right side
+            # For right side, move left to avoid the zone
+            zone_left = min(zone['top_x'], zone['bottom_x'])
+            new_x = zone_left - self.kernel_width // 2 - 5  # Small buffer
+            # Make sure we don't go too far left
+            if new_x > self.kernel_width // 2:
+                # if debug:
+                #     print(f"    Shifted RIGHT scanner from x={x_position} to x={new_x} (moved left to avoid zone)")
+                return new_x
+        
+        if debug:
+            print(f"    Could not adjust position for zone '{zone['name']}' - keeping original x={x_position}")
+        return x_position  # Return original if adjustment is not possible
+    
+
+    
+    def scan_vertical_column(self, binary_image, x_position, scan_from_top=True, debug=False):
+        """Scan a vertical column to find all horizontal lines"""
+        height, width = binary_image.shape
+        detected_lines = []
+        kernel_states = []
+        
+        # Ensure x position is valid
+        if x_position < self.kernel_width // 2 or x_position >= width - self.kernel_width // 2:
+            return detected_lines, kernel_states
+        
+        # Start scanning from top or continue from where we left
+        if scan_from_top:
+            y = self.kernel_height // 2
+        else:
+            y = self.kernel_height // 2
+        
+        while y < height - self.kernel_height // 2:
+            # Adjust x position if it's in an exclusion zone
+            adjusted_x = x_position
+            if hasattr(self, 'exclusion_zones') and self.exclusion_zones:
+                # Determine which side we're scanning from based on x_position
+                side = 'left' if x_position < width / 2 else 'right'
+                adjusted_x = self.adjust_x_position_for_exclusions(x_position, y, width, side, debug)
+            
+            # Extract kernel region with adjusted x position
+            y1 = max(0, y - self.kernel_height // 2)
+            y2 = min(height, y + self.kernel_height // 2)
+            x1 = max(0, adjusted_x - self.kernel_width // 2)
+            x2 = min(width, adjusted_x + self.kernel_width // 2)
+            
+            kernel_region = binary_image[y1:y2, x1:x2]
+            
+            # Check if there's a line in kernel
+            white_pixels = np.sum(kernel_region > 0)
+            total_pixels = (y2 - y1) * (x2 - x1)
+            
+            if total_pixels > 0:
+                pixel_ratio = white_pixels / total_pixels
+                has_line = pixel_ratio > self.line_detection_threshold
+                
+                if has_line:
+                    # Calculate center of detected pixels
+                    y_indices, x_indices = np.where(kernel_region > 0)
+                    if len(y_indices) > 0:
+                        local_y_center = np.mean(y_indices)
+                        line_y = y1 + int(local_y_center)
+                        detected_lines.append({
+                            'x': adjusted_x,  # Use adjusted x position
+                            'y': line_y,
+                            'strength': pixel_ratio
+                        })
+                
+                # Record kernel state for debug (use adjusted position)
+                kernel_states.append({
+                    'x': adjusted_x,
+                    'y': y,
+                    'has_line': has_line,
+                    'bbox': (x1, y1, x2, y2),
+                    'pixel_ratio': pixel_ratio
+                })
+            
+            # Move to next position (no overlap)
+            y += self.kernel_height
+        
+        return detected_lines, kernel_states
+    
+    def scan_from_left(self, binary_image, debug=False):
+        """Coordinated robust scan from left side with synchronized jumping"""
+        height, width = binary_image.shape
+        all_kernel_states = []
+        detected_lines = []
+        
+        # Setup all x positions for left side scanning
+        x_start = self.kernel_width // 2
+        x_positions = []
+        for i in range(self.num_vertical_scans):
+            x_pos = x_start + i * self.kernel_width
+            if x_pos >= width - self.kernel_width // 2:
+                break
+            x_positions.append(x_pos)
+        
+        if debug:
+            print(f"Starting LEFT side coordinated scan with {len(x_positions)} columns at x={x_positions}")
+        
+        # Find first line by scanning all columns together
+        current_y = self.kernel_height // 2
+        last_detected_y = None
+        line_sequence = 0
+        
+        # Scan for first line
+        while current_y < height - self.kernel_height // 2 and last_detected_y is None:
+            if debug:
+                print(f"  Scanning for FIRST line at y={current_y}")
+            
+            line_detections = []
+            
+            # Check all x positions at this y level
+            for x_pos in x_positions:
+                # Adjust x position if in exclusion zone
+                adjusted_x = x_pos
+                if hasattr(self, 'exclusion_zones') and self.exclusion_zones:
+                    adjusted_x = self.adjust_x_position_for_exclusions(x_pos, current_y, width, 'left', debug)
+                
+                # Extract kernel region
+                y1 = max(0, current_y - self.kernel_height // 2)
+                y2 = min(height, current_y + self.kernel_height // 2)
+                x1 = max(0, adjusted_x - self.kernel_width // 2)
+                x2 = min(width, adjusted_x + self.kernel_width // 2)
+                
+                kernel_region = binary_image[y1:y2, x1:x2]
+                
+                # Check if there's a line in kernel
+                white_pixels = np.sum(kernel_region > 0)
+                total_pixels = (y2 - y1) * (x2 - x1)
+                
+                if total_pixels > 0:
+                    pixel_ratio = white_pixels / total_pixels
+                    has_line = pixel_ratio > self.line_detection_threshold
+                    
+                    if has_line:
+                        # Calculate center of detected pixels
+                        y_indices, x_indices = np.where(kernel_region > 0)
+                        if len(y_indices) > 0:
+                            local_y_center = np.mean(y_indices)
+                            line_y = y1 + int(local_y_center)
+                            line_detections.append({
+                                'x': adjusted_x,
+                                'y': line_y,
+                                'strength': pixel_ratio,
+                                'type': 'real'
+                            })
+                    
+                    # Record kernel state for debug
+                    all_kernel_states.append({
+                        'x': adjusted_x,
+                        'y': current_y,
+                        'has_line': has_line,
+                        'bbox': (x1, y1, x2, y2),
+                        'pixel_ratio': pixel_ratio
+                    })
+            
+            # Check if we found enough detections to constitute a line
+            if len(line_detections) >= self.min_detection_count:
+                # Use leftmost detection as the line position
+                leftmost_line = min(line_detections, key=lambda l: l['x'])
+                detected_lines.append(leftmost_line)
+                last_detected_y = leftmost_line['y']
+                line_sequence += 1
+                if debug:
+                    print(f"    FIRST line found: {len(line_detections)} detections, using leftmost at x={leftmost_line['x']}, y={leftmost_line['y']}")
+                break
+            
+            # Move to next y position
+            current_y += self.kernel_height
+        
+        # Continue scanning for subsequent lines using synchronized jumping
+        while last_detected_y is not None:
+            # Calculate next expected Y range
+            next_y_min = last_detected_y + self.Y_DELTA_MIN
+            next_y_max = last_detected_y + self.Y_DELTA_MAX
+            
+            if next_y_max >= height - self.kernel_height // 2:
+                break
+            
+            #if debug:
+                # print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
+                # print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
+            
+            # Scan within the Y-delta window, fitting as many kernels as needed to cover the full window
+            line_found = False
+            search_y = next_y_min
+            y_window_size = next_y_max - next_y_min
+            kernels_in_window = math.ceil(y_window_size / self.kernel_height)
+            
+            # if debug:
+            #     print(f"    LEFT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
+            
+            kernels_actually_scanned = 0
+            best_row_detections = []
+            best_row_count = 0
+            best_row_y = None
+            
+            # Scan ALL kernel rows in the window to find the best one
+            for kernel_step in range(kernels_in_window):
+                current_scan_y = int(search_y + kernel_step * self.kernel_height)
+                if current_scan_y > next_y_max:
+                    # if debug:
+                    #     print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
+                    break
+                kernels_actually_scanned += 1
+                # if debug:
+                #     print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
+                
+                row_line_detections = []
+                
+                # Check all x positions at this y level
+                for x_pos in x_positions:
+                    # Adjust x position if in exclusion zone
+                    adjusted_x = x_pos
+                    if hasattr(self, 'exclusion_zones') and self.exclusion_zones:
+                        adjusted_x = self.adjust_x_position_for_exclusions(x_pos, current_scan_y, width, 'left', debug)
+                    
+                    # Extract kernel region
+                    y1 = max(0, current_scan_y - self.kernel_height // 2)
+                    y2 = min(height, current_scan_y + self.kernel_height // 2)
+                    x1 = max(0, adjusted_x - self.kernel_width // 2)
+                    x2 = min(width, adjusted_x + self.kernel_width // 2)
+                    
+                    kernel_region = binary_image[y1:y2, x1:x2]
+                    
+                    # Check if there's a line in kernel
+                    white_pixels = np.sum(kernel_region > 0)
+                    total_pixels = (y2 - y1) * (x2 - x1)
+                    
+                    if total_pixels > 0:
+                        pixel_ratio = white_pixels / total_pixels
+                        has_line = pixel_ratio > self.line_detection_threshold
+                        
+                        if has_line:
+                            # Calculate center of detected pixels
+                            y_indices, x_indices = np.where(kernel_region > 0)
+                            if len(y_indices) > 0:
+                                local_y_center = np.mean(y_indices)
+                                line_y = y1 + int(local_y_center)
+                                row_line_detections.append({
+                                    'x': adjusted_x,
+                                    'y': line_y,
+                                    'strength': pixel_ratio,
+                                    'type': 'real'
+                                })
+                        
+                        # Record kernel state for debug
+                        all_kernel_states.append({
+                            'x': adjusted_x,
+                            'y': current_scan_y,
+                            'has_line': has_line,
+                            'bbox': (x1, y1, x2, y2),
+                            'pixel_ratio': pixel_ratio
+                        })
+                
+                # Track the best row (most detections)
+                if len(row_line_detections) > best_row_count:
+                    best_row_detections = row_line_detections
+                    best_row_count = len(row_line_detections)
+                    best_row_y = current_scan_y
+                
+                # if debug:
+                #     print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
+            
+            # Use the best row if it meets minimum detection count
+            if best_row_count >= self.min_detection_count:
+                # Use leftmost detection as the line position
+                leftmost_line = min(best_row_detections, key=lambda l: l['x'])
+                detected_lines.append(leftmost_line)
+                last_detected_y = leftmost_line['y']
+                line_sequence += 1
+                line_found = True
+                # if debug:   
+                #     print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using leftmost at x={leftmost_line['x']}, y={leftmost_line['y']}")
+            # elif debug:
+            #     print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
+            
+            # if debug:
+            #     print(f"    LEFT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
+            
+            # If no line found in the window, create ghost line
+            if not line_found:
+                expected_y_delta = (self.Y_DELTA_MIN + self.Y_DELTA_MAX) / 2
+                ghost_y = int(last_detected_y + expected_y_delta)
+                ghost_line = {
+                    'x': x_positions[0],  # Use first x position for ghost
+                    'y': ghost_y,
+                    'strength': 0.0,
+                    'type': 'ghost'
+                }
+                detected_lines.append(ghost_line)
+                last_detected_y = ghost_y
+                line_sequence += 1
+                # if debug:
+                #     print(f"    Ghost line created at y={ghost_y}")
+        
+        if debug:
+            real_lines = [l for l in detected_lines if l.get('type') == 'real']
+            ghost_lines = [l for l in detected_lines if l.get('type') == 'ghost']
+            # print(f"LEFT SIDE FINAL: {len(real_lines)} real lines, {len(ghost_lines)} ghost lines, total: {len(detected_lines)}")
+        
+        return detected_lines, all_kernel_states
+    
+    def scan_from_right(self, binary_image, debug=False):
+        """Coordinated robust scan from right side with synchronized jumping"""
+        height, width = binary_image.shape
+        all_kernel_states = []
+        detected_lines = []
+        
+        # Setup all x positions for right side scanning
+        x_start = width - self.kernel_width // 2 - 1
+        x_positions = []
+        for i in range(self.num_vertical_scans):
+            x_pos = x_start - i * self.kernel_width  # Move left, no overlap
+            if x_pos < self.kernel_width // 2:
+                break
+            x_positions.append(x_pos)
+        
+        if debug:
+            print(f"Starting RIGHT side coordinated scan with {len(x_positions)} columns at x={x_positions}")
+        
+        # Find first line by scanning all columns together
+        current_y = self.kernel_height // 2
+        last_detected_y = None
+        line_sequence = 0
+        
+        # Scan for first line
+        while current_y < height - self.kernel_height // 2 and last_detected_y is None:
+            # if debug:
+            #     print(f"  Scanning for FIRST line at y={current_y}")
+            
+            line_detections = []
+            
+            # Check all x positions at this y level
+            for x_pos in x_positions:
+                # Adjust x position if in exclusion zone
+                adjusted_x = x_pos
+                if hasattr(self, 'exclusion_zones') and self.exclusion_zones:
+                    adjusted_x = self.adjust_x_position_for_exclusions(x_pos, current_y, width, 'right', debug)
+                
+                # Extract kernel region
+                y1 = max(0, current_y - self.kernel_height // 2)
+                y2 = min(height, current_y + self.kernel_height // 2)
+                x1 = max(0, adjusted_x - self.kernel_width // 2)
+                x2 = min(width, adjusted_x + self.kernel_width // 2)
+                
+                kernel_region = binary_image[y1:y2, x1:x2]
+                
+                # Check if there's a line in kernel
+                white_pixels = np.sum(kernel_region > 0)
+                total_pixels = (y2 - y1) * (x2 - x1)
+                
+                if total_pixels > 0:
+                    pixel_ratio = white_pixels / total_pixels
+                    has_line = pixel_ratio > self.line_detection_threshold
+                    
+                    if has_line:
+                        # Calculate center of detected pixels
+                        y_indices, x_indices = np.where(kernel_region > 0)
+                        if len(y_indices) > 0:
+                            local_y_center = np.mean(y_indices)
+                            line_y = y1 + int(local_y_center)
+                            line_detections.append({
+                                'x': adjusted_x,
+                                'y': line_y,
+                                'strength': pixel_ratio,
+                                'type': 'real'
+                            })
+                    
+                    # Record kernel state for debug
+                    all_kernel_states.append({
+                        'x': adjusted_x,
+                        'y': current_y,
+                        'has_line': has_line,
+                        'bbox': (x1, y1, x2, y2),
+                        'pixel_ratio': pixel_ratio
+                    })
+            
+            # Check if we found enough detections to constitute a line
+            if len(line_detections) >= self.min_detection_count:
+                # Use rightmost detection as the line position
+                rightmost_line = max(line_detections, key=lambda l: l['x'])
+                detected_lines.append(rightmost_line)
+                last_detected_y = rightmost_line['y']
+                line_sequence += 1
+                # if debug:
+                #     print(f"    FIRST line found: {len(line_detections)} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
+                break
+            
+            # Move to next y position
+            current_y += self.kernel_height
+        
+        # Continue scanning for subsequent lines using synchronized jumping
+        while last_detected_y is not None:
+            # Calculate next expected Y range
+            next_y_min = last_detected_y + self.Y_DELTA_MIN
+            next_y_max = last_detected_y + self.Y_DELTA_MAX
+            
+            if next_y_max >= height - self.kernel_height // 2:
+                break
+            
+            # if debug:
+            #     print(f"  Scanning for line {line_sequence + 1} between y={next_y_min} and y={next_y_max}")
+            #     print(f"    Y_DELTA_MIN={self.Y_DELTA_MIN}, Y_DELTA_MAX={self.Y_DELTA_MAX}, last_detected_y={last_detected_y}")
+            
+            # Scan within the Y-delta window, fitting as many kernels as needed to cover the full window
+            line_found = False
+            search_y = next_y_min
+            y_window_size = next_y_max - next_y_min
+            kernels_in_window = math.ceil(y_window_size / self.kernel_height)
+            
+            # if debug:
+            #     print(f"    RIGHT: Y-window size: {y_window_size}px (min:{next_y_min}, max:{next_y_max}), kernel_height: {self.kernel_height}px, kernels needed: {kernels_in_window}")
+            
+            kernels_actually_scanned = 0
+            best_row_detections = []
+            best_row_count = 0
+            best_row_y = None
+            
+            # Scan ALL kernel rows in the window to find the best one
+            for kernel_step in range(kernels_in_window):
+                current_scan_y = int(search_y + kernel_step * self.kernel_height)
+                if current_scan_y > next_y_max:
+                    # if debug:
+                    #     print(f"      Kernel {kernel_step + 1} at y={current_scan_y} > max={next_y_max}, breaking early")
+                    break
+                kernels_actually_scanned += 1
+                # if debug:
+                #     print(f"      Scanning kernel {kernel_step + 1} at y={current_scan_y}")
+                
+                row_line_detections = []
+                
+                # Check all x positions at this y level
+                for x_pos in x_positions:
+                    # Adjust x position if in exclusion zone
+                    adjusted_x = x_pos
+                    if hasattr(self, 'exclusion_zones') and self.exclusion_zones:
+                        adjusted_x = self.adjust_x_position_for_exclusions(x_pos, current_scan_y, width, 'right', debug)
+                    
+                    # Extract kernel region
+                    y1 = max(0, current_scan_y - self.kernel_height // 2)
+                    y2 = min(height, current_scan_y + self.kernel_height // 2)
+                    x1 = max(0, adjusted_x - self.kernel_width // 2)
+                    x2 = min(width, adjusted_x + self.kernel_width // 2)
+                    
+                    kernel_region = binary_image[y1:y2, x1:x2]
+                    
+                    # Check if there's a line in kernel
+                    white_pixels = np.sum(kernel_region > 0)
+                    total_pixels = (y2 - y1) * (x2 - x1)
+                    
+                    if total_pixels > 0:
+                        pixel_ratio = white_pixels / total_pixels
+                        has_line = pixel_ratio > self.line_detection_threshold
+                        
+                        if has_line:
+                            # Calculate center of detected pixels
+                            y_indices, x_indices = np.where(kernel_region > 0)
+                            if len(y_indices) > 0:
+                                local_y_center = np.mean(y_indices)
+                                line_y = y1 + int(local_y_center)
+                                row_line_detections.append({
+                                    'x': adjusted_x,
+                                    'y': line_y,
+                                    'strength': pixel_ratio,
+                                    'type': 'real'
+                                })
+                        
+                        # Record kernel state for debug
+                        all_kernel_states.append({
+                            'x': adjusted_x,
+                            'y': current_scan_y,
+                            'has_line': has_line,
+                            'bbox': (x1, y1, x2, y2),
+                            'pixel_ratio': pixel_ratio
+                        })
+                
+                # Track the best row (most detections)
+                if len(row_line_detections) > best_row_count:
+                    best_row_detections = row_line_detections
+                    best_row_count = len(row_line_detections)
+                    best_row_y = current_scan_y
+                
+                # if debug:
+                #     print(f"        Row at y={current_scan_y}: {len(row_line_detections)} detections")
+            
+            # Use the best row if it meets minimum detection count
+            if best_row_count >= self.min_detection_count:
+                # Use rightmost detection as the line position
+                rightmost_line = max(best_row_detections, key=lambda l: l['x'])
+                detected_lines.append(rightmost_line)
+                last_detected_y = rightmost_line['y']
+                line_sequence += 1
+                line_found = True
+                # if debug:
+                #     print(f"    BEST row at y={best_row_y}: {best_row_count} detections, using rightmost at x={rightmost_line['x']}, y={rightmost_line['y']}")
+            # elif debug:
+            #     print(f"    Best row had only {best_row_count} detections < {self.min_detection_count} required")
+            
+            # if debug:
+            #     print(f"    RIGHT: Scanned {kernels_actually_scanned}/{kernels_in_window} kernels, line_found={line_found}")
+            
+            # If no line found in the window, create ghost line
+            if not line_found:
+                expected_y_delta = (self.Y_DELTA_MIN + self.Y_DELTA_MAX) / 2
+                ghost_y = int(last_detected_y + expected_y_delta)
+                ghost_line = {
+                    'x': x_positions[0],  # Use first x position for ghost
+                    'y': ghost_y,
+                    'strength': 0.0,
+                    'type': 'ghost'
+                }
+                detected_lines.append(ghost_line)
+                last_detected_y = ghost_y
+                line_sequence += 1
+                # if debug:
+                #     print(f"    Ghost line created at y={ghost_y}")
+        
+        if debug:
+            real_lines = [l for l in detected_lines if l.get('type') == 'real']
+            ghost_lines = [l for l in detected_lines if l.get('type') == 'ghost']
+            print(f"RIGHT SIDE FINAL: {len(real_lines)} real lines, {len(ghost_lines)} ghost lines, total: {len(detected_lines)}")
+        
+        return detected_lines, all_kernel_states
+    
+    def match_lines(self, left_lines, right_lines, debug=False):
+        """Match lines with slope validation and invalid slope marking"""
+        matched_lines = []
+        valid_lines = []
+        invalid_lines = []
+        
+        # Simple index-based matching
+        num_matches = min(len(left_lines), len(right_lines))
+        
+        for i in range(num_matches):
+            left_line = left_lines[i]
+            right_line = right_lines[i]
+            
+            # Calculate slope for this specific line
+            dx = right_line['x'] - left_line['x']
+            dy = right_line['y'] - left_line['y']
+            slope = dy / dx if dx != 0 else 0
+            
+            # Validate slope
+            is_valid_slope = self.SLOPE_MIN <= slope <= self.SLOPE_MAX
+            
+            line_match = {
+                'left': left_line,
+                'right': right_line,
+                'slope': slope,
+                'y_delta': dy,
+                'valid_slope': is_valid_slope,
+                'left_type': left_line.get('type', 'real'),
+                'right_type': right_line.get('type', 'real')
+            }
+            
+            matched_lines.append(line_match)
+            
+            if is_valid_slope:
+                valid_lines.append(line_match)
+            else:
+                invalid_lines.append(line_match)
+            
+            if debug:
+                validity = "VALID" if is_valid_slope else "INVALID"
+                left_type = left_line.get('type', 'real')
+                right_type = right_line.get('type', 'real')
+                # print(f"Matched line {i}: Left({left_line['x']}, {left_line['y']}, {left_type}) -> Right({right_line['x']}, {right_line['y']}, {right_type}), slope={slope:.4f}, {validity}")
+        
+        if debug:
+            print(f"\nMATCHING SUMMARY:")
+            print(f"  LEFT SIDE: {len(left_lines)} total detections")
+            print(f"  RIGHT SIDE: {len(right_lines)} total detections") 
+            print(f"  Total matched: {len(matched_lines)} lines")
+            print(f"  Valid slopes: {len(valid_lines)} lines")
+            print(f"  Invalid slopes: {len(invalid_lines)} lines")
+            print(f"  Slope range: {self.SLOPE_MIN:.4f} to {self.SLOPE_MAX:.4f}")
+            if invalid_lines:
+                invalid_slopes = [f'{l["slope"]:.4f}' for l in invalid_lines]
+                print(f"  Invalid slope values: {invalid_slopes}")
+        
+        return matched_lines
+    
+    def detect_lines(self, image, debug=False, image_path=None):
+        """
+        Detect lines in the image
+        
+        Args:
+            image: Input image (can be grayscale or color)
+            debug: Whether to print debug information
+            image_path: Path to the image file (for loading exclusion zones)
+            
+        Returns:
+            tuple: (matched_lines, left_lines, right_lines, left_kernel_states, right_kernel_states)
+        """
+        # Load exclusion zones if image path is provided
+        if image_path:
+            self.load_exclusion_zones(image_path)
+        
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+        
+        # Update kernel dimensions based on actual image size
+        height, width = gray.shape
+        self.update_kernel_dimensions_for_image(width, height, debug)
+        
+        # Apply threshold to get binary image (lines should be dark/black)
+        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+        
+        # Scan from left side
+        left_lines, left_kernel_states = self.scan_from_left(binary, debug)
+        
+        # Scan from right side
+        right_lines, right_kernel_states = self.scan_from_right(binary, debug)
+        
+        # Match lines from left to right
+        matched_lines = self.match_lines(left_lines, right_lines, debug)
+        
+        return matched_lines, left_lines, right_lines, left_kernel_states, right_kernel_states
+    
+    def get_line_statistics(self, matched_lines):
+        """Calculate statistics about the detected lines"""
+        if not matched_lines:
+            return None
+        
+        y_deltas = [m['y_delta'] for m in matched_lines]
+        avg_delta = np.mean(y_deltas) if y_deltas else 0
+        std_delta = np.std(y_deltas) if y_deltas else 0
+        
+        return {
+            'line_count': len(matched_lines),
+            'average_y_delta': float(avg_delta),
+            'std_y_delta': float(std_delta),
+            'y_deltas': y_deltas
+        }
