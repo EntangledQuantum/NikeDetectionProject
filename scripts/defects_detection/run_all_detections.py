@@ -1,12 +1,3 @@
-"""
-Refactored Defect Detection Pipeline
-Processes images through appropriate detection algorithms based on image name patterns
-
-Author: Koushik and Cursor Assistant
-Date: 2024
-Version: 2.0 - Refactored for SOLID principles and efficiency
-"""
-
 import os
 import cv2
 import numpy as np
@@ -32,7 +23,12 @@ from overspray_island_detection import OversprayIslandDetector
 
 
 class ImageType(Enum):
-    """Enum for different image types"""
+    """Enumeration of supported image categories used for routing detections.
+
+    - stripe: images with pronounced stripe patterns (e.g., 'blueStripe.tiff')
+    - island: images with isolated printed islands or shapes (e.g., 'island-black-blue.tiff')
+    - unknown: fallback when filename patterns do not match any rule
+    """
     STRIPE = "stripe"
     ISLAND = "island"
     UNKNOWN = "unknown"
@@ -40,7 +36,18 @@ class ImageType(Enum):
 
 @dataclass
 class ProcessingConfig:
-    """Configuration for processing parameters"""
+    """Configuration container for pipeline-level processing parameters.
+
+    Attributes:
+        output_base_dir: Base directory for results; if provided, overrides
+            the default output folder under the input directory.
+        sensitivity: Detector sensitivity level: 'low' | 'medium' | 'high'.
+        generate_report: If True, produces a PDF report in addition to JSON.
+        window_size: Reserved for future tiled processing (tile size in pixels).
+        overlap: Reserved for future tiled processing (overlap in pixels).
+        max_workers: Reserved for future parallelization of image processing.
+        large_file_threshold: Size in bytes used to classify a file as large.
+    """
     output_base_dir: str = "output"
     sensitivity: str = 'medium'
     generate_report: bool = False
@@ -52,7 +59,14 @@ class ProcessingConfig:
 
 @dataclass
 class DetectionResult:
-    """Standardized result format for all detectors"""
+    """Standardized result payload produced by each detector.
+
+    Attributes:
+        defect_count: Number of defects detected.
+        visualization_path: Path to a saved visualization image, if any.
+        defects: Per-defect dictionaries with detector-specific fields.
+        error: Optional error message if detection failed.
+    """
     defect_count: int
     visualization_path: Optional[str]
     defects: List[Dict[str, Any]]
@@ -61,7 +75,18 @@ class DetectionResult:
 
 @dataclass
 class ImageResult:
-    """Result for a single image"""
+    """Aggregated results for a single image across all detectors.
+
+    Attributes:
+        image_name: Base filename without extension.
+        image_path: Full path to the processed image.
+        image_type: Classified `ImageType` used to choose detectors.
+        processing_time: ISO timestamp when processing completed.
+        file_size_mb: File size in megabytes.
+        detectors_used: List of detector keys that were run.
+        detections: Mapping of detector key to `DetectionResult`.
+        error: Optional error message if high-level processing failed.
+    """
     image_name: str
     image_path: str
     image_type: ImageType
@@ -73,11 +98,21 @@ class ImageResult:
 
 
 class ImagePreprocessor:
-    """Centralized image preprocessing with common operations"""
+    """Centralized image preprocessing utilities shared by detectors."""
     
     @staticmethod
     def load_and_convert_to_grayscale(image_path: str) -> Tuple[np.ndarray, np.ndarray]:
-        """Load image and convert to grayscale if needed"""
+        """Load an image and return both original (BGR) and grayscale versions.
+
+        Args:
+            image_path: Path to the input image readable by OpenCV.
+
+        Returns:
+            Tuple of (original_bgr, gray) as NumPy arrays.
+
+        Raises:
+            ValueError: If the image cannot be read from disk.
+        """
         image = cv2.imread(image_path)
         if image is None:
             raise ValueError(f"Could not read image: {image_path}")
@@ -91,7 +126,15 @@ class ImagePreprocessor:
     
     @staticmethod
     def apply_noise_reduction(gray: np.ndarray, method: str = 'bilateral') -> np.ndarray:
-        """Apply noise reduction based on method"""
+        """Denoise a grayscale image using the specified filter.
+
+        Args:
+            gray: Grayscale image array (uint8).
+            method: One of {'bilateral', 'median', 'gaussian'}.
+
+        Returns:
+            Denoised grayscale image as a NumPy array.
+        """
         if method == 'bilateral':
             return cv2.bilateralFilter(gray, 9, 75, 75)
         elif method == 'median':
@@ -104,24 +147,54 @@ class ImagePreprocessor:
     @staticmethod
     def enhance_contrast(gray: np.ndarray, clip_limit: float = 2.0, 
                         grid_size: Tuple[int, int] = (8, 8)) -> np.ndarray:
-        """Apply CLAHE contrast enhancement"""
+        """Apply CLAHE contrast enhancement to improve local contrast.
+
+        Args:
+            gray: Grayscale image to enhance.
+            clip_limit: CLAHE clip limit parameter.
+            grid_size: CLAHE tile grid size (columns, rows).
+
+        Returns:
+            Enhanced grayscale image as a NumPy array.
+        """
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=grid_size)
         return clahe.apply(gray)
     
     @classmethod
     def preprocess_for_surface_treatment(cls, image_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Preprocessing pipeline for surface treatment detection"""
+        """Preprocess an image for surface treatment analysis.
+
+        Loads the image, converts to grayscale, and applies CLAHE.
+
+        Args:
+            image_path: Path to the input image.
+
+        Returns:
+            Tuple of (original_bgr, gray, enhanced_gray).
+        """
         original, gray = cls.load_and_convert_to_grayscale(image_path)
         enhanced = cls.enhance_contrast(gray, clip_limit=2.0)
         return original, gray, enhanced
 
 
 class ImageTypeClassifier:
-    """Classifies images based on filename patterns"""
+    """Helpers to infer `ImageType` from filename heuristics."""
     
     @staticmethod
     def classify_image(image_path: str) -> ImageType:
-        """Classify image type based on filename"""
+        """Infer image type from filename heuristics.
+
+        Rules:
+        - Contains 'stripe' -> ImageType.STRIPE
+        - Contains 'island' -> ImageType.ISLAND
+        - Otherwise        -> ImageType.UNKNOWN
+
+        Args:
+            image_path: Full path or filename of the image.
+
+        Returns:
+            An `ImageType` enum value.
+        """
         filename = os.path.basename(image_path).lower()
         
         if 'stripe' in filename:
@@ -133,11 +206,22 @@ class ImageTypeClassifier:
 
 
 class DetectorFactory:
-    """Factory for creating appropriate detectors based on sensitivity"""
+    """Constructors for detector instances configured by sensitivity.
+
+    Some detectors are initialized with debug visualization enabled to
+    aid troubleshooting.
+    """
     
     @staticmethod
     def create_surface_treatment_detector(sensitivity: str) -> SurfaceTreatmentDetector:
-        """Create surface treatment detector with appropriate settings"""
+        """Create a `SurfaceTreatmentDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `SurfaceTreatmentDetector` instance.
+        """
         if sensitivity == 'low':
             return SurfaceTreatmentDetector(
                 contrast_threshold=70, 
@@ -162,24 +246,52 @@ class DetectorFactory:
     
     @staticmethod
     def create_line_defect_detector(sensitivity: str) -> LineDefectDetector:
-        """Create line defect detector with appropriate settings"""
+        """Create a `LineDefectDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `LineDefectDetector` instance.
+        """
         # Enable debug mode for high sensitivity to see detected lines
         debug = False
         return LineDefectDetector(sensitivity=sensitivity, debug=debug)
     
     @staticmethod
     def create_stripe_misalignment_detector(sensitivity: str) -> StripeMisalignmentDetector:
-        """Create stripe misalignment detector with appropriate settings"""
+        """Create a `StripeMisalignmentDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `StripeMisalignmentDetector` instance.
+        """
         return StripeMisalignmentDetector(sensitivity=sensitivity, debug=True)
     
     @staticmethod
     def create_overspray_detector(sensitivity: str) -> OversprayDetector:
-        """Create overspray detector with appropriate settings"""
+        """Create an `OversprayDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `OversprayDetector` instance.
+        """
         return OversprayDetector(sensitivity=sensitivity, debug=True)
     
     @staticmethod
     def create_debris_island_detector(sensitivity: str) -> DebrisIslandDetector:
-        """Create debris island detector with appropriate settings"""
+        """Create a `DebrisIslandDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `DebrisIslandDetector` instance.
+        """
         # All parameters are handled internally based on sensitivity
         return DebrisIslandDetector(
             sensitivity=sensitivity,
@@ -188,7 +300,14 @@ class DetectorFactory:
     
     @staticmethod
     def create_overspray_island_detector(sensitivity: str) -> OversprayIslandDetector:
-        """Create overspray island detector with appropriate settings"""
+        """Create an `OversprayIslandDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `OversprayIslandDetector` instance.
+        """
         # All parameters are handled internally based on sensitivity
         return OversprayIslandDetector(
             sensitivity=sensitivity,
@@ -197,26 +316,38 @@ class DetectorFactory:
 
 
 class DetectionStrategy(ABC):
-    """Abstract strategy for detection based on image type"""
+    """Abstract strategy for selecting detectors based on image type."""
     
     @abstractmethod
     def get_required_detectors(self) -> List[str]:
-        """Get list of required detector names"""
+        """Return a list of detector keys to execute for this strategy."""
         pass
     
     @abstractmethod
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        """Create detector instances"""
+        """Instantiate detector objects keyed by their detector names.
+
+        Args:
+            sensitivity: Global sensitivity level for detector configuration.
+
+        Returns:
+            Mapping from detector key to detector instance.
+        """
         pass
 
 
 class StripeDetectionStrategy(DetectionStrategy):
-    """Detection strategy for stripe images"""
+    """Detection strategy for stripe images.
+
+    Currently routes to the `stripe_misalignment` detector.
+    """
     
     def get_required_detectors(self) -> List[str]:
+        """Detectors to run for stripe images."""
         return ['stripe_misalignment'] #, 'overspray']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
+        """Create detector instances for stripe images."""
         return {
             # 'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
             'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
@@ -225,13 +356,18 @@ class StripeDetectionStrategy(DetectionStrategy):
 
 
 class IslandDetectionStrategy(DetectionStrategy):
-    """Detection strategy for island images"""
+    """Detection strategy for island images.
+
+    Routes to `debris_island`, `line_defect`, and `overspray_island` detectors.
+    """
     
     def get_required_detectors(self) -> List[str]:
+        """Detectors to run for island images."""
         # Run debris_island and overspray_island detectors for island images
         return ['debris_island', 'line_defect', 'overspray_island']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
+        """Create detector instances for island images."""
         # Return debris_island and overspray_island detectors for island images
         return {
             'debris_island': DetectorFactory.create_debris_island_detector(sensitivity),
@@ -241,20 +377,25 @@ class IslandDetectionStrategy(DetectionStrategy):
 
 
 class UnknownDetectionStrategy(DetectionStrategy):
-    """Detection strategy for unknown image types"""
+    """Detection strategy for unknown image types.
+
+    Takes a conservative approach and only runs safe detectors.
+    """
     
     def get_required_detectors(self) -> List[str]:
+        """Detectors to run for unknown image types."""
         # Only run safe detectors for unknown types
         return ['surface_treatment']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
+        """Create detector instances for unknown image types."""
         return {
             'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
         }
 
 
 class DetectionStrategyFactory:
-    """Factory for creating detection strategies"""
+    """Factory for creating detection strategies based on `ImageType`."""
     
     _strategies = {
         ImageType.STRIPE: StripeDetectionStrategy,
@@ -264,19 +405,43 @@ class DetectionStrategyFactory:
     
     @classmethod
     def create_strategy(cls, image_type: ImageType) -> DetectionStrategy:
-        """Create appropriate detection strategy"""
+        """Create an appropriate detection strategy instance.
+
+        Args:
+            image_type: The classified `ImageType` for the image.
+
+        Returns:
+            An instance of a `DetectionStrategy` implementation.
+        """
         strategy_class = cls._strategies.get(image_type, UnknownDetectionStrategy)
         return strategy_class()
 
 
 class SingleImageProcessor:
-    """Processes a single image through appropriate detectors"""
+    """Process a single image through detectors chosen by image type.
+
+    The image type is inferred from the filename and used to select the
+    appropriate detection strategy and detectors.
+    """
     
     def __init__(self, config: ProcessingConfig):
+        """Initialize the processor.
+
+        Args:
+            config: Global processing configuration.
+        """
         self.config = config
     
     def process_image(self, image_path: str, output_dir: str) -> ImageResult:
-        """Process a single image through appropriate detectors"""
+        """Dispatch a single image through the selected detectors.
+
+        Args:
+            image_path: Path to the input image file.
+            output_dir: Directory in which to save per-image results.
+
+        Returns:
+            An `ImageResult` describing all detector outputs.
+        """
         base_name = os.path.splitext(os.path.basename(image_path))[0]
         image_output_dir = os.path.join(output_dir, base_name)
         os.makedirs(image_output_dir, exist_ok=True)
@@ -314,7 +479,19 @@ class SingleImageProcessor:
     
     def _process_full_image(self, image_path: str, output_dir: str, detectors: Dict[str, Any],
                              image_type: ImageType, base_name: str, file_size: int) -> ImageResult:
-        """Process full-sized images"""
+        """Run all detectors on the full image and aggregate results.
+
+        Args:
+            image_path: Path to the input image.
+            output_dir: Directory where visualizations and JSON will be saved.
+            detectors: Mapping of detector key to detector instance to run.
+            image_type: Classified image type.
+            base_name: Base filename without extension for output naming.
+            file_size: File size in bytes.
+
+        Returns:
+            `ImageResult` containing the consolidated detector outputs.
+        """
         print(f"    Full image (size: {file_size/(1024*1024):.1f}MB), using normal processing...")
         
         detections = {}
@@ -400,11 +577,28 @@ class SingleImageProcessor:
         )
     
     def _get_file_size_mb(self, image_path: str) -> float:
-        """Get file size in MB"""
+        """Get file size in megabytes.
+
+        Args:
+            image_path: Path to the file.
+
+        Returns:
+            File size in megabytes as a float.
+        """
         return os.path.getsize(image_path) / (1024 * 1024)
     
     def _clean_defect_data(self, defects: List[Dict]) -> List[Dict]:
-        """Clean defect data for JSON serialization"""
+        """Normalize detector outputs for JSON serialization.
+
+        - Converts NumPy arrays and tuples to lists
+        - Converts NumPy scalars to native Python numbers
+
+        Args:
+            defects: List of raw defect dictionaries from a detector.
+
+        Returns:
+            A list of JSON-serializable defect dictionaries.
+        """
         cleaned_defects = []
         for defect in defects:
             cleaned_defect = {}
@@ -423,11 +617,16 @@ class SingleImageProcessor:
 
 
 class ResultsSaver:
-    """Handles saving of results in various formats"""
+    """Utility functions to save per-image results and summary reports."""
     
     @staticmethod
     def save_image_result(result: ImageResult, output_dir: str) -> None:
-        """Save individual image result to JSON"""
+        """Save a single image's `ImageResult` to JSON.
+
+        Args:
+            result: The `ImageResult` to serialize.
+            output_dir: Directory where the JSON file will be written.
+        """
         try:
             json_path = os.path.join(output_dir, f"{result.image_name}_results.json")
             with open(json_path, 'w') as f:
@@ -454,7 +653,13 @@ class ResultsSaver:
     @staticmethod
     def save_summary_report(results: List[ImageResult], output_dir: str, 
                           config: ProcessingConfig) -> None:
-        """Save summary report"""
+        """Save a summary report (JSON, and optional PDF) for all images.
+
+        Args:
+            results: List of `ImageResult` objects.
+            output_dir: Directory where summary artifacts will be saved.
+            config: Pipeline configuration controlling report generation.
+        """
         # Calculate statistics
         stats = ResultsSaver._calculate_statistics(results)
         
@@ -481,7 +686,12 @@ class ResultsSaver:
     
     @staticmethod
     def _calculate_statistics(results: List[ImageResult]) -> Dict[str, Any]:
-        """Calculate statistics from results"""
+        """Compute aggregate statistics across all processed images.
+
+        Returns:
+            A dictionary with keys: 'image_type_distribution',
+            'defect_statistics', and 'processing_summary'.
+        """
         # Image type distribution
         image_type_distribution = {}
         for result in results:
@@ -528,7 +738,13 @@ class ResultsSaver:
     @staticmethod
     def _generate_pdf_report(results: List[ImageResult], stats: Dict[str, Any], 
                            output_dir: str) -> None:
-        """Generate PDF report"""
+        """Generate a human-readable PDF summary report.
+
+        Args:
+            results: Per-image results to include.
+            stats: Precomputed aggregate statistics.
+            output_dir: Directory to write the PDF to.
+        """
         pdf_path = os.path.join(output_dir, "defect_detection_report.pdf")
         
         with PdfPages(pdf_path) as pdf:
@@ -563,7 +779,7 @@ class ResultsSaver:
     
     @staticmethod
     def _json_serializer(obj):
-        """Custom JSON serializer"""
+        """Custom JSON serializer for NumPy and enum types."""
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         elif isinstance(obj, np.integer):
@@ -581,15 +797,27 @@ class ResultsSaver:
 
 
 class DefectDetectionPipeline:
-    """Main pipeline orchestrating the detection process"""
+    """Orchestrates folder-level processing using the image processor and savers."""
     
     def __init__(self, config: ProcessingConfig):
+        """Initialize the pipeline with global configuration.
+
+        Args:
+            config: Pipeline configuration.
+        """
         self.config = config
         self.processor = SingleImageProcessor(config)
         self.results: List[ImageResult] = []
     
     def process_folder(self, input_folder: str) -> None:
-        """Process all images in a folder"""
+        """Process all supported images found in a folder.
+
+        Produces per-image JSON and visualization artifacts, and a folder-level
+        summary JSON (and optional PDF).
+
+        Args:
+            input_folder: Directory containing images to process.
+        """
         # Create output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = os.path.join(input_folder, f"output_{timestamp}")
@@ -628,7 +856,7 @@ class DefectDetectionPipeline:
         self._print_summary_statistics()
     
     def _print_summary_statistics(self) -> None:
-        """Print summary statistics to console"""
+        """Print a concise summary of image counts and total defects to console."""
         if not self.results:
             return
         
@@ -660,7 +888,11 @@ class DefectDetectionPipeline:
 
 
 def main():
-    """Main entry point"""
+    """CLI entry point for running the defect detection pipeline.
+
+    Parses command-line arguments and executes processing for the provided
+    input folder, generating outputs under a timestamped directory.
+    """
     parser = argparse.ArgumentParser(
         description='Run defect detection algorithms on images based on filename patterns'
     )

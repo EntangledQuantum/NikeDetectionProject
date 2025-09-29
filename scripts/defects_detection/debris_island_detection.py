@@ -18,13 +18,21 @@ from utils.image_saver import save_image
 
 
 class DebrisIslandDetector(BaseDetector):
-    """Detects debris in island images by first removing detected lines"""
+    """Detect debris in island images after removing slanted lines.
+
+    The workflow:
+    1) Detect horizontal slanted lines using `LineDetector`
+    2) Paint those lines out to avoid false positives
+    3) Threshold and morphologically clean the image to isolate dark debris
+    4) Return a visualization and a structured list of defects
+    """
     
     def __init__(self, sensitivity='medium', debug=False):
-        """
+        """Initialize the detector and configure parameters.
+
         Args:
-            sensitivity: Detection sensitivity level ('low', 'medium', 'high')
-            debug: Whether to enable debug visualization
+            sensitivity: One of {'low', 'medium', 'high'} controlling thresholds.
+            debug: If True, stores and optionally saves intermediate debug images.
         """
         super().__init__()  # Initialize BaseDetector with exclusion zone support
         self.debug = debug
@@ -65,7 +73,18 @@ class DebrisIslandDetector(BaseDetector):
 
     
     def create_debug_kernel_visualization(self, image, left_kernels, right_kernels, matched_lines):
-        """Create a debug visualization showing both kernels AND lines"""
+        """Create a composite debug visualization of kernels and matched lines.
+
+        Args:
+            image: Original image (BGR or grayscale).
+            left_kernels: List of kernel state dicts from left-side scan.
+            right_kernels: List of kernel state dicts from right-side scan.
+            matched_lines: List of matched line dicts with slope validation.
+
+        Returns:
+            BGR image annotated with line segments, kernel boxes, legends, and
+            optional exclusion zones.
+        """
         if len(image.shape) == 2:
             debug_vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         else:
@@ -180,7 +199,17 @@ class DebrisIslandDetector(BaseDetector):
         return debug_vis
     
     def create_line_points_visualization(self, image, matched_lines, left_lines, right_lines):
-        """Create a simple visualization showing ALL detected line points with dots"""
+        """Visualize all detected line points from both sides.
+
+        Args:
+            image: Original image (BGR or grayscale).
+            matched_lines: Matched left/right line pairs.
+            left_lines: All left-side detections.
+            right_lines: All right-side detections.
+
+        Returns:
+            BGR image with colored dots and a small legend.
+        """
         if len(image.shape) == 2:
             debug_vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         else:
@@ -217,7 +246,15 @@ class DebrisIslandDetector(BaseDetector):
         return debug_vis
     
     def remove_lines_from_image(self, gray_image, matched_lines):
-        """Remove detected lines by painting them white (only valid slopes)"""
+        """Paint out valid-slope lines in a grayscale image.
+
+        Args:
+            gray_image: Grayscale image where lines will be removed.
+            matched_lines: Matched line dicts including endpoints and slope validity.
+
+        Returns:
+            Grayscale image with valid-slope lines painted white.
+        """
         # Create a copy to work on
         lines_removed = gray_image.copy()
         
@@ -236,7 +273,14 @@ class DebrisIslandDetector(BaseDetector):
         return lines_removed
     
     def _is_debris_in_exclusion_zone(self, contour):
-        """Check if a debris contour overlaps with any exclusion zone"""
+        """Return True if the debris contour overlaps any exclusion zone.
+
+        Args:
+            contour: OpenCV contour of a debris region.
+
+        Returns:
+            bool: True if overlapping with an exclusion zone; False otherwise.
+        """
         # Access exclusion zones from line detector
         if not hasattr(self.line_detector, 'exclusion_zones') or not self.line_detector.exclusion_zones:
             return False
@@ -261,7 +305,19 @@ class DebrisIslandDetector(BaseDetector):
         return False
     
     def detect_debris(self, lines_removed_image):
-        """Detect debris (dark regions) with aggressive contrast enhancement"""
+        """Detect dark debris regions from a line-removed grayscale image.
+
+        Uses a fixed background threshold and a small morphological closing to
+        produce clean debris blobs.
+
+        Args:
+            lines_removed_image: Grayscale image with slanted lines painted out.
+
+        Returns:
+            tuple: (debris_contours, debris_mask)
+                - debris_contours: List of contours passing area/exclusion checks
+                - debris_mask: Binary mask (uint8) highlighting debris regions
+        """
         # Convert background colors to grayscale values for reference:
         # rgb(193, 179, 157) -> grayscale ≈ 180
         # rgb(142, 131, 115) -> grayscale ≈ 133
@@ -315,7 +371,16 @@ class DebrisIslandDetector(BaseDetector):
         return debris_contours, debris_mask
     
     def create_debris_visualization(self, image, debris_contours, matched_lines):
-        """Create visualization highlighting debris regions"""
+        """Create a final visualization highlighting debris regions in red.
+
+        Args:
+            image: Original image (BGR or grayscale).
+            debris_contours: List of contours representing debris.
+            matched_lines: Matched lines (not drawn in final visualization).
+
+        Returns:
+            BGR visualization image with filled debris and bounding boxes.
+        """
         if len(image.shape) == 2:
             vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         else:
@@ -375,7 +440,17 @@ class DebrisIslandDetector(BaseDetector):
         return result
     
     def detect(self, image, image_path=None):
-        """Main detection method"""
+        """Run the full debris detection pipeline for an island image.
+
+        Args:
+            image: Input image (BGR or grayscale).
+            image_path: Optional path used to load per-image exclusion zones.
+
+        Returns:
+            tuple: (visualization_bgr, defects)
+                - visualization_bgr: Final visualization image
+                - defects: List of defect dicts including line stats and debris regions
+        """
         # Use line detector to find lines
         matched_lines, left_lines, right_lines, left_kernels, right_kernels = self.line_detector.detect_lines(image, self.debug, image_path)
         
@@ -483,7 +558,15 @@ class DebrisIslandDetector(BaseDetector):
         return visualization, defects
     
     def save_debug_images(self, output_dir, base_name):
-        """Save debug images if debug mode is enabled"""
+        """Persist debug images (if available) to the output directory.
+
+        Args:
+            output_dir: Directory where images will be saved.
+            base_name: Base filename for output files.
+
+        Returns:
+            list[str] | None: List of saved file paths, or None if nothing saved.
+        """
         debug_paths = []
         
         if self.debug:

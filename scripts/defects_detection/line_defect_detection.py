@@ -13,17 +13,24 @@ import os
 
 
 class LineDefectDetector:
-    """Detects line defects using kernel-based line tracking"""
+    """Detect line defects using kernel-based tracking across horizontal scanlines.
+
+    The detector tracks horizontal lines by stepping a kernel across the image,
+    identifying missing segments (gaps) and jagged segments (large y deltas
+    between consecutive kernel placements). Sensitivity presets adjust kernel
+    size, thresholds, and stability parameters.
+    """
     
     def __init__(self, kernel_size=20, search_range=10,
                  min_gap_size=10, sensitivity='medium', debug=False):
-        """
+        """Configure tracking, thresholds, and stability settings.
+
         Args:
-            kernel_size: Size of the tracking kernel (square)
-            search_range: Vertical search range when line is lost
-            min_gap_size: Minimum gap size to consider as defect
-            sensitivity: Detection sensitivity level
-            debug: Whether to draw debug visualization
+            kernel_size: Size of the square tracking kernel in pixels.
+            search_range: Vertical search range (±pixels) when line is missing.
+            min_gap_size: Minimum horizontal gap (in pixels) to report missing line.
+            sensitivity: One of {'low', 'medium', 'high'}.
+            debug: If True, store additional visualization details.
         """
         self.kernel_size = kernel_size
         self.search_range = search_range
@@ -65,7 +72,14 @@ class LineDefectDetector:
             self.jagged_threshold = 8  # high sensitivity to jagged lines
     
     def scan_for_lines(self, binary_image):
-        """Scan image to find all horizontal lines"""
+        """Produce a list of y positions to scan for horizontal lines.
+
+        Args:
+            binary_image: Single-channel uint8 image where lines are white.
+
+        Returns:
+            List[int]: Y positions used as starting rows for tracking.
+        """
         height, width = binary_image.shape
         line_starts = []
         
@@ -87,7 +101,19 @@ class LineDefectDetector:
         return line_starts
     
     def track_line(self, binary_image, start_y, previous_scan_means):
-        """Track a single line across the image using kernel"""
+        """Track a single horizontal line and collect defects along its path.
+
+        Args:
+            binary_image: Binary (uint8) image with the target line in white.
+            start_y: Row index from which to begin tracking.
+            previous_scan_means: Mean Y values from previous scans to prevent
+                redundant/overlapping scans.
+
+        Returns:
+            tuple: (kernel_states, defects)
+                - kernel_states: List[dict] describing each kernel placement
+                - defects: List[dict] of detected 'missing_line' and 'jagged_line'
+        """
         height, width = binary_image.shape
         kernel_states = []  # For debug visualization
         defects = []
@@ -314,7 +340,20 @@ class LineDefectDetector:
         return kernel_states, defects
     
     def detect(self, image):
-        """Main detection method"""
+        """Run the full line defect detection pipeline on an image.
+
+        Steps:
+          1) Convert to grayscale and enhance contrast
+          2) Adaptive threshold to get a binary image (lines as white)
+          3) Scan for candidate rows and track lines
+          4) Aggregate defects and produce a visualization
+
+        Args:
+            image: Input image as BGR or grayscale.
+
+        Returns:
+            tuple: (visualization_bgr, defects)
+        """
         # Convert to grayscale if needed
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -371,7 +410,16 @@ class LineDefectDetector:
         return visualization, all_defects
     
     def create_visualization(self, original, defects, kernel_states=None):
-        """Create visualization with detected defects highlighted"""
+        """Create a visualization image showing detected defects.
+
+        Args:
+            original: Original input image (BGR or grayscale).
+            defects: List of defect dictionaries returned by `detect`.
+            kernel_states: Optional kernel placement states for debug mode.
+
+        Returns:
+            BGR image with overlays highlighting missing/jagged segments.
+        """
         if len(original.shape) == 2:
             vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
         else:
