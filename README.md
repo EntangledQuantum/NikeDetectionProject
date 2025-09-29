@@ -201,3 +201,20 @@ To add new defect detection algorithms:
 ## License
 
 This project is proprietary. All rights reserved. 
+
+## Module Reference
+
+- **scripts/defects_detection/run_all_detections.py**: Orchestrator CLI that routes images to the right detectors based on filename patterns (stripe/island/unknown), executes detections, and saves per-image JSON plus a summary report (and optional PDF).
+- **scripts/defects_detection/detector_base.py**: Common base with exclusion zone support (`load_exclusion_zones`, `is_point_in_exclusion_zone`, `is_region_in_exclusion_zone`, `draw_exclusion_zones`) and a small adapter to standardize detector outputs.
+- **scripts/defects_detection/debris_island_detection.py**: `DebrisIslandDetector` for island images. Removes slanted lines using `utils/line_detector.py`, thresholds for dark debris, applies light morphology, and returns debris regions; supports rich debug artifacts.
+- **scripts/defects_detection/overspray_island_detection.py**: `OversprayIslandDetector` for island images. Removes slanted lines, detects colored (non-white) regions below a background threshold, aggressively connects nearby regions, and groups them into overspray shapes.
+- **scripts/defects_detection/line_defect_detection.py**: `LineDefectDetector` that tracks horizontal lines to find two defect types: `missing_line` (gaps) and `jagged_line` (large Y deltas). Uses contrast enhancement and adaptive thresholding.
+- **scripts/defects_detection/stripe_misalignment_detection.py**: `StripeMisalignmentDetector` for vertical stripe patterns. Enhances vertical edges and scans rows to flag significant X-position shifts as misalignment defects.
+- **scripts/defects_detection/overspray_detection.py**: `OversprayDetector` that grid-scans the image and computes a pixel scatter metric per kernel; optionally merges adjacent kernels into larger overspray regions.
+- **scripts/defects_detection/surface_treatment_detection.py**: `SurfaceTreatmentDetector` detecting irregular high-contrast drops and missing-ink voids within expected coverage; produces whole-region overlays for easy review.
+- **scripts/defects_detection/utils/edge_detector.py**: Helpers for enhanced edge detection with noise reduction and optional CLI usage.
+- **scripts/defects_detection/utils/image_saver.py**: Robust image saving that automatically switches to TIFF for very large dimensions; handles dtype conversions safely.
+- **scripts/defects_detection/utils/line_detector.py**: Robust slanted line detection for island images; supports dynamic kernel scaling and per-image exclusion zones.
+- **scripts/defects_detection/stripe_misalignment_README.md**: Additional notes and tuning tips for stripe misalignment detection.
+
+Note: In earlier documentation you may see references like `debris_detection.py`. The current module name in this repo is `debris_island_detection.py`.
