@@ -255,7 +255,7 @@ class DetectorFactory:
             Configured `LineDefectDetector` instance.
         """
         # Enable debug mode for high sensitivity to see detected lines
-        debug = False
+        debug = True
         return LineDefectDetector(sensitivity=sensitivity, debug=debug)
     
     @staticmethod
@@ -268,7 +268,7 @@ class DetectorFactory:
         Returns:
             Configured `StripeMisalignmentDetector` instance.
         """
-        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=True)
+        return StripeMisalignmentDetector(sensitivity=sensitivity, debug=False)
     
     @staticmethod
     def create_overspray_detector(sensitivity: str) -> OversprayDetector:
@@ -280,7 +280,7 @@ class DetectorFactory:
         Returns:
             Configured `OversprayDetector` instance.
         """
-        return OversprayDetector(sensitivity=sensitivity, debug=True)
+        return OversprayDetector(sensitivity=sensitivity, debug=False)
     
     @staticmethod
     def create_debris_island_detector(sensitivity: str) -> DebrisIslandDetector:
@@ -295,7 +295,7 @@ class DetectorFactory:
         # All parameters are handled internally based on sensitivity
         return DebrisIslandDetector(
             sensitivity=sensitivity,
-            debug=True               # Enable debug visualization
+            debug=False               # Enable debug visualization
         )
     
     @staticmethod
@@ -311,7 +311,7 @@ class DetectorFactory:
         # All parameters are handled internally based on sensitivity
         return OversprayIslandDetector(
             sensitivity=sensitivity,
-            debug=True               # Enable debug visualization
+            debug=False               # Enable debug visualization
         )
 
 
@@ -533,6 +533,15 @@ class SingleImageProcessor:
                     result_img, defects = detector.detect(original, image_path)
                     
                     # Save debug images if available
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
+                elif detector_name == 'line_defect':
+                    # For line defect detection, pass the original image and image path
+                    # Uses LineDetector internally to find lines, then scans for defects
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original, image_path)
+                    
+                    # Save debug images if available (separate missing/jagged visualizations)
                     if hasattr(detector, 'save_debug_images'):
                         detector.save_debug_images(output_dir, base_name)
                 else:
