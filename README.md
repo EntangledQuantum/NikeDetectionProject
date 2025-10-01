@@ -30,6 +30,34 @@ pip install -r requirements.txt
 
 ## Usage
 
+### Choosing the Right Script
+
+This system provides two workflows depending on your input:
+
+#### **Workflow 1: Single Large Image with Regions (Recommended)**
+**Use `main_defect_detection.py` when you have:**
+- ✅ A single large TIFF image containing multiple print regions
+- ✅ A JSON configuration file defining the regions to extract
+
+This script automates everything:
+1. Extracts individual stripe/island regions from your large image
+2. Automatically runs defect detection on all extracted regions
+
+```bash
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json
+```
+
+#### **Workflow 2: Pre-Extracted Individual Images**
+**Use `scripts/defects_detection/run_all_detections.py` when you already have:**
+- ✅ A folder containing individual stripe and island images (already extracted)
+- ✅ Images named with 'stripe' or 'island' in the filename for auto-classification
+
+```bash
+python scripts/defects_detection/run_all_detections.py --input_folder path/to/images
+```
+
+---
+
 ### Input Folder Structure
 
 Your input folder should contain the images you want to analyze. Optionally, you can provide per-image exclusion zone definitions:
@@ -101,14 +129,76 @@ See `example_exclusion_zones.json` in the project root for a complete example.
 - ✅ **Line Detection** (used internally by island detectors): Excludes line detection kernels in zones
 - ❌ Other detectors currently do not support exclusion zones sa of now
 
-### Basic Usage
+### Main Script Usage (Workflow 1)
+
+For processing a single large TIFF image with multiple regions:
+
+```bash
+# Basic usage (both image and config required)
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json
+
+# With high sensitivity detection
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json --sensitivity high
+
+# Generate PDF report
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json --generate_report
+
+# All options combined
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json --sensitivity high --generate_report
+```
+
+**Main Script Options:**
+- `--image`, `-i`: Path to the TIFF image file (required)
+- `--config`, `-c`: Path to JSON configuration file with region definitions (required)
+- `--sensitivity`, `-s`: Detection sensitivity level: low, medium, high (default: medium)
+- `--generate_report`: Generate PDF report with all detections (optional)
+
+**Region Configuration JSON Format:**
+
+Your JSON file must define regions to extract from the large image:
+
+```json
+{
+  "original_image_path": "path/to/image.tif",
+  "sub_images": [
+    {
+      "name": "blueStripe",
+      "bounding_box_pixels": {
+        "top_x": 1000,
+        "top_y": 500,
+        "bottom_x": 2000,
+        "bottom_y": 10000
+      }
+    },
+    {
+      "name": "island-black-blue",
+      "bounding_box_pixels": {
+        "top_x": 2500,
+        "top_y": 500,
+        "bottom_x": 5000,
+        "bottom_y": 10000
+      }
+    }
+  ]
+}
+```
+
+**Important Notes:**
+- Region names should contain 'stripe' or 'island' for automatic classification
+- Coordinates are in pixels (top_x, top_y = top-left, bottom_x, bottom_y = bottom-right)
+- The script creates a timestamped extraction folder and runs detection automatically
+- See example JSONs in `regions_json/` folder
+
+### Detection Script Usage (Workflow 2)
+
+For processing a folder of pre-extracted individual images:
 
 ```bash
 # Run all detection algorithms on a folder of images
 python scripts/defects_detection/run_all_detections.py --input_folder path/to/images
 ```
 
-### Command Line Options
+### Detection Script Options
 
 ```bash
 python scripts/defects_detection/run_all_detections.py \
@@ -117,29 +207,47 @@ python scripts/defects_detection/run_all_detections.py \
     --sensitivity high
 ```
 
-Options:
+**Detection Script Options:**
 - `--input_folder`: Path to folder containing images to analyze (required)
 - `--generate_report`: Generate a PDF report with all detections (optional)
 - `--sensitivity`: Detection sensitivity level: low, medium, high (default: medium)
 
 ### Output Structure
 
-The system creates an `output` folder within your input folder containing:
+**Workflow 1 (Main Script) Output:**
+```
+image_directory/
+└── image_name_extracted_regions_YYYYMMDD_HHMMSS/
+    ├── blueStripe.tiff                    # Extracted region
+    ├── island-black-blue.tiff             # Extracted region
+    ├── pinkStripe.tiff                    # Extracted region
+    └── output_YYYYMMDD_HHMMSS/            # Detection results
+        ├── blueStripe/
+        │   ├── stripe_misalignment_visualization.jpg
+        │   ├── overspray_visualization.jpg
+        │   ├── surface_treatment_visualization.jpg
+        │   └── blueStripe_results.json
+        ├── island-black-blue/
+        │   ├── debris_island_visualization.jpg
+        │   ├── line_defect_visualization.jpg
+        │   ├── overspray_island_visualization.jpg
+        │   └── island-black-blue_results.json
+        ├── defect_report.json             # Summary JSON report
+        └── defect_detection_report.pdf    # Summary PDF (if requested)
+```
+
+**Workflow 2 (Detection Script) Output:**
 ```
 input_folder/
 └── output_YYYYMMDD_HHMMSS/
     ├── image_name/
-    │   ├── overspray_visualization.jpg
-    │   ├── surface_treatment_visualization.jpg
-    │   ├── debris_visualization.jpg
-    │   ├── gray_spots_visualization.jpg
-    │   ├── edge_defects_visualization.jpg
-    │   ├── banding_visualization.jpg
-    │   ├── streak_visualization.jpg
-    │   └── image_name_results.json
-    ├── defect_report.json      # Detailed JSON report
-    └── defect_report.pdf       # Visual PDF report (if requested)
+    │   ├── [detector]_visualization.jpg   # Visualization for each detector
+    │   └── image_name_results.json        # Per-image results
+    ├── defect_report.json                 # Summary JSON report
+    └── defect_detection_report.pdf        # Summary PDF (if requested)
 ```
+
+**Note:** Actual visualizations depend on image type (stripe vs island) and which detectors are applied.
 
 ## Handling Large Images
 
