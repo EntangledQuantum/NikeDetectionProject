@@ -61,7 +61,7 @@ class LineDefectDetector:
         # Store debug images
         self._debug_missing_lines_image = None
         self._debug_jagged_lines_image = None
-        self._debug_combined_image = None
+        self._debug_kernel_image = None
         
         print(f"Line Defect Detector Configuration:")
         print(f"  Kernel size: {self.kernel_size}px")
@@ -282,15 +282,19 @@ class LineDefectDetector:
             print(f"Missing line segments: {missing_total}")
             print(f"Jagged line segments: {jagged_total}")
         
-        # Create visualizations
+        # Always create combined visualization (red + yellow defects)
         combined_vis = self.create_combined_visualization(image, all_defects, all_kernel_states)
         
         if self.debug:
-            # Create separate visualizations for debug mode
+            # In debug mode, create additional visualizations:
+            # 1. Separate missing lines only (red)
             self._debug_missing_lines_image = self.create_missing_lines_visualization(image, all_defects)
+            # 2. Separate jagged lines only (yellow)
             self._debug_jagged_lines_image = self.create_jagged_lines_visualization(image, all_defects)
-            self._debug_combined_image = combined_vis
+            # 3. Kernel visualization showing all kernel boxes
+            self._debug_kernel_image = self.create_kernel_visualization(image, all_kernel_states, all_defects)
         
+        # Always return combined visualization (works for both debug and normal mode)
         return combined_vis, all_defects
     
     def create_combined_visualization(self, original, defects, kernel_states=None):
@@ -412,6 +416,65 @@ class LineDefectDetector:
         
         return result
     
+    def create_kernel_visualization(self, original, kernel_states, defects):
+        """Create visualization showing all kernel boxes with color coding.
+        
+        Args:
+            original: Original input image
+            kernel_states: List of kernel state dicts
+            defects: List of defects for context
+            
+        Returns:
+            BGR visualization with kernel boxes overlaid
+        """
+        if len(original.shape) == 2:
+            vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
+        else:
+            vis = original.copy()
+        
+        overlay = vis.copy()
+        
+        # Draw each kernel box with appropriate color
+        for state in kernel_states:
+            x1, y1, x2, y2 = state['bbox']
+            
+            # Ensure coordinates are within image bounds
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(vis.shape[1], x2)
+            y2 = min(vis.shape[0], y2)
+            
+            # Choose color based on kernel state
+            if state.get('is_jagged', False):
+                color = (0, 255, 255)  # Yellow for jagged lines
+                thickness = 2
+            elif state['has_line']:
+                color = (0, 255, 0)  # Green for normal lines
+                thickness = 1
+            else:
+                color = (0, 0, 255)  # Red for missing lines
+                thickness = 2
+            
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
+            
+            # Draw center dot
+            x = state['x']
+            y = state['y']
+            cv2.circle(overlay, (x, y), 3, color, -1)
+        
+        # Blend with original
+        result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+        
+        # Add legend
+        cv2.putText(result, "Green: Line OK", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(result, "Red: Missing", (10, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(result, "Yellow: Jagged", (10, 90),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        return result
+    
     def save_debug_images(self, output_dir, base_name):
         """Save debug images if debug mode is enabled."""
         debug_paths = []
@@ -429,10 +492,10 @@ class LineDefectDetector:
                 debug_paths.append(path)
                 print(f"    Saved jagged lines debug: {path}")
             
-            if self._debug_combined_image is not None:
-                path = os.path.join(output_dir, f"{base_name}_line_defect_combined.jpg")
-                cv2.imwrite(path, self._debug_combined_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if hasattr(self, '_debug_kernel_image') and self._debug_kernel_image is not None:
+                path = os.path.join(output_dir, f"{base_name}_line_defect_kernels.jpg")
+                cv2.imwrite(path, self._debug_kernel_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(path)
-                print(f"    Saved combined debug: {path}")
+                print(f"    Saved kernel visualization: {path}")
         
         return debug_paths if debug_paths else None
