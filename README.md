@@ -30,6 +30,77 @@ pip install -r requirements.txt
 
 ## Usage
 
+### Input Folder Structure
+
+Your input folder should contain the images you want to analyze. Optionally, you can provide per-image exclusion zone definitions:
+
+```
+input_folder/
+├── image1.tif              # Image to analyze
+├── image1.json             # Optional: exclusion zones for image1
+├── blueStripe.tiff         # Another image (auto-classified as 'stripe')
+├── blueStripe.json         # Optional: exclusion zones for blueStripe
+├── island-black-blue.tiff  # Another image (auto-classified as 'island')
+└── island-black-blue.json  # Optional: exclusion zones for island image
+```
+
+**Important**: 
+- Image classification is based on filename patterns ('stripe' → stripe images, 'island' → island images)
+- JSON exclusion zone files must have the **exact same name** as the image file (only extension differs)
+- If no JSON file is provided, the detector runs without exclusion zones
+
+### Exclusion Zones
+
+**What are exclusion zones?**
+Exclusion zones are rectangular regions in your images that should be **ignored during defect detection**. This is useful for:
+- **Stamps, watermarks, or labels** that should not be flagged as defects
+- **Intentional marks or special characters** in the printed design
+- **Edge artifacts** from scanning or image capture
+- **Reference marks or registration targets** used in printing
+
+**How to define exclusion zones:**
+
+Create a JSON file with the same name as your image (e.g., `image.tiff` → `image.json`):
+
+```json
+{
+  "exclusion_zones": [
+    {
+      "name": "stamp_top_left",
+      "bounding_box_pixels": {
+        "top_x": 100,
+        "top_y": 50,
+        "bottom_x": 300,
+        "bottom_y": 200
+      }
+    },
+    {
+      "name": "watermark_bottom_right",
+      "bounding_box_pixels": {
+        "top_x": 4000,
+        "top_y": 3000,
+        "bottom_x": 4500,
+        "bottom_y": 3300
+      }
+    }
+  ]
+}
+```
+
+See `example_exclusion_zones.json` in the project root for a complete example.
+
+**Coordinate System:**
+- `top_x`, `top_y`: Top-left corner of the exclusion rectangle (in pixels)
+- `bottom_x`, `bottom_y`: Bottom-right corner of the exclusion rectangle (in pixels)
+- Origin (0,0) is at the top-left of the image
+- Coordinates can be negative (they are converted to absolute values automatically)
+
+**Which detectors use exclusion zones?**
+- ✅ **Debris Island Detection**: Ignores debris particles inside exclusion zones
+- ✅ **Overspray Island Detection**: Ignores overspray regions inside exclusion zones  
+- ✅ **Line Detection** (used internally by island detectors): Excludes line detection kernels in zones
+- ❌ Other detectors currently do not support exclusion zones sa of now
+
 ### Basic Usage
 
 ```bash
@@ -95,11 +166,29 @@ The system automatically detects large images and processes them efficiently:
 - **Parameters**: Contrast thresholds, void size limits, coalescence detection
 - **Output**: Regions showing irregular ink drops and missing ink areas
 
-### 3. Debris Detection (`debris_detection.py`)
-- **Purpose**: Finds foreign particles and contamination on the substrate
-- **Method**: Detects characteristic halo patterns and dark spots caused by debris
-- **Parameters**: Halo detection thresholds, particle size ranges, contrast analysis
-- **Output**: Contaminated regions with debris particles and their effects
+### 3. Debris Detection (`debris_island_detection.py`)
+- **Purpose**: Finds foreign particles and contamination on the substrate in island images
+- **Method**: Removes slanted lines first, then detects dark debris using thresholding and light morphology
+- **Parameters**: Background threshold, debris area limits, morphological kernel sizes
+- **Output**: Contaminated regions with debris particles highlighted after line removal
+
+### 4. Line Defect Detection (`line_defect_detection.py`)
+- **Purpose**: Detects missing line segments and jagged/zig-zag lines in horizontal line patterns
+- **Method**: Kernel-based tracking across scanlines; identifies gaps (missing segments) and large Y deltas (jagged lines)
+- **Parameters**: Kernel size, search range, minimum gap size, jagged threshold
+- **Output**: Missing line segments highlighted in red, jagged segments in yellow
+
+### 5. Overspray Island Detection (`overspray_island_detection.py`)
+- **Purpose**: Detects overspray (scattered ink) in island images after removing intended printed lines
+- **Method**: Removes slanted lines using line detector, then detects colored non-white regions and groups them by proximity
+- **Parameters**: Background threshold, minimum area, maximum grouping distance, line thickness
+- **Output**: Grouped overspray regions highlighted with area and density metrics
+
+### 6. Stripe Misalignment Detection (`stripe_misalignment_detection.py`)
+- **Purpose**: Identifies vertical stripe misalignment caused by printer head issues
+- **Method**: Enhances vertical edges, scans rows with a kernel to find first strong vertical line, flags lateral X-position shifts
+- **Parameters**: Kernel width/height, step size, line detection threshold, defect threshold
+- **Output**: Misaligned stripe positions highlighted with X-delta measurements
 
 ## Individual Algorithm Usage
 
