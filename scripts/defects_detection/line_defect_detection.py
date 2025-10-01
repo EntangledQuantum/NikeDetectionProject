@@ -56,7 +56,7 @@ class LineDefectDetector:
             self.step_size = 25
             self.line_threshold = 0.20
             self.min_gap_size = 100
-            self.jagged_threshold = 15
+            self.jagged_threshold = 5
         
         # Store debug images
         self._debug_missing_lines_image = None
@@ -105,6 +105,7 @@ class LineDefectDetector:
         # Scan horizontally along the line
         x = x_start
         last_found_y = y_start
+        last_detection_x = x_start  # Track X position of last actual detection
         gap_start = None
         
         while x < x_end:
@@ -135,16 +136,20 @@ class LineDefectDetector:
                         local_y_center = np.mean(y_indices)
                         actual_y = y1 + int(local_y_center)
                         
-                        # Check for jagged line (sharp Y change from expected)
-                        y_delta = abs(actual_y - expected_y)
+                        # Check for jagged line (sharp Y change from PREVIOUS detection, not expected)
+                        # This ignores small gaps and compares actual detections
+                        y_delta = abs(actual_y - last_found_y)
                         is_jagged = y_delta > self.jagged_threshold
                         
                         if is_jagged:
+                            if self.debug:
+                                print(f"    JAGGED at x={x}: Y jumped from {last_found_y} to {actual_y} (delta={y_delta}px > {self.jagged_threshold}px)")
+                            
                             defects.append({
                                 'type': 'jagged_line',
                                 'x': x,
                                 'y': actual_y,
-                                'expected_y': expected_y,
+                                'previous_y': last_found_y,
                                 'location': (x, actual_y),
                                 'y_delta': int(y_delta),
                                 'threshold': self.jagged_threshold
@@ -165,6 +170,9 @@ class LineDefectDetector:
                         if gap_start is not None:
                             gap_size = x - gap_start
                             if gap_size >= self.min_gap_size:
+                                if self.debug:
+                                    print(f"    MISSING from x={gap_start} to x={x} (gap={gap_size}px >= {self.min_gap_size}px)")
+                                
                                 defects.append({
                                     'type': 'missing_line',
                                     'start_x': gap_start,
@@ -173,9 +181,14 @@ class LineDefectDetector:
                                     'location': ((gap_start + x) // 2, expected_y),
                                     'size': gap_size
                                 })
+                            else:
+                                if self.debug:
+                                    print(f"    Small gap {gap_size}px (< {self.min_gap_size}px) - ignored for missing, but Y-delta checked for jagged")
                             gap_start = None
                         
+                        # Update last detection position (crucial for next jagged check)
                         last_found_y = actual_y
+                        last_detection_x = x
                 else:
                     # No line found - mark as missing
                     if gap_start is None:
