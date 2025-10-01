@@ -20,13 +20,13 @@ This system detects three critical types of printing defects:
 ## Installation
 
 ```bash
-# Create and activate conda environment
-conda create -n tiff_extractor python=3.10
-conda activate tiff_extractor
-
 # Install dependencies
 pip install -r requirements.txt
 ```
+
+**Requirements:**
+- Python 3.8 or higher
+- See `requirements.txt` for package dependencies
 
 ## Usage
 
@@ -105,7 +105,6 @@ See `example_exclusion_zones.json` in the project root for a complete example.
 
 ```bash
 # Run all detection algorithms on a folder of images
-conda activate tiff_extractor
 python scripts/defects_detection/run_all_detections.py --input_folder path/to/images
 ```
 
