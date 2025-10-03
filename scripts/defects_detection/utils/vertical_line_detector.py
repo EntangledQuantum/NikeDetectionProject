@@ -41,19 +41,23 @@ class VerticalLineDetector:
             self.base_kernel_height = 60
             self.line_detection_threshold = 0.10  # 10% of pixels must be BLACK to detect line
             self.num_kernels_per_side = 30  # Number of kernels to scan from each edge
-            self.x_shift_threshold = 50  # X deviation to trigger new print head polygon
+            self.min_x_shift_threshold = 50  # X deviation to trigger new print head polygon
         elif sensitivity == 'low':
             self.base_kernel_width = 10
             self.base_kernel_height = 100
             self.line_detection_threshold = 0.30  # 30% of pixels must be BLACK
             self.num_kernels_per_side = 20
-            self.x_shift_threshold = 100
+            self.min_x_shift_threshold = 100
         else:  # medium (default)
             self.base_kernel_width = 5
             self.base_kernel_height = 10
-            self.line_detection_threshold = 0.80  # 20% of pixels must be BLACK to detect line
-            self.num_kernels_per_side = 70  # Scan 30 kernels from left, 30 from right per row
-            self.x_shift_threshold = 100  # If X shifts more than 50px, new print head
+            self.line_detection_threshold = 0.80  # 80% of pixels must be BLACK to detect line
+            self.num_kernels_per_side = 70  # Scan 70 kernels from left, 70 from right per row
+            self.min_x_shift_threshold = 200  # If X shifts more than this, new print head
+        
+        # Global thresholds for handling large deviations
+        self.max_x_shift_threshold = 200  # If X shifts > this, approximate (assume error)
+        self.max_consecutive_approximations = 30  # If approximating for > this many rows, it's a new head
         
         # These will be set dynamically based on actual image size
         self.kernel_width = self.base_kernel_width
@@ -63,7 +67,9 @@ class VerticalLineDetector:
             print(f"TUNABLE PARAMETERS:")
             print(f"  num_kernels_per_side: {self.num_kernels_per_side} (how many kernels from each edge per row)")
             print(f"  line_detection_threshold: {self.line_detection_threshold} (fraction of BLACK pixels needed to detect line)")
-            print(f"  x_shift_threshold: {self.x_shift_threshold}px (X deviation to start new polygon/print head)")
+            print(f"  min_x_shift_threshold: {self.min_x_shift_threshold}px (X deviation to start new polygon/print head)")
+            print(f"  max_x_shift_threshold: {self.max_x_shift_threshold}px (if shift > this, approximate position)")
+            print(f"  max_consecutive_approximations: {self.max_consecutive_approximations} rows (if approximating > this, force new print head)")
     
     def calculate_scaled_kernel_dimensions(self, image_width, image_height, debug=False):
         """Calculate scaled kernel dimensions based on image size"""
@@ -250,7 +256,10 @@ class VerticalLineDetector:
     def create_polygons_from_edges(self, left_points, right_points, image_width, debug=False):
         """Create polygons by tracking X position changes (print head boundaries)
         
-        When left or right X shifts > threshold, new print head starts
+        Handles three cases:
+        1. Small shift (< min_x_shift_threshold): Same print head, continue
+        2. Medium shift (min_x_shift_threshold to max_x_shift_threshold): New print head
+        3. Large shift (> max_x_shift_threshold): Approximate X, likely error/noise
         """
         if not left_points or not right_points:
             return []
@@ -259,122 +268,129 @@ class VerticalLineDetector:
         left_sorted = sorted(left_points, key=lambda p: p['y'])
         right_sorted = sorted(right_points, key=lambda p: p['y'])
         
-        # Match left and right by Y position
         min_len = min(len(left_sorted), len(right_sorted))
-        
-        # Use the tunable threshold
-        x_shift_threshold = self.x_shift_threshold
+        min_width = int(image_width * 0.7)
         
         polygons = []
         segment_start_idx = 0
         prev_left_x = left_sorted[0]['x'] if left_sorted else None
         prev_right_x = right_sorted[0]['x'] if right_sorted else None
-        
-        min_width = int(image_width * 0.7)
+        consecutive_approximations = 0
         
         for i in range(1, min_len):
             left_x = left_sorted[i]['x']
             right_x = right_sorted[i]['x']
             
-            # Check if X position shifted significantly
+            # Check X position shift
             left_shift = abs(left_x - prev_left_x) if prev_left_x else 0
             right_shift = abs(right_x - prev_right_x) if prev_right_x else 0
+            max_shift = max(left_shift, right_shift)
             
-            # If significant shift, this is a new print head
-            if left_shift > x_shift_threshold or right_shift > x_shift_threshold:
-                # Create polygon for previous segment
-                if i - segment_start_idx >= 2:
-                    seg_left = left_sorted[segment_start_idx:i]
-                    seg_right = right_sorted[segment_start_idx:i]
-                    
-                    # Top and bottom Y
-                    top_y = seg_left[0]['y']
-                    bottom_y = seg_left[-1]['y']
-                    
-                    # Top and bottom X (median)
-                    top_left_x = np.median([p['x'] for p in seg_left[:len(seg_left)//2]]) if len(seg_left) > 1 else seg_left[0]['x']
-                    top_right_x = np.median([p['x'] for p in seg_right[:len(seg_right)//2]]) if len(seg_right) > 1 else seg_right[0]['x']
-                    bot_left_x = np.median([p['x'] for p in seg_left[len(seg_left)//2:]]) if len(seg_left) > 1 else seg_left[-1]['x']
-                    bot_right_x = np.median([p['x'] for p in seg_right[len(seg_right)//2:]]) if len(seg_right) > 1 else seg_right[-1]['x']
-                    
-                    # Width
-                    width = max(min_width, int(abs(top_right_x - top_left_x)))
-                    
-                    # Create 4 corners
-                    top_left = (int(top_left_x), int(top_y))
-                    top_right = (int(top_right_x), int(top_y))
-                    bottom_right = (int(bot_right_x), int(bottom_y))
-                    bottom_left = (int(bot_left_x), int(bottom_y))
-                    
-                    polygon = np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.int32)
-                    
-                    x_shift = abs((bot_left_x + bot_right_x)/2 - (top_left_x + top_right_x)/2)
-                    
-                    polygons.append({
-                        'polygon': polygon,
-                        'width': width,
-                        'segment_index': len(polygons),
-                        'top_x': (top_left_x + top_right_x) / 2,
-                        'bottom_x': (bot_left_x + bot_right_x) / 2,
-                        'x_shift': x_shift,
-                        'is_slanted': x_shift > 5,
-                        'top_y': top_y,
-                        'bottom_y': bottom_y,
-                        'shape_type': 'parallelogram' if x_shift > 5 else 'rectangle'
-                    })
+            # Case 1: Large deviation (> max_x_shift_threshold) - approximate
+            if max_shift > self.max_x_shift_threshold:
+                consecutive_approximations += 1
                 
                 if debug:
-                    print(f"  Print head boundary at Y={left_sorted[i]['y']} (left shift={left_shift:.0f}px, right shift={right_shift:.0f}px)")
+                    print(f"  Y={left_sorted[i]['y']}: Large shift {max_shift:.0f}px > {self.max_x_shift_threshold}px, approximating (count={consecutive_approximations})")
+                
+                # If approximating for too long, force new print head
+                if consecutive_approximations > self.max_consecutive_approximations:
+                    if debug:
+                        print(f"  Approximated for {consecutive_approximations} rows > {self.max_consecutive_approximations}, forcing new print head")
+                    
+                    # Create polygon for previous segment
+                    if i - segment_start_idx >= 2:
+                        self._create_and_append_polygon(
+                            left_sorted, right_sorted, segment_start_idx, i,
+                            min_width, polygons, debug
+                        )
+                    
+                    segment_start_idx = i
+                    consecutive_approximations = 0
+                    prev_left_x = left_x
+                    prev_right_x = right_x
+                else:
+                    # Approximate - use previous X positions
+                    left_sorted[i]['x'] = prev_left_x
+                    right_sorted[i]['x'] = prev_right_x
+            
+            # Case 2: Medium shift (min to max threshold) - new print head
+            elif max_shift > self.min_x_shift_threshold:
+                consecutive_approximations = 0  # Reset approximation counter
+                
+                # Create polygon for previous segment
+                if i - segment_start_idx >= 2:
+                    self._create_and_append_polygon(
+                        left_sorted, right_sorted, segment_start_idx, i,
+                        min_width, polygons, debug
+                    )
+                
+                if debug:
+                    print(f"  Print head boundary at Y={left_sorted[i]['y']} (shift={max_shift:.0f}px > {self.min_x_shift_threshold}px)")
                 
                 # Start new segment
                 segment_start_idx = i
+                prev_left_x = left_x
+                prev_right_x = right_x
             
-            prev_left_x = left_x
-            prev_right_x = right_x
+            # Case 3: Small shift - same print head, continue
+            else:
+                consecutive_approximations = 0  # Reset approximation counter
+                prev_left_x = left_x
+                prev_right_x = right_x
         
         # Add final segment
         if min_len - segment_start_idx >= 2:
-            seg_left = left_sorted[segment_start_idx:]
-            seg_right = right_sorted[segment_start_idx:]
-            
-            top_y = seg_left[0]['y']
-            bottom_y = seg_left[-1]['y']
-            
-            top_left_x = np.median([p['x'] for p in seg_left[:len(seg_left)//2]]) if len(seg_left) > 1 else seg_left[0]['x']
-            top_right_x = np.median([p['x'] for p in seg_right[:len(seg_right)//2]]) if len(seg_right) > 1 else seg_right[0]['x']
-            bot_left_x = np.median([p['x'] for p in seg_left[len(seg_left)//2:]]) if len(seg_left) > 1 else seg_left[-1]['x']
-            bot_right_x = np.median([p['x'] for p in seg_right[len(seg_right)//2:]]) if len(seg_right) > 1 else seg_right[-1]['x']
-            
-            width = max(min_width, int(abs(top_right_x - top_left_x)))
-            
-            top_left = (int(top_left_x), int(top_y))
-            top_right = (int(top_right_x), int(top_y))
-            bottom_right = (int(bot_right_x), int(bottom_y))
-            bottom_left = (int(bot_left_x), int(bottom_y))
-            
-            polygon = np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.int32)
-            
-            x_shift = abs((bot_left_x + bot_right_x)/2 - (top_left_x + top_right_x)/2)
-            
-            polygons.append({
-                'polygon': polygon,
-                'width': width,
-                'segment_index': len(polygons),
-                'top_x': (top_left_x + top_right_x) / 2,
-                'bottom_x': (bot_left_x + bot_right_x) / 2,
-                'x_shift': x_shift,
-                'is_slanted': x_shift > 5,
-                'top_y': top_y,
-                'bottom_y': bottom_y,
-                'shape_type': 'parallelogram' if x_shift > 5 else 'rectangle'
-            })
+            self._create_and_append_polygon(
+                left_sorted, right_sorted, segment_start_idx, min_len,
+                min_width, polygons, debug
+            )
         
         if debug:
             print(f"\nCREATED {len(polygons)} PRINT HEAD POLYGONS")
             for i, p in enumerate(polygons):
-                print(f"  Head {i+1}: Y=[{p['top_y']:.0f}-{p['bottom_y']:.0f}], WIDTH={p['width']}px")
+                print(f"  Head {i+1}: Y=[{p['top_y']:.0f}-{p['bottom_y']:.0f}], WIDTH={p['width']}px, X_shift={p['x_shift']:.1f}px")
         
         return polygons
+    
+    def _create_and_append_polygon(self, left_sorted, right_sorted, start_idx, end_idx, min_width, polygons, debug):
+        """Helper to create and append a polygon for a segment"""
+        seg_left = left_sorted[start_idx:end_idx]
+        seg_right = right_sorted[start_idx:end_idx]
+        
+        top_y = seg_left[0]['y']
+        bottom_y = seg_left[-1]['y']
+        
+        # Get median X for top and bottom halves (handles slant)
+        top_left_x = np.median([p['x'] for p in seg_left[:len(seg_left)//2]]) if len(seg_left) > 1 else seg_left[0]['x']
+        top_right_x = np.median([p['x'] for p in seg_right[:len(seg_right)//2]]) if len(seg_right) > 1 else seg_right[0]['x']
+        bot_left_x = np.median([p['x'] for p in seg_left[len(seg_left)//2:]]) if len(seg_left) > 1 else seg_left[-1]['x']
+        bot_right_x = np.median([p['x'] for p in seg_right[len(seg_right)//2:]]) if len(seg_right) > 1 else seg_right[-1]['x']
+        
+        width = max(min_width, int(abs(top_right_x - top_left_x)))
+        
+        # Create 4 corners
+        top_left = (int(top_left_x), int(top_y))
+        top_right = (int(top_right_x), int(top_y))
+        bottom_right = (int(bot_right_x), int(bottom_y))
+        bottom_left = (int(bot_left_x), int(bottom_y))
+        
+        polygon = np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.int32)
+        
+        x_shift = abs((bot_left_x + bot_right_x)/2 - (top_left_x + top_right_x)/2)
+        
+        polygons.append({
+            'polygon': polygon,
+            'width': width,
+            'segment_index': len(polygons),
+            'top_x': (top_left_x + top_right_x) / 2,
+            'bottom_x': (bot_left_x + bot_right_x) / 2,
+            'x_shift': x_shift,
+            'is_slanted': x_shift > 5,
+            'top_y': top_y,
+            'bottom_y': bottom_y,
+            'shape_type': 'parallelogram' if x_shift > 5 else 'rectangle'
+        })
     
     def detect_vertical_line(self, image, debug=False, image_path=None):
         """
