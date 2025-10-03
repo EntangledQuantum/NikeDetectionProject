@@ -16,13 +16,22 @@ from utils.line_detector import LineDetector
 
 
 class OversprayIslandDetector(BaseDetector):
-    """Detects overspray in island images by finding colored regions after line removal"""
+    """Detect overspray in island images after removing slanted lines.
+
+    Pipeline:
+      1) Detect and remove slanted lines to avoid false positives
+      2) Detect colored (non-white) regions under a background threshold
+      3) Optionally group nearby regions into larger overspray shapes
+      4) Produce final visualization and structured defect output
+    """
     
     def __init__(self, sensitivity='medium', debug=False):
-        """
+        """Configure overspray detection parameters and debugging behavior.
+
         Args:
-            sensitivity: Detection sensitivity level ('low', 'medium', 'high')
-            debug: Whether to enable debug visualization
+            sensitivity: One of {'low', 'medium', 'high'} controlling thresholds
+                and grouping distances.
+            debug: If True, collects intermediate masks and helper images.
         """
         super().__init__()  # Initialize BaseDetector
         self.debug = debug
@@ -67,7 +76,15 @@ class OversprayIslandDetector(BaseDetector):
         print(f"  Aggressive morphological operations for region connection")
     
     def remove_lines_from_image(self, gray_image, matched_lines):
-        """Remove detected lines by painting them white (only valid slopes)"""
+        """Paint out valid-slope lines in grayscale image to isolate overspray.
+
+        Args:
+            gray_image: Grayscale image to modify in-place copy.
+            matched_lines: Matched line dicts with endpoints and slope validity.
+
+        Returns:
+            Grayscale image with lines painted white using configured thickness.
+        """
         # Create a copy to work on
         lines_removed = gray_image.copy()
         
@@ -86,7 +103,16 @@ class OversprayIslandDetector(BaseDetector):
         return lines_removed
     
     def _is_debris_in_exclusion_zone(self, cx, cy, contour):
-        """Check if a debris particle overlaps with any exclusion zone"""
+        """Return True if a contour overlaps any configured exclusion zone.
+
+        Args:
+            cx: Unused x-center placeholder (kept for compatibility).
+            cy: Unused y-center placeholder (kept for compatibility).
+            contour: OpenCV contour representing a candidate region.
+
+        Returns:
+            bool: True if the contour's bbox intersects an exclusion zone.
+        """
         # Access exclusion zones from line detector
         if not hasattr(self.line_detector, 'exclusion_zones') or not self.line_detector.exclusion_zones:
             return False
@@ -111,7 +137,21 @@ class OversprayIslandDetector(BaseDetector):
         return False
     
     def detect_colored_regions(self, lines_removed_image):
-        """Detect colored regions by finding non-white, non-background areas"""
+        """Detect non-white regions after line removal as overspray candidates.
+
+        Uses a background-based threshold to create a binary mask of colored
+        pixels, followed by aggressive morphological operations to connect
+        nearby areas.
+
+        Args:
+            lines_removed_image: Grayscale image with lines painted white.
+
+        Returns:
+            tuple: (overspray_regions, colored_mask)
+                - overspray_regions: List of region dicts with contour, bbox,
+                  area, center, and density
+                - colored_mask: Binary mask of colored regions after morphology
+        """
         if self.debug:
             print(f"Original image range: {lines_removed_image.min()} to {lines_removed_image.max()}")
         
@@ -219,7 +259,15 @@ class OversprayIslandDetector(BaseDetector):
         return overspray_regions, colored_mask
     
     def group_nearby_regions(self, overspray_regions):
-        """Group nearby overspray regions if they are close to each other"""
+        """Group overspray regions based on centroid proximity.
+
+        Args:
+            overspray_regions: List of individual region dicts from detection.
+
+        Returns:
+            List of grouped region dicts. Multi-region groups include a convex
+            hull contour, merged area, center, density, and merged_count.
+        """
         if len(overspray_regions) <= 1:
             return overspray_regions
         
@@ -298,7 +346,16 @@ class OversprayIslandDetector(BaseDetector):
         return grouped_regions
     
     def create_region_visualization(self, image, overspray_regions, matched_lines):
-        """Create visualization showing detected colored regions"""
+        """Visualize colored regions and reference lines for debugging.
+
+        Args:
+            image: Original image (BGR or grayscale).
+            overspray_regions: List of region dicts to draw.
+            matched_lines: Matched lines; drawn for reference only.
+
+        Returns:
+            BGR visualization image with contours, fills, labels, and legends.
+        """
         if len(image.shape) == 2:
             vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         else:
@@ -386,7 +443,18 @@ class OversprayIslandDetector(BaseDetector):
         return overlay
     
     def create_clustering_visualization(self, image, debris_particles, overspray_regions, noise_particles, matched_lines):
-        """Create visualization showing clustering results"""
+        """Visualize clustering results: particles, noise, and grouped regions.
+
+        Args:
+            image: Original image (BGR or grayscale).
+            debris_particles: List of particle dicts in clusters.
+            overspray_regions: Grouped region dicts with hull contours.
+            noise_particles: Particles rejected as noise.
+            matched_lines: Matched slanted lines for reference drawing.
+
+        Returns:
+            BGR image with overlays for clusters, noise, lines, and labels.
+        """
         if len(image.shape) == 2:
             vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         else:
@@ -483,7 +551,16 @@ class OversprayIslandDetector(BaseDetector):
         return overlay
     
     def create_overspray_visualization(self, image, overspray_regions, matched_lines):
-        """Create final overspray detection visualization"""
+        """Create the final overspray visualization without reference lines.
+
+        Args:
+            image: Original image (BGR or grayscale).
+            overspray_regions: Final list of overspray regions to display.
+            matched_lines: Matched lines (omitted from final visualization).
+
+        Returns:
+            BGR image highlighting overspray areas with labels.
+        """
         if len(image.shape) == 2:
             vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         else:
@@ -531,7 +608,20 @@ class OversprayIslandDetector(BaseDetector):
         return overlay
     
     def detect(self, image, image_path=None):
-        """Main overspray detection method"""
+        """Run overspray detection on an island image and return results.
+
+        Steps:
+          1) Detect slanted lines and paint them out
+          2) Detect colored regions below background threshold
+          3) Group regions by proximity and create final visualization
+
+        Args:
+            image: Input image (BGR or grayscale).
+            image_path: Optional path to load per-image exclusion zones.
+
+        Returns:
+            tuple: (visualization_bgr, defects)
+        """
         # Use line detector to find lines
         matched_lines, left_lines, right_lines, left_kernels, right_kernels = self.line_detector.detect_lines(image, self.debug, image_path)
         
@@ -620,7 +710,17 @@ class OversprayIslandDetector(BaseDetector):
         return visualization, defects
     
     def create_line_points_visualization(self, image, matched_lines, left_lines, right_lines):
-        """Create a simple visualization showing ALL detected line points with dots"""
+        """Show all detected line points for debugging detection density.
+
+        Args:
+            image: Original image (BGR or grayscale).
+            matched_lines: Matched pairs list (not directly drawn).
+            left_lines: Raw detections from the left scan.
+            right_lines: Raw detections from the right scan.
+
+        Returns:
+            BGR image with colored dots and a compact legend.
+        """
         if len(image.shape) == 2:
             debug_vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         else:
@@ -649,7 +749,15 @@ class OversprayIslandDetector(BaseDetector):
         return debug_vis
     
     def save_debug_images(self, output_dir, base_name):
-        """Save debug images if debug mode is enabled"""
+        """Persist collected debug images to disk when debug is enabled.
+
+        Args:
+            output_dir: Directory where images will be saved.
+            base_name: Base name to prefix output files.
+
+        Returns:
+            list[str] | None: Saved file paths or None if nothing saved.
+        """
         debug_paths = []
         
         if self.debug:

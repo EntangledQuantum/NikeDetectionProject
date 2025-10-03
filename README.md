@@ -1,219 +1,416 @@
-# TIFF Region Extractor
+# Print Defect Detection System
 
-A Python script for efficiently extracting regions from large TIFF files (25GB+) based on bounding box coordinates. This tool is designed for processing scanned images from printers with multi-heads and small nozzles, where only specific regions need to be analyzed.
+A comprehensive suite of computer vision algorithms for detecting various printing defects in scanned images, optimized for handling extremely large TIFF files.
+
+## Overview
+
+This system detects three critical types of printing defects:
+- **Overspray**: Ink scattered outside intended areas, appearing as dots trailing printed regions
+- **Surface Treatment Issues**: Poor surface energy causing ink to combine into irregular drops, leaving areas with no ink
+- **Debris**: Foreign particles (dirt, fibers, etc.) causing dark spots with blank rings or contamination patterns
 
 ## Features
 
-- **Memory-efficient**: Handles very large TIFF files without loading the entire image into memory
-- **Preserves quality**: Maintains original resolution and image metadata
-- **Batch processing**: Extract multiple regions from a single TIFF file
-- **Progress tracking**: Real-time progress bars using tqdm
-- **Command-line interface**: Easy to use from terminal/command prompt
-- **Flexible input**: Accepts JSON file path or JSON string directly
+- **Optimized for Large Images**: Handles extremely large TIFF files (e.g., 1230×44167, 5163×44228 pixels) efficiently
+- **Window-based Processing**: Processes huge images in overlapping windows to minimize memory usage
+- **Multithreading**: Parallel processing of image windows for faster detection
+- **Memory Efficient**: Uses memory-mapped file reading for TIFF files
+- **Smart Visualization**: Creates scaled visualizations for very large images
 
-```mermaid
-graph TD
-    A["Large TIFF File (25GB)"] --> B["Read JSON Config"]
-    B --> C["Parse Bounding Boxes"]
-    C --> D["Extract Regions"]
-    D --> E["Save as Separate TIFFs"]
-    E --> F["Output Folder"]
-    
-    style A fill:#f9f,stroke:#333,stroke-width:4px
-    style F fill:#9f9,stroke:#333,stroke-width:4px
-```
-  
 ## Installation
 
-### 1. Create a conda environment (recommended)
-
 ```bash
-conda create -n tiff_extractor python=3.10
-conda activate tiff_extractor
-```
-
-### 2. Install dependencies
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
+**Requirements:**
+- Python 3.8 or higher
+- See `requirements.txt` for package dependencies
+
 ## Usage
 
-### Command Line Interface
+### Choosing the Right Script
 
-The script can be run from the command line with a JSON configuration:
+This system provides two workflows depending on your input:
+
+#### **Workflow 1: Single Large Image with Regions (Recommended)**
+**Use `main_defect_detection.py` when you have:**
+- ✅ A single large TIFF image containing multiple print regions
+- ✅ A JSON configuration file defining the regions to extract
+
+This script automates everything:
+1. Extracts individual stripe/island regions from your large image
+2. Automatically runs defect detection on all extracted regions
 
 ```bash
-# Using a JSON file
-python scripts/tiff_extractor.py config.json
-
-# Using a JSON string directly
-python scripts/tiff_extractor.py '{"original_image_path": "path/to/image.tiff", "sub_images": [...]}'
-
-# With verbose logging
-python scripts/tiff_extractor.py config.json --verbose
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json
 ```
 
-### JSON Configuration Format
+#### **Workflow 2: Pre-Extracted Individual Images**
+**Use `scripts/defects_detection/run_all_detections.py` when you already have:**
+- ✅ A folder containing individual stripe and island images (already extracted)
+- ✅ Images named with 'stripe' or 'island' in the filename for auto-classification
 
-The configuration should follow this structure:
+```bash
+python scripts/defects_detection/run_all_detections.py --input_folder path/to/images
+```
+
+---
+
+### Input Folder Structure
+
+Your input folder should contain the images you want to analyze. Optionally, you can provide per-image exclusion zone definitions:
+
+```
+input_folder/
+├── image1.tif              # Image to analyze
+├── image1.json             # Optional: exclusion zones for image1
+├── blueStripe.tiff         # Another image (auto-classified as 'stripe')
+├── blueStripe.json         # Optional: exclusion zones for blueStripe
+├── island-black-blue.tiff  # Another image (auto-classified as 'island')
+└── island-black-blue.json  # Optional: exclusion zones for island image
+```
+
+**Important**: 
+- Image classification is based on filename patterns ('stripe' → stripe images, 'island' → island images)
+- JSON exclusion zone files must have the **exact same name** as the image file (only extension differs)
+- If no JSON file is provided, the detector runs without exclusion zones
+
+### Exclusion Zones
+
+**What are exclusion zones?**
+Exclusion zones are rectangular regions in your images that should be **ignored during defect detection**. This is useful for:
+- **Stamps, watermarks, or labels** that should not be flagged as defects
+- **Intentional marks or special characters** in the printed design
+- **Edge artifacts** from scanning or image capture
+- **Reference marks or registration targets** used in printing
+
+**How to define exclusion zones:**
+
+Create a JSON file with the same name as your image (e.g., `image.tiff` → `image.json`):
 
 ```json
 {
-  "original_image_path": "F:/DeepLearning/NikePProject/test_images/test_image.tiff",
-  "sub_images": [
+  "exclusion_zones": [
     {
-      "name": "redBox",
+      "name": "stamp_top_left",
       "bounding_box_pixels": {
-        "top_x": 42.97521,
-        "top_y": -38.26446,
-        "bottom_x": 247.69044,
-        "bottom_y": -194.04729
+        "top_x": 100,
+        "top_y": 50,
+        "bottom_x": 300,
+        "bottom_y": 200
       }
     },
     {
-      "name": "blue_Box",
+      "name": "watermark_bottom_right",
       "bounding_box_pixels": {
-        "top_x": 515.83093,
-        "top_y": -514.77457,
-        "bottom_x": 731.38465,
-        "bottom_y": -674.09688
+        "top_x": 4000,
+        "top_y": 3000,
+        "bottom_x": 4500,
+        "bottom_y": 3300
       }
     }
   ]
 }
 ```
 
-#### Configuration Parameters:
+See `example_exclusion_zones.json` in the project root for a complete example.
 
-- `original_image_path`: Full path to the input TIFF file
-- `sub_images`: Array of regions to extract
-  - `name`: Name for the output file (will be saved as `{name}.tiff`)
-  - `bounding_box_pixels`: Coordinates defining the region
-    - `top_x`, `top_y`: Top-left corner coordinates
-    - `bottom_x`, `bottom_y`: Bottom-right corner coordinates
+**Coordinate System:**
+- `top_x`, `top_y`: Top-left corner of the exclusion rectangle (in pixels)
+- `bottom_x`, `bottom_y`: Bottom-right corner of the exclusion rectangle (in pixels)
+- Origin (0,0) is at the top-left of the image
+- Coordinates can be negative (they are converted to absolute values automatically)
 
-**Note**: The script handles negative coordinates by converting them to positive values automatically.
+**Which detectors use exclusion zones?**
+- ✅ **Debris Island Detection**: Ignores debris particles inside exclusion zones
+- ✅ **Overspray Island Detection**: Ignores overspray regions inside exclusion zones  
+- ✅ **Line Detection** (used internally by island detectors): Excludes line detection kernels in zones
+- ❌ Other detectors currently do not support exclusion zones sa of now
 
-### Python API
+### Main Script Usage (Workflow 1)
 
-You can also use the script programmatically:
-
-```python
-from scripts.tiff_extractor import extract_region_from_tiff, process_tiff_with_config
-
-# Extract a single region
-success = extract_region_from_tiff(
-    tiff_path="input.tiff",
-    top_x=100,
-    top_y=100,
-    bottom_x=500,
-    bottom_y=500,
-    output_path="output.tiff"
-)
-
-# Process multiple regions using configuration
-config = {
-    "original_image_path": "input.tiff",
-    "sub_images": [
-        {
-            "name": "region1",
-            "bounding_box_pixels": {
-                "top_x": 0,
-                "top_y": 0,
-                "bottom_x": 1000,
-                "bottom_y": 1000
-            }
-        }
-    ]
-}
-results = process_tiff_with_config(config)
-```
-
-## Output Structure
-
-The script creates an output directory in the same location as the input image:
-
-```
-input_directory/
-├── test_image.tiff          # Original image
-└── test_image_output/       # Output directory
-    ├── redBox.tiff         # Extracted region 1
-    └── blue_Box.tiff       # Extracted region 2
-```
-
-## API Reference
-
-### `extract_region_from_tiff()`
-
-Extract a specific region from a TIFF file and save it as a new TIFF.
-
-**Parameters:**
-- `tiff_path` (str): Path to the input TIFF file
-- `top_x` (int): X coordinate of top-left corner
-- `top_y` (int): Y coordinate of top-left corner
-- `bottom_x` (int): X coordinate of bottom-right corner
-- `bottom_y` (int): Y coordinate of bottom-right corner
-- `output_path` (str): Path where the extracted region will be saved
-
-**Returns:**
-- `bool`: True if extraction was successful, False otherwise
-
-### `process_tiff_with_config()`
-
-Process a TIFF file based on configuration containing bounding boxes.
-
-**Parameters:**
-- `config` (Union[str, Dict]): Either a path to JSON file or a dictionary with configuration
-
-**Returns:**
-- `Dict[str, bool]`: Dictionary with extraction results for each sub-image
-
-## Performance Considerations
-
-- The script uses memory mapping to avoid loading the entire TIFF file into memory
-- Only the required regions are loaded and processed
-- No compression is applied to output files for faster processing
-- Original metadata (resolution, color space, etc.) is preserved
-
-## Error Handling
-
-- Invalid file paths are logged and skipped
-- Malformed JSON is caught and reported
-- Failed extractions are tracked and reported in the results
-- Exit codes: 0 for success, 1 if any extraction failed
-
-## Requirements
-
-- Python 3.7+
-- tifffile: For efficient TIFF file handling
-- numpy: For array operations
-- tqdm: For progress bars
-
-## Example Test Run
+For processing a single large TIFF image with multiple regions:
 
 ```bash
-# Create test configuration
-echo '{
-  "original_image_path": "F:/DeepLearning/NikePProject/test_images/test_image.tiff",
+# Basic usage (both image and config required)
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json
+
+# With high sensitivity detection
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json --sensitivity high
+
+# Generate PDF report
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json --generate_report
+
+# All options combined
+python main_defect_detection.py --image path/to/image.tif --config path/to/regions.json --sensitivity high --generate_report
+```
+
+**Main Script Options:**
+- `--image`, `-i`: Path to the TIFF image file (required)
+- `--config`, `-c`: Path to JSON configuration file with region definitions (required)
+- `--sensitivity`, `-s`: Detection sensitivity level: low, medium, high (default: medium)
+- `--generate_report`: Generate PDF report with all detections (optional)
+
+**Region Configuration JSON Format:**
+
+Your JSON file must define regions to extract from the large image:
+
+```json
+{
+  "original_image_path": "path/to/image.tif",
   "sub_images": [
     {
-      "name": "test_region",
+      "name": "blueStripe",
       "bounding_box_pixels": {
-        "top_x": 0,
-        "top_y": 0,
-        "bottom_x": 100,
-        "bottom_y": 100
+        "top_x": 1000,
+        "top_y": 500,
+        "bottom_x": 2000,
+        "bottom_y": 10000
+      }
+    },
+    {
+      "name": "island-black-blue",
+      "bounding_box_pixels": {
+        "top_x": 2500,
+        "top_y": 500,
+        "bottom_x": 5000,
+        "bottom_y": 10000
       }
     }
   ]
-}' > test_config.json
-
-# Run extraction
-python scripts/tiff_extractor.py test_config.json
+}
 ```
+
+**Important Notes:**
+- Region names should contain 'stripe' or 'island' for automatic classification
+- Coordinates are in pixels (top_x, top_y = top-left, bottom_x, bottom_y = bottom-right)
+- The script creates a timestamped extraction folder and runs detection automatically
+- See example JSONs in `regions_json/` folder
+
+### Detection Script Usage (Workflow 2)
+
+For processing a folder of pre-extracted individual images:
+
+```bash
+# Run all detection algorithms on a folder of images
+python scripts/defects_detection/run_all_detections.py --input_folder path/to/images
+```
+
+### Detection Script Options
+
+```bash
+python scripts/defects_detection/run_all_detections.py \
+    --input_folder path/to/images \
+    --generate_report \
+    --sensitivity high
+```
+
+**Detection Script Options:**
+- `--input_folder`: Path to folder containing images to analyze (required)
+- `--generate_report`: Generate a PDF report with all detections (optional)
+- `--sensitivity`: Detection sensitivity level: low, medium, high (default: medium)
+
+### Output Structure
+
+**Workflow 1 (Main Script) Output:**
+```
+image_directory/
+└── image_name_extracted_regions_YYYYMMDD_HHMMSS/
+    ├── blueStripe.tiff                    # Extracted region
+    ├── island-black-blue.tiff             # Extracted region
+    ├── pinkStripe.tiff                    # Extracted region
+    └── output_YYYYMMDD_HHMMSS/            # Detection results
+        ├── blueStripe/
+        │   ├── stripe_misalignment_visualization.jpg
+        │   ├── overspray_visualization.jpg
+        │   ├── surface_treatment_visualization.jpg
+        │   └── blueStripe_results.json
+        ├── island-black-blue/
+        │   ├── debris_island_visualization.jpg
+        │   ├── line_defect_visualization.jpg
+        │   ├── overspray_island_visualization.jpg
+        │   └── island-black-blue_results.json
+        ├── defect_report.json             # Summary JSON report
+        └── defect_detection_report.pdf    # Summary PDF (if requested)
+```
+
+**Workflow 2 (Detection Script) Output:**
+```
+input_folder/
+└── output_YYYYMMDD_HHMMSS/
+    ├── image_name/
+    │   ├── [detector]_visualization.jpg   # Visualization for each detector
+    │   └── image_name_results.json        # Per-image results
+    ├── defect_report.json                 # Summary JSON report
+    └── defect_detection_report.pdf        # Summary PDF (if requested)
+```
+
+**Note:** Actual visualizations depend on image type (stripe vs island) and which detectors are applied.
+
+## Handling Large Images
+
+The system automatically detects large images and processes them efficiently:
+
+- **Automatic Detection**: Images > 50MB are processed using windowed approach
+- **Window Size**: Default 2048×2048 pixels with 256 pixel overlap
+- **Parallel Processing**: Up to 4 threads process windows simultaneously
+- **Memory Optimization**: Only loads required image regions into memory
+- **Scaled Visualizations**: Large images get intelligently scaled output visualizations
+
+## Detection Algorithms
+
+### 1. Overspray Detection (`overspray_detection.py`)
+- **Purpose**: Detects ink scattered outside intended print areas
+- **Method**: Uses kernel-based region analysis to group scattered dots into meaningful regions
+- **Parameters**: Region size (50-1000 pixels), proximity to main print areas, morphological kernels
+- **Output**: Highlighted regions showing where ink has scattered beyond intended boundaries
+
+### 2. Surface Treatment Detection (`surface_treatment_detection.py`)
+- **Purpose**: Identifies poor surface energy causing irregular ink behavior
+- **Method**: Detects high-contrast ink drops and void areas where ink is missing
+- **Parameters**: Contrast thresholds, void size limits, coalescence detection
+- **Output**: Regions showing irregular ink drops and missing ink areas
+
+### 3. Debris Detection (`debris_island_detection.py`)
+- **Purpose**: Finds foreign particles and contamination on the substrate in island images
+- **Method**: Removes slanted lines first, then detects dark debris using thresholding and light morphology
+- **Parameters**: Background threshold, debris area limits, morphological kernel sizes
+- **Output**: Contaminated regions with debris particles highlighted after line removal
+
+### 4. Line Defect Detection (`line_defect_detection.py`)
+- **Purpose**: Detects missing line segments and jagged/zig-zag lines in horizontal line patterns
+- **Method**: Kernel-based tracking across scanlines; identifies gaps (missing segments) and large Y deltas (jagged lines)
+- **Parameters**: Kernel size, search range, minimum gap size, jagged threshold
+- **Output**: Missing line segments highlighted in red, jagged segments in yellow
+
+### 5. Overspray Island Detection (`overspray_island_detection.py`)
+- **Purpose**: Detects overspray (scattered ink) in island images after removing intended printed lines
+- **Method**: Removes slanted lines using line detector, then detects colored non-white regions and groups them by proximity
+- **Parameters**: Background threshold, minimum area, maximum grouping distance, line thickness
+- **Output**: Grouped overspray regions highlighted with area and density metrics
+
+### 6. Stripe Misalignment Detection (`stripe_misalignment_detection.py`)
+- **Purpose**: Identifies vertical stripe misalignment caused by printer head issues
+- **Method**: Enhances vertical edges, scans rows with a kernel to find first strong vertical line, flags lateral X-position shifts
+- **Parameters**: Kernel width/height, step size, line detection threshold, defect threshold
+- **Output**: Misaligned stripe positions highlighted with X-delta measurements
+
+## Individual Algorithm Usage
+
+Each detection algorithm can also be used standalone:
+
+```python
+from overspray_detection import OversprayDetector
+
+# Initialize detector
+detector = OversprayDetector(dot_size_range=(3, 15))
+
+# Process single image
+image = cv2.imread('path/to/image.png')
+result, defects = detector.detect(image)
+
+# Visualize results
+visualization = detector.visualize_detections(image, defects)
+cv2.imwrite('output.png', visualization)
+```
+
+## Sensitivity Levels
+
+- **Low**: Conservative detection, fewer false positives
+- **Medium**: Balanced detection (default)
+- **High**: Aggressive detection, may include more false positives
+
+## Performance Optimization
+
+### For Large Images
+- The system automatically switches to windowed processing for large files
+- Adjust window size and overlap in `WindowProcessor` initialization
+- Increase `max_workers` for more CPU cores (default: 4)
+
+### Memory Usage
+- Typical memory usage: 2-4GB for standard images
+- Large image processing: Memory usage stays constant regardless of image size
+- Uses memory-mapped file reading for TIFF files
+
+### Processing Speed
+- Standard images (< 10MP): 2-5 seconds per image
+- Large images (> 50MP): 10-30 seconds depending on size and defect count
+- Multithreading provides 2-4x speedup on multi-core systems
+
+## Defect Report Format
+
+The JSON report includes:
+```json
+{
+  "image_name": "scan001.png",
+  "timestamp": "2024-01-20T10:30:00",
+  "processing_time": "2024-01-20T10:30:15",
+  "defects": {
+    "overspray": {
+      "count": 45,
+      "defects": [{"location": [x, y], "size": 5}, ...],
+      "visualization_path": "output/scan001/overspray_visualization.jpg"
+    },
+            "surface_treatment": {...},
+        "debris": {...},
+        "edge_defects": {...},
+    "banding": {...},
+    "streak": {...}
+  }
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Memory errors with large images**: The windowed processor should handle this automatically
+2. **"No module named cv2"**: Ensure opencv-python is installed
+3. **Slow processing**: Increase `max_workers` or reduce `window_size`
+4. **False positives**: Adjust sensitivity or algorithm parameters
+
+### Debug Mode
+
+Enable debug output:
+```python
+detector = OversprayDetector(debug=True)
+```
+
+## Examples
+
+See `scripts/example_usage.py` for usage examples.
+
+## Algorithm Parameters
+
+Each algorithm has tunable parameters. See individual algorithm files for detailed documentation of parameters and their effects.
+
+## Contributing
+
+To add new defect detection algorithms:
+1. Create a new file in `scripts/defects_detection/`
+2. Implement the base detector interface with `detect()` method
+3. Add import to `run_all_detections.py`
+4. Update this README
 
 ## License
 
-This script is provided as-is for the Nike P Project. 
+This project is proprietary. All rights reserved. 
+
+## Module Reference
+
+- **scripts/defects_detection/run_all_detections.py**: Orchestrator CLI that routes images to the right detectors based on filename patterns (stripe/island/unknown), executes detections, and saves per-image JSON plus a summary report (and optional PDF).
+- **scripts/defects_detection/detector_base.py**: Common base with exclusion zone support (`load_exclusion_zones`, `is_point_in_exclusion_zone`, `is_region_in_exclusion_zone`, `draw_exclusion_zones`) and a small adapter to standardize detector outputs.
+- **scripts/defects_detection/debris_island_detection.py**: `DebrisIslandDetector` for island images. Removes slanted lines using `utils/line_detector.py`, thresholds for dark debris, applies light morphology, and returns debris regions; supports rich debug artifacts.
+- **scripts/defects_detection/overspray_island_detection.py**: `OversprayIslandDetector` for island images. Removes slanted lines, detects colored (non-white) regions below a background threshold, aggressively connects nearby regions, and groups them into overspray shapes.
+- **scripts/defects_detection/line_defect_detection.py**: `LineDefectDetector` that tracks horizontal lines to find two defect types: `missing_line` (gaps) and `jagged_line` (large Y deltas). Uses contrast enhancement and adaptive thresholding.
+- **scripts/defects_detection/stripe_misalignment_detection.py**: `StripeMisalignmentDetector` for vertical stripe patterns. Enhances vertical edges and scans rows to flag significant X-position shifts as misalignment defects.
+- **scripts/defects_detection/overspray_detection.py**: `OversprayDetector` that grid-scans the image and computes a pixel scatter metric per kernel; optionally merges adjacent kernels into larger overspray regions.
+- **scripts/defects_detection/surface_treatment_detection.py**: `SurfaceTreatmentDetector` detecting irregular high-contrast drops and missing-ink voids within expected coverage; produces whole-region overlays for easy review.
+- **scripts/defects_detection/utils/edge_detector.py**: Helpers for enhanced edge detection with noise reduction and optional CLI usage.
+- **scripts/defects_detection/utils/image_saver.py**: Robust image saving that automatically switches to TIFF for very large dimensions; handles dtype conversions safely.
+- **scripts/defects_detection/utils/line_detector.py**: Robust slanted line detection for island images; supports dynamic kernel scaling and per-image exclusion zones.
+- **scripts/defects_detection/stripe_misalignment_README.md**: Additional notes and tuning tips for stripe misalignment detection.
+
+Note: In earlier documentation you may see references like `debris_detection.py`. The current module name in this repo is `debris_island_detection.py`.
