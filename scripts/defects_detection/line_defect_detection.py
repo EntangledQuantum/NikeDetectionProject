@@ -30,8 +30,9 @@ class LineDefectDetector:
             sensitivity: One of {'low', 'medium', 'high'}.
             debug: If True, store additional visualization details.
         """
+        # test debug
         self.sensitivity = sensitivity
-        self.debug = debug
+        self.debug = True
         
         print(f"Line Defect Detection Sensitivity: {sensitivity}")
         
@@ -62,6 +63,7 @@ class LineDefectDetector:
         self._debug_missing_lines_image = None
         self._debug_jagged_lines_image = None
         self._debug_kernel_image = None
+        self._debug_line_detector_kernels = None
         
         print(f"Line Defect Detector Configuration:")
         print(f"  Kernel size: {self.kernel_size}px")
@@ -304,8 +306,11 @@ class LineDefectDetector:
             self._debug_missing_lines_image = self.create_missing_lines_visualization(image, all_defects)
             # 2. Separate jagged lines only (yellow)
             self._debug_jagged_lines_image = self.create_jagged_lines_visualization(image, all_defects)
-            # 3. Kernel visualization showing all kernel boxes
+            # 3. Kernel visualization showing all kernel boxes (line defect detector)
             self._debug_kernel_image = self.create_kernel_visualization(image, all_kernel_states, all_defects)
+            # 4. LineDetector kernel visualization showing how lines were initially detected
+            self._debug_line_detector_kernels = self.create_line_detector_kernel_visualization(
+                image, left_kernels, right_kernels, matched_lines)
         
         # Always return combined visualization (works for both debug and normal mode)
         return combined_vis, all_defects
@@ -488,6 +493,82 @@ class LineDefectDetector:
         
         return result
     
+    def create_line_detector_kernel_visualization(self, original, left_kernels, right_kernels, matched_lines):
+        """Create visualization showing LineDetector's kernel scanning results.
+        
+        Args:
+            original: Original input image
+            left_kernels: List of kernel state dicts from left side scan
+            right_kernels: List of kernel state dicts from right side scan
+            matched_lines: Matched line pairs from LineDetector
+            
+        Returns:
+            BGR visualization with LineDetector kernels and matched lines
+        """
+        if len(original.shape) == 2:
+            vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
+        else:
+            vis = original.copy()
+        
+        overlay = vis.copy()
+        
+        # Draw matched lines first
+        for i, match in enumerate(matched_lines):
+            left_pt = match['left']
+            right_pt = match['right']
+            valid_slope = match.get('valid_slope', True)
+            left_type = match.get('left_type', 'real')
+            right_type = match.get('right_type', 'real')
+            
+            # Choose color based on validity and line types
+            if not valid_slope:
+                line_color = (0, 0, 255)  # Red for invalid slope
+                line_thickness = 3
+            elif left_type == 'ghost' or right_type == 'ghost':
+                line_color = (255, 165, 0)  # Orange for ghost lines
+                line_thickness = 2
+            else:
+                line_color = (0, 255, 0)  # Green for valid real lines
+                line_thickness = 3
+            
+            # Draw the line
+            cv2.line(overlay, (left_pt['x'], left_pt['y']), 
+                    (right_pt['x'], right_pt['y']), 
+                    line_color, line_thickness)
+        
+        # Draw left side kernels
+        for state in left_kernels:
+            x1, y1, x2, y2 = state['bbox']
+            color = (0, 255, 255) if state['has_line'] else (128, 128, 128)  # Cyan if line, gray if not
+            thickness = 2 if state['has_line'] else 1
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
+        
+        # Draw right side kernels
+        for state in right_kernels:
+            x1, y1, x2, y2 = state['bbox']
+            color = (255, 255, 0) if state['has_line'] else (128, 128, 128)  # Yellow if line, gray if not
+            thickness = 2 if state['has_line'] else 1
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
+        
+        # Blend with original
+        result = cv2.addWeighted(vis, 0.6, overlay, 0.4, 0)
+        
+        # Add legend
+        cv2.putText(result, "LineDetector Kernel Scan", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(result, "Cyan: Left kernels with lines", (10, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        cv2.putText(result, "Yellow: Right kernels with lines", (10, 90),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(result, "Green: Valid matched lines", (10, 120),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(result, "Orange: Ghost lines", (10, 150),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+        cv2.putText(result, "Red: Invalid slopes", (10, 180),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        return result
+    
     def save_debug_images(self, output_dir, base_name):
         """Save debug images if debug mode is enabled."""
         debug_paths = []
@@ -509,6 +590,12 @@ class LineDefectDetector:
                 path = os.path.join(output_dir, f"{base_name}_line_defect_kernels.jpg")
                 cv2.imwrite(path, self._debug_kernel_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 debug_paths.append(path)
-                print(f"    Saved kernel visualization: {path}")
+                print(f"    Saved line defect kernel visualization: {path}")
+            
+            if hasattr(self, '_debug_line_detector_kernels') and self._debug_line_detector_kernels is not None:
+                path = os.path.join(output_dir, f"{base_name}_line_detector_kernels.jpg")
+                cv2.imwrite(path, self._debug_line_detector_kernels, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                debug_paths.append(path)
+                print(f"    Saved LineDetector kernel visualization: {path}")
         
         return debug_paths if debug_paths else None

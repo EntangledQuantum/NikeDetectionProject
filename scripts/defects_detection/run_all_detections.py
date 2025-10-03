@@ -197,6 +197,10 @@ class ImageTypeClassifier:
             return ImageType.UNKNOWN
 
 
+# ------------------------------------------------------------
+# Detection Strategy
+# ------------------------------------------------------------
+
 class DetectorFactory:
     """Constructors for detector instances configured by sensitivity.
 
@@ -247,8 +251,7 @@ class DetectorFactory:
             Configured `LineDefectDetector` instance.
         """
         # Enable debug mode for high sensitivity to see detected lines
-        debug = True
-        return LineDefectDetector(sensitivity=sensitivity, debug=debug)
+        return LineDefectDetector(sensitivity=sensitivity, debug=False)
     
     @staticmethod
     def create_stripe_misalignment_detector(sensitivity: str) -> StripeMisalignmentDetector:

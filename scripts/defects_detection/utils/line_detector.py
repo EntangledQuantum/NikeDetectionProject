@@ -58,7 +58,7 @@ class LineDetector:
         else:  # medium (default)
             self.base_kernel_width = 10
             self.base_kernel_height = 10
-            self.base_num_vertical_scans = 30
+            self.base_num_vertical_scans = 50
             self.line_detection_threshold = 0.3
             self.min_detection_count = 5
         
