@@ -339,13 +339,13 @@ class StripeDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for stripe images."""
-        return [ 'overspray'] #, 'stripe_misalignment',  'surface_treatment']
+        return [ 'overspray', 'stripe_misalignment',  'surface_treatment']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         """Create detector instances for stripe images."""
         return {
-           # 'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            #'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
+            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
+            'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
             'overspray': DetectorFactory.create_overspray_detector(sensitivity)
         }
 

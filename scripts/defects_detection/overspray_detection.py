@@ -38,8 +38,9 @@ class OversprayDetector:
         self.step_size = step_size if step_size else kernel_size
         self.scatter_threshold = scatter_threshold
         self.min_pixels_threshold = min_pixels_threshold
-        self.debug = True # force debug mode for now
+        self.debug = debug # force debug mode for now
         self.sensitivity = sensitivity
+        self.exclusion_zones = []  # Will be populated from vertical line detector
         
         print(f"Sensitivity: {sensitivity}")
         
@@ -62,9 +63,9 @@ class OversprayDetector:
         else:  # medium
             self.kernel_size = 500
             self.step_size = 500  # Small overlap
-            self.scatter_threshold = 0.3
+            self.scatter_threshold = 0.5
             self.min_pixels_threshold = 0.05
-            self.line_mask_thickness = 15  # Thicker mask for medium
+            self.line_mask_thickness = 12  # Thicker mask for medium
         
         # Store debug images
         self._debug_line_polygon = None
@@ -378,11 +379,18 @@ class OversprayDetector:
         # Find contours
         contours, _ = cv2.findContours(colored_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Filter by minimum area
+        # Filter by minimum area and exclusion zones
         overspray_regions = []
+        excluded_count = 0
+        
         for contour in contours:
             area = cv2.contourArea(contour)
             if area >= min_area:
+                # Check if this region is in an exclusion zone
+                if self._is_region_in_exclusion_zone(contour):
+                    excluded_count += 1
+                    continue
+                
                 x, y, w, h = cv2.boundingRect(contour)
                 M = cv2.moments(contour)
                 if M["m00"] != 0:
@@ -399,6 +407,8 @@ class OversprayDetector:
         
         if self.debug:
             print(f"Found {len(contours)} total colored regions (after line masking), {len(overspray_regions)} above {min_area}px² (potential overspray)")
+            if excluded_count > 0:
+                print(f"Excluded {excluded_count} regions in exclusion zones")
         
         return overspray_regions, colored_mask
     
@@ -429,6 +439,9 @@ class OversprayDetector:
         
         # Mask out all vertical line polygons
         line_masked = self.mask_vertical_line(gray, polygons_list)
+        
+        # Copy exclusion zones from vertical line detector
+        self.exclusion_zones = self.vertical_line_detector.exclusion_zones
         
         # Detect colored regions (overspray)
         overspray_regions, colored_mask = self.detect_colored_regions(line_masked)
@@ -559,6 +572,37 @@ class OversprayDetector:
                    cv2.FONT_HERSHEY_SIMPLEX, legend_scale, (255, 255, 255), legend_thickness)
         
         return overlay
+    
+    def _is_region_in_exclusion_zone(self, contour):
+        """Check if an overspray region overlaps with any exclusion zone
+        
+        Args:
+            contour: OpenCV contour of the overspray region
+            
+        Returns:
+            bool: True if overlaps with exclusion zone, False otherwise
+        """
+        if not self.exclusion_zones:
+            return False
+        
+        # Get bounding box of the contour
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        for zone in self.exclusion_zones:
+            # Convert zone coordinates to proper order
+            zone_x1 = min(zone['top_x'], zone['bottom_x'])
+            zone_y1 = min(zone['top_y'], zone['bottom_y'])
+            zone_x2 = max(zone['top_x'], zone['bottom_x'])
+            zone_y2 = max(zone['top_y'], zone['bottom_y'])
+            
+            # Check if overspray bounding box overlaps with exclusion zone
+            if (x < zone_x2 and x + w > zone_x1 and
+                y < zone_y2 and y + h > zone_y1):
+                if self.debug:
+                    print(f"    Overspray at ({x}, {y}) excluded by zone '{zone['name']}'")
+                return True
+        
+        return False
     
     def create_overspray_visualization(self, original, overspray_regions, polygons_list):
         """Create visualization showing overspray regions and print head polygons
