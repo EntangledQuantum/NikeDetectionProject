@@ -61,11 +61,11 @@ class OversprayDetector:
             self.min_pixels_threshold = 0.1  # Need more pixels to consider
             self.line_mask_thickness = 5
         else:  # medium
-            self.kernel_size = 500
-            self.step_size = 500  # Small overlap
+            self.kernel_size = 20
+            self.step_size = 50  # Small overlap
             self.scatter_threshold = 0.5
-            self.min_pixels_threshold = 0.05
-            self.line_mask_thickness = 12  # Thicker mask for medium
+            self.min_pixels_threshold = 50
+            self.line_mask_thickness = 5  # Thicker mask for medium
         
         # Store debug images
         self._debug_line_polygon = None
