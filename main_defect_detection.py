@@ -61,9 +61,45 @@ def print_warning(message: str):
     print(f"{Colors.YELLOW}⚠ {message}{Colors.ENDC}")
 
 
+def load_config_for_dpi(dpi: str, custom_config_path: Optional[str] = None) -> Optional[str]:
+    """
+    Load the appropriate configuration file based on DPI or custom path.
+    
+    Args:
+        dpi: DPI value ('2400' or '4800')
+        custom_config_path: Optional path to custom config (overrides DPI template)
+        
+    Returns:
+        str: Path to the configuration file to use, or None if not found
+    """
+    # If custom config is provided, use it
+    if custom_config_path:
+        if os.path.exists(custom_config_path):
+            print_info(f"Using custom configuration: {custom_config_path}")
+            return custom_config_path
+        else:
+            print_error(f"Custom configuration file not found: {custom_config_path}")
+            return None
+    
+    # Otherwise, use DPI template
+    template_map = {
+        '2400': 'regions_json/template-2400-configs.json',
+        '4800': 'regions_json/template-4800-configs.json'
+    }
+    
+    template_path = Path(__file__).parent / template_map[dpi]
+    
+    if template_path.exists():
+        print_info(f"Using {dpi} DPI template: {template_path}")
+        return str(template_path)
+    else:
+        print_error(f"DPI template not found: {template_path}")
+        return None
+
+
 def validate_inputs(image_path: str, config_path: str) -> bool:
     """
-    Validate that required input files exist.
+    Validate that required input files exist and are properly formatted.
     
     Args:
         image_path: Path to the TIFF image file
@@ -112,6 +148,10 @@ def validate_inputs(image_path: str, config_path: str) -> bool:
         
         print_success(f"Found {len(config_data['sub_images'])} regions to extract")
         
+        # Check for exclusion zones (optional)
+        if 'exclusion_zones' in config_data and config_data['exclusion_zones']:
+            print_info(f"Found {len(config_data['exclusion_zones'])} exclusion zones (will be converted to local coordinates)")
+        
     except json.JSONDecodeError as e:
         print_error(f"Invalid JSON file: {e}")
         return False
@@ -136,7 +176,7 @@ def extract_regions(image_path: str, config_path: str) -> Optional[str]:
     """
     print_step(1, "EXTRACTING REGIONS FROM TIFF IMAGE")
     
-    # Read the config to update the image path
+    # Read the config and add the image path at runtime
     try:
         with open(config_path, 'r') as f:
             config_data = json.load(f)
@@ -144,7 +184,8 @@ def extract_regions(image_path: str, config_path: str) -> Optional[str]:
         print_error(f"Failed to read configuration: {e}")
         return None
     
-    # Update the original_image_path in config to absolute path
+    # Add the original_image_path at runtime (not required in JSON)
+    # This allows users to have cleaner JSON files with just region definitions
     abs_image_path = os.path.abspath(image_path)
     config_data['original_image_path'] = abs_image_path
     
@@ -313,17 +354,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage
-  python main_defect_detection.py --image test.tif --config test.json
+  # Basic usage with DPI template
+  python main_defect_detection.py --image test.tif --dpi 2400
   
   # With high sensitivity
-  python main_defect_detection.py --image test.tif --config test.json --sensitivity high
+  python main_defect_detection.py --image test.tif --dpi 4800 --sensitivity high
+  
+  # With custom config (overrides DPI template)
+  python main_defect_detection.py --image test.tif --dpi 2400 --config custom.json
   
   # Generate PDF report
-  python main_defect_detection.py --image test.tif --config test.json --generate_report
+  python main_defect_detection.py --image test.tif --dpi 2400 --generate_report
   
   # Full options
-  python main_defect_detection.py --image test.tif --config test.json --sensitivity high --generate_report
+  python main_defect_detection.py --image test.tif --dpi 4800 --config custom.json --sensitivity high --generate_report
         """
     )
     
@@ -334,9 +378,16 @@ Examples:
     )
     
     parser.add_argument(
-        '--config', '-c',
+        '--dpi', '-d',
         required=True,
-        help='Path to JSON configuration file with region definitions'
+        choices=['2400', '4800'],
+        help='Image DPI resolution (required, determines which template to use)'
+    )
+    
+    parser.add_argument(
+        '--config', '-c',
+        required=False,
+        help='Path to custom JSON configuration file (optional, overrides DPI template)'
     )
     
     parser.add_argument(
@@ -361,15 +412,21 @@ Examples:
     
     print_info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_info(f"Image: {args.image}")
-    print_info(f"Config: {args.config}")
+    print_info(f"DPI: {args.dpi}")
+    
+    # Load appropriate configuration (DPI template or custom)
+    config_path = load_config_for_dpi(args.dpi, args.config)
+    if not config_path:
+        print_error("Failed to load configuration. Exiting.")
+        sys.exit(1)
     
     # Validate inputs
-    if not validate_inputs(args.image, args.config):
+    if not validate_inputs(args.image, config_path):
         print_error("Input validation failed. Exiting.")
         sys.exit(1)
     
     # Step 1: Extract regions
-    extracted_dir = extract_regions(args.image, args.config)
+    extracted_dir = extract_regions(args.image, config_path)
     
     if not extracted_dir:
         print_error("Region extraction failed. Exiting.")

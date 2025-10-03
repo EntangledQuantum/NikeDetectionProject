@@ -43,18 +43,10 @@ class ProcessingConfig:
             the default output folder under the input directory.
         sensitivity: Detector sensitivity level: 'low' | 'medium' | 'high'.
         generate_report: If True, produces a PDF report in addition to JSON.
-        window_size: Reserved for future tiled processing (tile size in pixels).
-        overlap: Reserved for future tiled processing (overlap in pixels).
-        max_workers: Reserved for future parallelization of image processing.
-        large_file_threshold: Size in bytes used to classify a file as large.
     """
     output_base_dir: str = "output"
     sensitivity: str = 'medium'
     generate_report: bool = False
-    window_size: int = 2048
-    overlap: int = 256
-    max_workers: int = 1
-    large_file_threshold: int = 20 * 1024 * 1024  # 20MB
 
 
 @dataclass
@@ -205,6 +197,10 @@ class ImageTypeClassifier:
             return ImageType.UNKNOWN
 
 
+# ------------------------------------------------------------
+# Detection Strategy
+# ------------------------------------------------------------
+
 class DetectorFactory:
     """Constructors for detector instances configured by sensitivity.
 
@@ -255,8 +251,7 @@ class DetectorFactory:
             Configured `LineDefectDetector` instance.
         """
         # Enable debug mode for high sensitivity to see detected lines
-        debug = True
-        return LineDefectDetector(sensitivity=sensitivity, debug=debug)
+        return LineDefectDetector(sensitivity=sensitivity, debug=False)
     
     @staticmethod
     def create_stripe_misalignment_detector(sensitivity: str) -> StripeMisalignmentDetector:
@@ -905,7 +900,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Run defect detection algorithms on images based on filename patterns'
     )
-    parser.add_argument('--input_folder', required=True, 
+    parser.add_argument('--input_folder', '-i', required=True, 
                        help='Path to folder containing images')
     parser.add_argument('--output', '-o', 
                        help='Output base directory (default: creates output folder in input folder)')

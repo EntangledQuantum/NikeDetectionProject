@@ -133,9 +133,96 @@ def extract_region_from_tiff(
         return False
 
 
+def normalize_bbox(bbox: Dict[str, float]) -> Tuple[int, int, int, int]:
+    """
+    Normalize bounding box coordinates to positive integers in correct order.
+    
+    Args:
+        bbox: Dictionary with top_x, top_y, bottom_x, bottom_y keys
+        
+    Returns:
+        Tuple of (x1, y1, x2, y2) where x1 < x2 and y1 < y2
+    """
+    x1 = int(min(abs(bbox['top_x']), abs(bbox['bottom_x'])))
+    y1 = int(min(abs(bbox['top_y']), abs(bbox['bottom_y'])))
+    x2 = int(max(abs(bbox['top_x']), abs(bbox['bottom_x'])))
+    y2 = int(max(abs(bbox['top_y']), abs(bbox['bottom_y'])))
+    return x1, y1, x2, y2
+
+
+def check_intersection(sub_bbox: Tuple[int, int, int, int], 
+                       exclusion_bbox: Tuple[int, int, int, int]) -> bool:
+    """
+    Check if two bounding boxes intersect.
+    
+    Args:
+        sub_bbox: (x1, y1, x2, y2) of sub-image
+        exclusion_bbox: (x1, y1, x2, y2) of exclusion zone
+        
+    Returns:
+        True if boxes intersect, False otherwise
+    """
+    sub_x1, sub_y1, sub_x2, sub_y2 = sub_bbox
+    ex_x1, ex_y1, ex_x2, ex_y2 = exclusion_bbox
+    
+    # Check if boxes don't overlap (then return False)
+    if sub_x2 < ex_x1 or ex_x2 < sub_x1:
+        return False
+    if sub_y2 < ex_y1 or ex_y2 < sub_y1:
+        return False
+    
+    return True
+
+
+def convert_exclusion_to_local(sub_bbox: Tuple[int, int, int, int],
+                               exclusion_bbox: Tuple[int, int, int, int],
+                               exclusion_name: str) -> Dict:
+    """
+    Convert global exclusion zone coordinates to local sub-image coordinates.
+    Clips the exclusion zone to the sub-image boundaries.
+    
+    Args:
+        sub_bbox: (x1, y1, x2, y2) of sub-image in global coordinates
+        exclusion_bbox: (x1, y1, x2, y2) of exclusion zone in global coordinates
+        exclusion_name: Name of the exclusion zone
+        
+    Returns:
+        Dictionary with local exclusion zone definition, or None if no overlap
+    """
+    sub_x1, sub_y1, sub_x2, sub_y2 = sub_bbox
+    ex_x1, ex_y1, ex_x2, ex_y2 = exclusion_bbox
+    
+    # Check if they intersect
+    if not check_intersection(sub_bbox, exclusion_bbox):
+        return None
+    
+    # Calculate intersection (clipped to sub-image boundaries)
+    local_x1 = max(0, ex_x1 - sub_x1)
+    local_y1 = max(0, ex_y1 - sub_y1)
+    local_x2 = min(sub_x2 - sub_x1, ex_x2 - sub_x1)
+    local_y2 = min(sub_y2 - sub_y1, ex_y2 - sub_y1)
+    
+    # Ensure valid bounds
+    local_x1 = max(0, local_x1)
+    local_y1 = max(0, local_y1)
+    local_x2 = max(local_x1, local_x2)
+    local_y2 = max(local_y1, local_y2)
+    
+    return {
+        "name": exclusion_name,
+        "bounding_box_pixels": {
+            "top_x": local_x1,
+            "top_y": local_y1,
+            "bottom_x": local_x2,
+            "bottom_y": local_y2
+        }
+    }
+
+
 def process_tiff_with_config(config: Union[str, Dict]) -> Dict[str, bool]:
     """
     Process a TIFF file based on configuration containing bounding boxes.
+    Also generates per-image exclusion zone JSON files if exclusion zones are defined.
     
     Args:
         config: Either a path to JSON file or a dictionary with configuration
@@ -162,6 +249,7 @@ def process_tiff_with_config(config: Union[str, Dict]) -> Dict[str, bool]:
     # Extract configuration values
     original_image_path = config_data.get('original_image_path')
     sub_images = config_data.get('sub_images', [])
+    exclusion_zones = config_data.get('exclusion_zones', [])
     
     if not original_image_path or not os.path.exists(original_image_path):
         logger.error(f"Original image not found: {original_image_path}")
@@ -173,20 +261,31 @@ def process_tiff_with_config(config: Union[str, Dict]) -> Dict[str, bool]:
     output_dir.mkdir(exist_ok=True)
     
     logger.info(f"Processing {len(sub_images)} sub-images from {original_image_path}")
+    if exclusion_zones:
+        logger.info(f"Found {len(exclusion_zones)} global exclusion zones to process")
     logger.info(f"Output directory: {output_dir}")
     
     results = {}
+    
+    # Normalize all exclusion zones to global coordinates once
+    normalized_exclusions = []
+    if exclusion_zones:
+        for ez in exclusion_zones:
+            ez_name = ez.get('name', 'unnamed_exclusion')
+            ez_bbox = ez.get('bounding_box_pixels', {})
+            if ez_bbox:
+                normalized_exclusions.append({
+                    'name': ez_name,
+                    'bbox': normalize_bbox(ez_bbox)
+                })
     
     # Process each sub-image with progress bar
     for sub_image in tqdm(sub_images, desc="Extracting regions", unit="image"):
         name = sub_image.get('name', 'unnamed')
         bbox = sub_image.get('bounding_box_pixels', {})
         
-        # Extract coordinates
-        top_x = bbox.get('top_x', 0)
-        top_y = bbox.get('top_y', 0)
-        bottom_x = bbox.get('bottom_x', 0)
-        bottom_y = bbox.get('bottom_y', 0)
+        # Extract and normalize coordinates
+        sub_x1, sub_y1, sub_x2, sub_y2 = normalize_bbox(bbox)
         
         # Create output path
         output_path = output_dir / f"{name}.tiff"
@@ -194,12 +293,41 @@ def process_tiff_with_config(config: Union[str, Dict]) -> Dict[str, bool]:
         # Extract region
         success = extract_region_from_tiff(
             original_image_path,
-            top_x, top_y,
-            bottom_x, bottom_y,
+            bbox.get('top_x', 0),
+            bbox.get('top_y', 0),
+            bbox.get('bottom_x', 0),
+            bbox.get('bottom_y', 0),
             str(output_path)
         )
         
         results[name] = success
+        
+        # Process exclusion zones for this sub-image
+        if success and normalized_exclusions:
+            local_exclusions = []
+            sub_bbox = (sub_x1, sub_y1, sub_x2, sub_y2)
+            
+            for ez in normalized_exclusions:
+                local_ez = convert_exclusion_to_local(
+                    sub_bbox,
+                    ez['bbox'],
+                    ez['name']
+                )
+                if local_ez:
+                    local_exclusions.append(local_ez)
+            
+            # Save exclusion zones JSON if any zones intersect with this sub-image
+            if local_exclusions:
+                exclusion_json_path = output_dir / f"{name}.json"
+                exclusion_data = {
+                    "exclusion_zones": local_exclusions
+                }
+                try:
+                    with open(exclusion_json_path, 'w') as f:
+                        json.dump(exclusion_data, f, indent=2)
+                    logger.info(f"Created exclusion zones file for {name}: {len(local_exclusions)} zones")
+                except Exception as e:
+                    logger.error(f"Failed to save exclusion zones for {name}: {e}")
     
     return results
 
