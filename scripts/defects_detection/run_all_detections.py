@@ -339,13 +339,13 @@ class StripeDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for stripe images."""
-        return ['stripe_misalignment', 'overspray', 'surface_treatment']
+        return [ 'overspray'] #, 'stripe_misalignment',  'surface_treatment']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         """Create detector instances for stripe images."""
         return {
-            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
+           # 'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
+            #'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
             'overspray': DetectorFactory.create_overspray_detector(sensitivity)
         }
 
@@ -508,10 +508,14 @@ class SingleImageProcessor:
                     if hasattr(detector, 'save_debug_images'):
                         detector.save_debug_images(output_dir, base_name)
                 elif detector_name == 'overspray':
-                    # For overspray, pass the original image
-                    # The detector has its own preprocessing for scatter detection
+                    # For overspray, pass the original image and image path
+                    # The detector uses vertical line detector and needs path for exclusion zones
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
-                    result_img, defects = detector.detect(original)
+                    result_img, defects = detector.detect(original, image_path)
+                    
+                    # Save debug images if available
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
                 elif detector_name == 'debris_island':
                     # For debris island detection, pass the original image and image path
                     # The detector handles its own preprocessing and can load exclusion zones

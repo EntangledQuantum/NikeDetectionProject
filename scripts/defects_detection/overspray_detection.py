@@ -1,6 +1,6 @@
 """
-Overspray Detection Algorithm
-Detects overspray defects by finding regions with scattered pixels
+Overspray Detection Algorithm for Stripe Images
+Detects overspray defects by masking vertical line then finding scattered pixels
 
 Author: Assistant
 Date: 2024
@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from scipy import ndimage
 import os
+from utils.vertical_line_detector import VerticalLineDetector
 
 
 class OversprayDetector:
@@ -37,9 +38,13 @@ class OversprayDetector:
         self.step_size = step_size if step_size else kernel_size
         self.scatter_threshold = scatter_threshold
         self.min_pixels_threshold = min_pixels_threshold
-        self.debug = debug
+        self.debug = True # force debug mode for now
+        self.sensitivity = sensitivity
         
         print(f"Sensitivity: {sensitivity}")
+        
+        # Initialize vertical line detector for stripe images
+        self.vertical_line_detector = VerticalLineDetector(sensitivity)
         
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
@@ -47,16 +52,24 @@ class OversprayDetector:
             self.step_size = 15  # More overlap for high sensitivity
             self.scatter_threshold = 0.2  # Lower threshold - more sensitive
             self.min_pixels_threshold = 0.03  # Detect smaller amounts of scatter
+            self.line_mask_thickness = 5
         elif sensitivity == 'low':
             self.kernel_size = 50
             self.step_size = 50  # No overlap
             self.scatter_threshold = 0.5  # Higher threshold - less sensitive
             self.min_pixels_threshold = 0.1  # Need more pixels to consider
+            self.line_mask_thickness = 5
         else:  # medium
             self.kernel_size = 500
             self.step_size = 500  # Small overlap
             self.scatter_threshold = 0.3
             self.min_pixels_threshold = 0.05
+            self.line_mask_thickness = 15  # Thicker mask for medium
+        
+        # Store debug images
+        self._debug_line_polygon = None
+        self._debug_line_masked_image = None
+        self._debug_polygon_with_coords = None
     
     def preprocess_image(self, image):
         """Preprocess input image into a binary mask for overspray analysis.
@@ -298,26 +311,334 @@ class OversprayDetector:
         
         return merged_defects
     
-    def detect(self, image):
-        """Run overspray detection and return visualization plus defects.
+    def mask_vertical_line(self, gray_image, polygons_list):
+        """Paint out all vertical line polygons to avoid detecting them as overspray
+        
+        Args:
+            gray_image: Grayscale image
+            polygons_list: List of polygon dicts from vertical line detector (one per print head)
+            
+        Returns:
+            Grayscale image with vertical line segments masked out (painted white)
+        """
+        if not polygons_list:
+            return gray_image
+        
+        line_masked = gray_image.copy()
+        
+        # Mask out each polygon (print head segment)
+        for poly_data in polygons_list:
+            polygon = poly_data['polygon']
+            
+            # Fill the polygon with white to mask out this segment
+            cv2.fillPoly(line_masked, [polygon], 255)
+            
+            # Also add extra thickness around the polygon edges
+            cv2.polylines(line_masked, [polygon], True, 255, self.line_mask_thickness * 2)
+        
+        return line_masked
+    
+    def detect_colored_regions(self, line_masked_image):
+        """Detect colored (non-white) regions as overspray candidates
+        Similar to overspray_island_detection.py approach
+        
+        Args:
+            line_masked_image: Grayscale image with vertical line masked out
+            
+        Returns:
+            tuple: (overspray_regions, colored_mask)
+        """
+        # Find anything that's not white or near-white (colored areas)
+        # After line is painted white, only overspray should remain dark/colored
+        
+        # Background threshold - similar to island detector
+        if self.sensitivity == 'high':
+            background_threshold = 140
+            min_area = 100
+        elif self.sensitivity == 'low':
+            background_threshold = 100
+            min_area = 1000
+        else:  # medium
+            background_threshold = 120
+            min_area = 500
+        
+        # Create mask for colored areas
+        _, colored_mask = cv2.threshold(line_masked_image, background_threshold, 255, cv2.THRESH_BINARY_INV)
+        
+        if self.debug:
+            print(f"Colored mask: {np.sum(colored_mask > 0)} pixels below threshold {background_threshold}")
+        
+        # Morphological operations to connect nearby regions
+        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        colored_mask = cv2.dilate(colored_mask, kernel_dilate, iterations=2)
+        
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        colored_mask = cv2.morphologyEx(colored_mask, cv2.MORPH_CLOSE, kernel_close)
+        
+        # Find contours
+        contours, _ = cv2.findContours(colored_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter by minimum area
+        overspray_regions = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area >= min_area:
+                x, y, w, h = cv2.boundingRect(contour)
+                M = cv2.moments(contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    
+                    overspray_regions.append({
+                        'contour': contour,
+                        'area': area,
+                        'center': (cx, cy),
+                        'bbox': (x, y, w, h),
+                        'density': area / (w * h) if w * h > 0 else 0
+                    })
+        
+        if self.debug:
+            print(f"Found {len(contours)} total colored regions (after line masking), {len(overspray_regions)} above {min_area}px² (potential overspray)")
+        
+        return overspray_regions, colored_mask
+    
+    def detect(self, image, image_path=None):
+        """Run overspray detection with vertical line masking.
 
         Args:
             image: Input image (BGR or grayscale).
+            image_path: Optional path for loading exclusion zones
 
         Returns:
             tuple: (visualization_bgr, defects)
         """
-        # Preprocess image
-        binary = self.preprocess_image(image)
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
         
-        # Scan grid for overspray
-        kernel_states, defects = self.scan_grid(binary)
+        # Detect vertical line segments (one polygon per print head)
+        polygons_list, left_points, right_points, left_kernels, right_kernels = \
+            self.vertical_line_detector.detect_vertical_line(image, self.debug, image_path)
+        
+        if self.debug:
+            print(f"\nVertical line: {len(polygons_list)} print head segments")
+            for i, poly_data in enumerate(polygons_list):
+                print(f"  Segment {i+1} WIDTH: {poly_data['width']}px")
+        
+        # Mask out all vertical line polygons
+        line_masked = self.mask_vertical_line(gray, polygons_list)
+        
+        # Detect colored regions (overspray)
+        overspray_regions, colored_mask = self.detect_colored_regions(line_masked)
         
         # Create visualization
-        visualization = self.create_visualization(image, defects, kernel_states)
+        visualization = self.create_overspray_visualization(image, overspray_regions, polygons_list)
         
-        # Return tuple format (visualization, defects)
+        # Store debug images
+        if self.debug:
+            self._debug_line_polygon = self.vertical_line_detector.create_visualization(
+                image, polygons_list, left_points, right_points, left_kernels, right_kernels
+            )
+            self._debug_line_masked_image = line_masked
+            self._debug_polygon_with_coords = self.create_polygon_coords_visualization(
+                image, polygons_list
+            )
+        
+        # Prepare defects list
+        defects = []
+        for region in overspray_regions:
+            defects.append({
+                'type': 'overspray',
+                'location': region['center'],
+                'area': float(region['area']),
+                'bbox': region['bbox'],
+                'density': float(region['density'])
+            })
+        
         return visualization, defects
+    
+    def create_polygon_coords_visualization(self, original, polygons_list):
+        """Create visualization showing only polygons with coordinate labels
+        
+        Args:
+            original: Original image
+            polygons_list: List of polygon dicts
+            
+        Returns:
+            BGR image with polygons and coordinate labels
+        """
+        if len(original.shape) == 2:
+            vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
+        else:
+            vis = original.copy()
+        
+        height, width = vis.shape[:2]
+        overlay = vis.copy()
+        
+        # Calculate text scale based on image size
+        text_scale = max(0.4, min(1.2, (height / 44167) * 0.8))
+        text_thickness = max(1, int(text_scale * 2))
+        
+        # Colors for different segments
+        colors = [
+            (0, 255, 0),    # Green
+            (0, 255, 255),  # Yellow
+            (255, 0, 255),  # Magenta
+            (0, 128, 255),  # Orange
+            (255, 128, 0),  # Cyan
+        ]
+        
+        for i, poly_data in enumerate(polygons_list):
+            polygon = poly_data['polygon']
+            color = colors[i % len(colors)]
+            
+            # Draw filled polygon (semi-transparent)
+            poly_overlay = overlay.copy()
+            cv2.fillPoly(poly_overlay, [polygon], color)
+            overlay = cv2.addWeighted(overlay, 0.85, poly_overlay, 0.15, 0)
+            
+            # Draw polygon outline (thick)
+            cv2.polylines(overlay, [polygon], True, color, max(2, int(text_scale * 3)))
+            
+            # Get the four corner points
+            top_left, top_right, bottom_right, bottom_left = polygon
+            
+            # Draw corner points
+            for pt in [top_left, top_right, bottom_right, bottom_left]:
+                cv2.circle(overlay, tuple(pt), max(3, int(text_scale * 5)), color, -1)
+            
+            # Calculate polygon center for ALL text
+            center_y = (poly_data['top_y'] + poly_data['bottom_y']) // 2
+            center_x = int(poly_data.get('center_x', (poly_data.get('left_x', 0) + poly_data.get('right_x', 0)) / 2))
+            
+            # Build text lines
+            shape = poly_data.get('shape_type', 'rectangle').upper()
+            text_lines = [
+                f"Print Head {i+1} ({shape})",
+                f"WIDTH: {poly_data['width']}px",
+                f"X-SHIFT: {poly_data.get('x_shift', 0):.1f}px",
+                "",
+                f"TL: ({top_left[0]},{top_left[1]})",
+                f"TR: ({top_right[0]},{top_right[1]})",
+                f"BR: ({bottom_right[0]},{bottom_right[1]})",
+                f"BL: ({bottom_left[0]},{bottom_left[1]})"
+            ]
+            
+            # Calculate starting Y position to center all text vertically
+            line_height = int(25 * text_scale)
+            total_text_height = len(text_lines) * line_height
+            start_y = center_y - total_text_height // 2
+            
+            # Draw all text lines centered in the polygon
+            for j, text_line in enumerate(text_lines):
+                if not text_line:  # Skip blank lines
+                    continue
+                    
+                current_y = start_y + int(j * line_height)
+                (text_w, text_h), _ = cv2.getTextSize(text_line, cv2.FONT_HERSHEY_SIMPLEX, text_scale * 0.5, text_thickness)
+                
+                # Center text horizontally
+                text_x = center_x - text_w // 2
+                
+                # Draw text background (black)
+                cv2.rectangle(overlay,
+                            (text_x - 3, current_y - text_h - 2),
+                            (text_x + text_w + 3, current_y + 4),
+                            (0, 0, 0), -1)
+                
+                # Draw text
+                cv2.putText(overlay, text_line, (text_x, current_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, text_scale * 0.5, (255, 255, 255), text_thickness)
+        
+        # Add overall legend
+        legend_scale = text_scale * 0.7
+        legend_thickness = max(1, int(legend_scale * 2))
+        cv2.putText(overlay, f"Total Print Head Segments: {len(polygons_list)}", (10, int(30 * text_scale)),
+                   cv2.FONT_HERSHEY_SIMPLEX, legend_scale, (255, 255, 255), legend_thickness)
+        
+        return overlay
+    
+    def create_overspray_visualization(self, original, overspray_regions, polygons_list):
+        """Create visualization showing overspray regions and print head polygons
+        
+        Args:
+            original: Original image
+            overspray_regions: List of overspray region dicts
+            polygons_list: List of polygon dicts (one per print head segment)
+            
+        Returns:
+            BGR visualization image
+        """
+        if len(original.shape) == 2:
+            vis = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
+        else:
+            vis = original.copy()
+        
+        overlay = vis.copy()
+        
+        # Draw the vertical line polygons for reference (green outlines)
+        if polygons_list:
+            for poly_data in polygons_list:
+                polygon = poly_data['polygon']
+                cv2.polylines(overlay, [polygon], True, (0, 255, 0), 2)
+        
+        # Draw overspray regions in red
+        colors = [
+            (0, 0, 255),    # Red
+            (255, 0, 0),    # Blue  
+            (0, 255, 255),  # Yellow
+            (255, 0, 255),  # Magenta
+        ]
+        
+        for i, region in enumerate(overspray_regions):
+            color = colors[i % len(colors)]
+            
+            # Draw contour outline
+            cv2.drawContours(overlay, [region['contour']], -1, color, 3)
+            
+            # Fill region with transparent color
+            region_overlay = overlay.copy()
+            cv2.fillPoly(region_overlay, [region['contour']], color)
+            overlay = cv2.addWeighted(overlay, 0.7, region_overlay, 0.3, 0)
+            
+            # Add label
+            center = region['center']
+            label = f"O{i+1}: {region['area']:.0f}px²"
+            cv2.putText(overlay, label, center,
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Add summary
+        text = f"Overspray: {len(overspray_regions)} | Segments: {len(polygons_list)}"
+        cv2.putText(overlay, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        
+        return overlay
+    
+    def save_debug_images(self, output_dir, base_name):
+        """Save debug images if debug mode is enabled"""
+        debug_paths = []
+        
+        if self.debug:
+            if self._debug_polygon_with_coords is not None:
+                path = os.path.join(output_dir, f"{base_name}_polygon_coordinates.jpg")
+                cv2.imwrite(path, self._debug_polygon_with_coords, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                debug_paths.append(path)
+                print(f"    Saved polygon with coordinates: {path}")
+            
+            if self._debug_line_polygon is not None:
+                path = os.path.join(output_dir, f"{base_name}_vertical_line_polygon.jpg")
+                cv2.imwrite(path, self._debug_line_polygon, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                debug_paths.append(path)
+                print(f"    Saved vertical line polygon debug: {path}")
+            
+            if self._debug_line_masked_image is not None:
+                path = os.path.join(output_dir, f"{base_name}_line_masked.jpg")
+                cv2.imwrite(path, self._debug_line_masked_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                debug_paths.append(path)
+                print(f"    Saved line-masked image debug: {path}")
+        
+        return debug_paths if debug_paths else None
     
     def create_visualization(self, original, defects, kernel_states=None):
         """Create a visualization image highlighting overspray findings.
