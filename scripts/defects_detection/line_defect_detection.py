@@ -122,7 +122,7 @@ class LineDefectDetector:
             x2 = min(width, x + self.kernel_size // 2)
             
             kernel_region = binary_image[y1:y2, x1:x2]
-             
+            
             # Check if there's a line in the kernel
             white_pixels = np.sum(kernel_region > 0)
             total_pixels = (y2 - y1) * (x2 - x1)
@@ -130,40 +130,40 @@ class LineDefectDetector:
             if total_pixels > 0:
                 pixel_ratio = white_pixels / total_pixels
                 has_line = pixel_ratio > self.line_threshold
-            
-            if has_line:
+                
+                if has_line:
                     # Line found - calculate actual Y position
-                y_indices, x_indices = np.where(kernel_region > 0)
-                if len(y_indices) > 0:
-                    local_y_center = np.mean(y_indices)
+                    y_indices, x_indices = np.where(kernel_region > 0)
+                    if len(y_indices) > 0:
+                        local_y_center = np.mean(y_indices)
                         actual_y = y1 + int(local_y_center)
                         
                         # Check for jagged line (sharp Y change from PREVIOUS detection, not expected)
                         # This ignores small gaps and compares actual detections
                         y_delta = abs(actual_y - last_found_y)
-                    is_jagged = y_delta > self.jagged_threshold
-                    
+                        is_jagged = y_delta > self.jagged_threshold
+                        
                         if is_jagged:
-                                if self.debug:
+                            if self.debug:
                                 print(f"    JAGGED at x={x}: Y jumped from {last_found_y} to {actual_y} (delta={y_delta}px > {self.jagged_threshold}px)")
                             
-                        defects.append({
-                            'type': 'jagged_line',
-                            'x': x,
+                            defects.append({
+                                'type': 'jagged_line',
+                                'x': x,
                                 'y': actual_y,
                                 'previous_y': last_found_y,
                                 'location': (x, actual_y),
-                            'y_delta': int(y_delta),
-                            'threshold': self.jagged_threshold
-                        })
-                    
+                                'y_delta': int(y_delta),
+                                'threshold': self.jagged_threshold
+                            })
+                        
                         # Record kernel state
-                    kernel_states.append({
-                        'x': x,
+                        kernel_states.append({
+                            'x': x,
                             'y': actual_y,
                             'expected_y': expected_y,
-                        'has_line': True,
-                        'is_jagged': is_jagged,
+                            'has_line': True,
+                            'is_jagged': is_jagged,
                             'bbox': (x1, y1, x2, y2),
                             'pixel_ratio': pixel_ratio
                         })
@@ -183,7 +183,7 @@ class LineDefectDetector:
                                     'location': ((gap_start + x) // 2, expected_y),
                                     'size': gap_size
                                 })
-            else:
+                            else:
                                 if self.debug:
                                     print(f"    Small gap {gap_size}px (< {self.min_gap_size}px) - ignored for missing, but Y-delta checked for jagged")
                             gap_start = None
@@ -191,16 +191,16 @@ class LineDefectDetector:
                         # Update last detection position (crucial for next jagged check)
                         last_found_y = actual_y
                         last_detection_x = x
-                    else:
+                else:
                     # No line found - mark as missing
-                        if gap_start is None:
-                            gap_start = x
-                        
-                        kernel_states.append({
-                            'x': x,
+                    if gap_start is None:
+                        gap_start = x
+                    
+                    kernel_states.append({
+                        'x': x,
                         'y': expected_y,
                         'expected_y': expected_y,
-                            'has_line': False,
+                        'has_line': False,
                         'is_jagged': False,
                         'bbox': (x1, y1, x2, y2),
                         'pixel_ratio': pixel_ratio
@@ -287,9 +287,9 @@ class LineDefectDetector:
                 jagged = [d for d in defects if d['type'] == 'jagged_line']
                 print(f"  Found {len(missing)} missing segments, {len(jagged)} jagged segments")
             
-                all_defects.extend(defects)
-                    all_kernel_states.extend(kernel_states)
-                
+            all_defects.extend(defects)
+            all_kernel_states.extend(kernel_states)
+        
         if self.debug:
             missing_total = len([d for d in all_defects if d['type'] == 'missing_line'])
             jagged_total = len([d for d in all_defects if d['type'] == 'jagged_line'])
@@ -453,24 +453,24 @@ class LineDefectDetector:
         overlay = vis.copy()
         
         # Draw each kernel box with appropriate color
-            for state in kernel_states:
-                x1, y1, x2, y2 = state['bbox']
-                
-                # Ensure coordinates are within image bounds
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(vis.shape[1], x2)
-                y2 = min(vis.shape[0], y2)
-                
+        for state in kernel_states:
+            x1, y1, x2, y2 = state['bbox']
+            
+            # Ensure coordinates are within image bounds
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(vis.shape[1], x2)
+            y2 = min(vis.shape[0], y2)
+            
             # Choose color based on kernel state
-                if state.get('is_jagged', False):
-                    color = (0, 255, 255)  # Yellow for jagged lines
+            if state.get('is_jagged', False):
+                color = (0, 255, 255)  # Yellow for jagged lines
                 thickness = 2
-                elif state['has_line']:
-                    color = (0, 255, 0)  # Green for normal lines
+            elif state['has_line']:
+                color = (0, 255, 0)  # Green for normal lines
                 thickness = 1
-                else:
-                    color = (0, 0, 255)  # Red for missing lines
+            else:
+                color = (0, 0, 255)  # Red for missing lines
                 thickness = 2
             
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
@@ -481,7 +481,7 @@ class LineDefectDetector:
             cv2.circle(overlay, (x, y), 3, color, -1)
         
         # Blend with original
-            result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+        result = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
         
         # Add legend
         cv2.putText(result, "Green: Line OK", (10, 30),
@@ -491,8 +491,8 @@ class LineDefectDetector:
         cv2.putText(result, "Yellow: Jagged", (10, 90),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
-            return result
-        
+        return result
+    
     def create_line_detector_kernel_visualization(self, original, left_kernels, right_kernels, matched_lines):
         """Create visualization showing LineDetector's kernel scanning results.
         
@@ -567,7 +567,7 @@ class LineDefectDetector:
         cv2.putText(result, "Red: Invalid slopes", (10, 180),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
-        return result 
+        return result
     
     def save_debug_images(self, output_dir, base_name):
         """Save debug images if debug mode is enabled."""

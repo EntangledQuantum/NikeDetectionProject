@@ -602,16 +602,6 @@ class OversprayDetector:
             region_overlay = overlay.copy()
             cv2.fillPoly(region_overlay, [region['contour']], color)
             overlay = cv2.addWeighted(overlay, 0.7, region_overlay, 0.3, 0)
-            
-            # Add label
-            center = region['center']
-            label = f"O{i+1}: {region['area']:.0f}px²"
-            cv2.putText(overlay, label, center,
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        # Add summary
-        text = f"Overspray: {len(overspray_regions)} | Segments: {len(polygons_list)}"
-        cv2.putText(overlay, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         
         return overlay
     
