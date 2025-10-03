@@ -46,5 +46,25 @@
           "bottom_y": -90020.96676
         }
       }
+    ],
+    "exclusion_zones": [
+      {
+        "name": "test_exclusion_zone_1",
+        "bounding_box_pixels": {
+          "top_x": 17934.18189,
+          "top_y": -1337.37734,
+          "bottom_x": 20543.16392,
+          "bottom_y": -90112.52528
+        }
+      },
+      {
+        "name": "test_exclusion_zone_2",
+        "bounding_box_pixels": {
+          "top_x": 20891.95831,
+          "top_y": -1588.50930,
+          "bottom_x": 31488.33185,
+          "bottom_y": -90154.38061
+        }
+      }
     ]
   }

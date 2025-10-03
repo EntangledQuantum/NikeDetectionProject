@@ -3,7 +3,7 @@
     {
       "name": "blackStripe",
       "bounding_box_pixels": {
-        "top_x": 8900.36057,
+        "top_x": 9129.36057,
         "top_y": -902.23734,
         "bottom_x": 10359.60017,
         "bottom_y": -45069.65002
@@ -21,7 +21,7 @@
     {
       "name": "blueStripe",
       "bounding_box_pixels": {
-        "top_x": 15576.07106,
+        "top_x": 15776.07106,
         "top_y": -887.92156,
         "bottom_x": 16989.57927,
         "bottom_y": -45023.19409
@@ -43,6 +43,26 @@
         "top_y": -902.11904,
         "bottom_x": 23587.33331,
         "bottom_y": -44977.45813
+      }
+    }
+  ],
+  "exclusion_zones": [
+    {
+      "name": "test_exclusion_zone_1",
+      "bounding_box_pixels": {
+        "top_x": 9129.36057,
+        "top_y": -902.23734,
+        "bottom_x": 10359.60017,
+        "bottom_y": -45069.65002
+      }
+    },
+    {
+      "name": "test_exclusion_zone_2",
+      "bounding_box_pixels": {
+        "top_x": 10574.71648,
+        "top_y": -786.26642,
+        "bottom_x": 15737.95038,
+        "bottom_y": -45014.72283
       }
     }
   ]
