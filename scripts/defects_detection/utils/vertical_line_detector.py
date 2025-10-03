@@ -53,7 +53,7 @@ class VerticalLineDetector:
             self.base_kernel_height = 10
             self.line_detection_threshold = 0.80  # 20% of pixels must be BLACK to detect line
             self.num_kernels_per_side = 70  # Scan 30 kernels from left, 30 from right per row
-            self.x_shift_threshold = 50  # If X shifts more than 50px, new print head
+            self.x_shift_threshold = 100  # If X shifts more than 50px, new print head
         
         # These will be set dynamically based on actual image size
         self.kernel_width = self.base_kernel_width
@@ -182,6 +182,11 @@ class VerticalLineDetector:
                     black_ratio = black_pixels / total_pixels
                     has_line = black_ratio > self.line_detection_threshold
                     
+                    # If kernel is in exclusion zone, don't register as line
+                    in_exclusion, _ = self.is_in_exclusion_zone(x, y, self.kernel_width, self.kernel_height)
+                    if in_exclusion:
+                        has_line = False  # Override - exclusion zone means ignore this kernel
+                    
                     all_kernel_states.append({
                         'x': x, 'y': y, 'has_line': has_line,
                         'bbox': (x1, y1, x2, y2), 'pixel_ratio': black_ratio, 'side': 'left'
@@ -211,6 +216,11 @@ class VerticalLineDetector:
                 if total_pixels > 0:
                     black_ratio = black_pixels / total_pixels
                     has_line = black_ratio > self.line_detection_threshold
+                    
+                    # If kernel is in exclusion zone, don't register as line
+                    in_exclusion, _ = self.is_in_exclusion_zone(x, y, self.kernel_width, self.kernel_height)
+                    if in_exclusion:
+                        has_line = False  # Override - exclusion zone means ignore this kernel
                     
                     all_kernel_states.append({
                         'x': x, 'y': y, 'has_line': has_line,
