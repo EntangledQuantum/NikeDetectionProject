@@ -8,6 +8,7 @@ This system automatically detects critical printing defects in high-resolution s
 - **Overspray**: Ink scattered outside intended areas
 - **Surface Treatment Issues**: Poor surface energy causing irregular ink drops and missing ink areas
 - **Debris**: Foreign particles causing dark spots and contamination patterns
+- **Voids**: Missing ink in areas that should be filled
 - **Line Defects**: Missing or jagged horizontal lines
 - **Stripe Misalignment**: Vertical stripe positioning errors
 
@@ -150,6 +151,7 @@ Each exclusion zone has the same structure as sub-images (name + bounding_box_pi
 - ✅ Debris Island Detection
 - ✅ Overspray Island Detection  
 - ✅ Line Detection (internal)
+- ✅ Stripe Debris and Void Detection
 - ❌ Other detectors (coming soon)
 
 **Example templates available in `regions_json/` folder:**
@@ -233,11 +235,13 @@ image_directory/
         │   ├── stripe_misalignment_visualization.jpg
         │   ├── overspray_visualization.jpg
         │   ├── surface_treatment_visualization.jpg
+        │   ├── stripe_debris_void_visualization.jpg
         │   └── blackStripe_results.json       # Per-region detection data
         ├── blueStripe/
         │   ├── stripe_misalignment_visualization.jpg
         │   ├── overspray_visualization.jpg
         │   ├── surface_treatment_visualization.jpg
+        │   ├── stripe_debris_void_visualization.jpg
         │   └── blueStripe_results.json
         ├── island-black-blue/
         │   ├── debris_island_visualization.jpg
@@ -253,6 +257,7 @@ image_directory/
         │   ├── stripe_misalignment_visualization.jpg
         │   ├── overspray_visualization.jpg
         │   ├── surface_treatment_visualization.jpg
+        │   ├── stripe_debris_void_visualization.jpg
         │   └── pinkStripe_results.json
         ├── defect_report.json                 # Summary JSON report
         └── defect_detection_report.pdf        # Summary PDF (if --generate_report used)
@@ -285,19 +290,30 @@ Choose the appropriate sensitivity for your use case:
 - **Method**: Detects irregular ink drops and void areas
 - **Output**: Areas with ink coalescence and missing ink
 
+#### 4. Stripe Debris and Void Detection
+- **Purpose**: Detects printing anomalies - debris (dark spots) and voids (missing ink)
+- **Method**: Adaptive baseline measurement with intensity thresholding and blob extraction
+- **Output**: Debris (red) and void (cyan) regions with severity classification
+- **Algorithm**:
+  1. Measure stripe intensity baseline (mean and standard deviation)
+  2. Threshold for dark anomalies (debris) and bright anomalies (voids)
+  3. Clean masks with morphological operations (open/close)
+  4. Extract connected components (blobs)
+  5. Filter by minimum area and report detections with severity levels
+
 ### For Island Images
 
-#### 4. Debris Island Detection
+#### 5. Debris Island Detection
 - **Purpose**: Finds foreign particles and contamination
 - **Method**: Line removal + thresholding + morphology
 - **Output**: Contaminated regions with debris highlighted
 
-#### 5. Overspray Island Detection
+#### 6. Overspray Island Detection
 - **Purpose**: Detects scattered ink in island regions
 - **Method**: Line removal + colored region detection + grouping
 - **Output**: Grouped overspray regions with metrics
 
-#### 6. Line Defect Detection
+#### 7. Line Defect Detection
 - **Purpose**: Detects missing/jagged horizontal lines
 - **Method**: Kernel-based line tracking across scanlines
 - **Output**: Missing segments (red) and jagged lines (yellow)
@@ -377,6 +393,7 @@ python scripts/defects_detection/run_all_detections.py --input_folder path/to/ex
 - **`stripe_misalignment_detection.py`**: Vertical stripe alignment detector
 - **`overspray_detection.py`**: Scattered ink detector (stripe images)
 - **`surface_treatment_detection.py`**: Irregular drops and void detector
+- **`stripe_debris_void_detection.py`**: Debris and void anomaly detector (stripe images)
 - **`debris_island_detection.py`**: Foreign particle detector (island images)
 - **`overspray_island_detection.py`**: Scattered ink detector (island images)
 - **`line_defect_detection.py`**: Missing/jagged line detector

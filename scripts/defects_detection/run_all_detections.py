@@ -20,6 +20,7 @@ from stripe_misalignment_detection import StripeMisalignmentDetector
 from overspray_detection import OversprayDetector
 from debris_island_detection import DebrisIslandDetector
 from overspray_island_detection import OversprayIslandDetector
+from stripe_debris_void_detection import StripeDebrisVoidDetector
 
 
 class ImageType(Enum):
@@ -308,6 +309,21 @@ class DetectorFactory:
             sensitivity=sensitivity,
             debug=False               # Enable debug visualization
         )
+    
+    @staticmethod
+    def create_stripe_debris_void_detector(sensitivity: str) -> StripeDebrisVoidDetector:
+        """Create a `StripeDebrisVoidDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `StripeDebrisVoidDetector` instance.
+        """
+        return StripeDebrisVoidDetector(
+            sensitivity=sensitivity,
+            debug=True  # Enable debug by default for testing
+        )
 
 
 class DetectionStrategy(ABC):
@@ -339,14 +355,15 @@ class StripeDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for stripe images."""
-        return [ 'overspray', 'stripe_misalignment',  'surface_treatment']
+        return ['overspray', 'stripe_misalignment', 'surface_treatment', 'stripe_debris_void']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         """Create detector instances for stripe images."""
         return {
             'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
             'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
-            'overspray': DetectorFactory.create_overspray_detector(sensitivity)
+            'overspray': DetectorFactory.create_overspray_detector(sensitivity),
+            'stripe_debris_void': DetectorFactory.create_stripe_debris_void_detector(sensitivity)
         }
 
 
@@ -541,6 +558,15 @@ class SingleImageProcessor:
                     result_img, defects = detector.detect(original, image_path)
                     
                     # Save debug images if available (separate missing/jagged visualizations)
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
+                elif detector_name == 'stripe_debris_void':
+                    # For stripe debris/void detection, pass the original image and image path
+                    # The detector handles its own preprocessing and can load exclusion zones
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original, image_path)
+                    
+                    # Save debug images if available
                     if hasattr(detector, 'save_debug_images'):
                         detector.save_debug_images(output_dir, base_name)
                 else:
@@ -935,8 +961,8 @@ def main():
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
-    print(f"  - Stripe images: Stripe Misalignment")
-    print(f"  - Island images: Debris Island, Overspray Island")
+    print(f"  - Stripe images: Overspray, Stripe Misalignment, Surface Treatment, Debris/Void")
+    print(f"  - Island images: Debris Island, Overspray Island, Line Defects")
     print(f"  - Unknown images: Surface Treatment")
     print("=" * 60)
     
