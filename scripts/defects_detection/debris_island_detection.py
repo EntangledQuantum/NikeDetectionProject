@@ -42,16 +42,15 @@ class DebrisIslandDetector(BaseDetector):
         
         # Initialize line detector with same sensitivity
         self.line_detector = LineDetector(sensitivity)
-        
         # Set debris detection parameters based on sensitivity
         if sensitivity == 'high':
-            self.line_thickness = 5
-            self.background_threshold = 140  # More aggressive - treat more as background
-            self.debris_min_area = 5  # Detect smaller debris
+            self.line_thickness = 15
+            self.background_threshold = 130  # More aggressive - treat more as background
+            self.debris_min_area = 7  # Detect smaller debris
         elif sensitivity == 'low':
-            self.line_thickness = 5
-            self.background_threshold = 100  # Less aggressive - darker threshold for background
-            self.debris_min_area = 50  # Only detect larger debris
+            self.line_thickness = 25
+            self.background_threshold = 110  # Less aggressive - darker threshold for background
+            self.debris_min_area = 15  # Only detect larger debris
         else:  # medium (default)
             self.line_thickness = 20
             self.background_threshold = 120  # Medium aggressiveness

@@ -49,17 +49,17 @@ class OversprayDetector:
         
         # Adjust parameters based on sensitivity
         if sensitivity == 'high':
-            self.kernel_size = 20
-            self.step_size = 15  # More overlap for high sensitivity
-            self.scatter_threshold = 0.2  # Lower threshold - more sensitive
-            self.min_pixels_threshold = 0.03  # Detect smaller amounts of scatter
-            self.line_mask_thickness = 5
+            self.kernel_size = 15
+            self.step_size = 40  # More overlap for high sensitivity
+            self.scatter_threshold = 0.4  # Lower threshold - more sensitive
+            self.min_pixels_threshold = 40  # Detect smaller amounts of scatter
+            self.line_mask_thickness = 4
         elif sensitivity == 'low':
-            self.kernel_size = 50
-            self.step_size = 50  # No overlap
-            self.scatter_threshold = 0.5  # Higher threshold - less sensitive
-            self.min_pixels_threshold = 0.1  # Need more pixels to consider
-            self.line_mask_thickness = 5
+            self.kernel_size = 25
+            self.step_size = 60  # Less overlap
+            self.scatter_threshold = 0.6  # Higher threshold - less sensitive
+            self.min_pixels_threshold = 60  # Need more pixels to consider
+            self.line_mask_thickness = 6
         else:  # medium
             self.kernel_size = 20
             self.step_size = 50  # Small overlap

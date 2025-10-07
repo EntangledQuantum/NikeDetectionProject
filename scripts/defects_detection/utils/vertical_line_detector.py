@@ -37,21 +37,21 @@ class VerticalLineDetector:
         
         # Set base parameters - kernel should be small and square for detection
         if sensitivity == 'high':
-            self.base_kernel_width = 5
-            self.base_kernel_height = 60
-            self.line_detection_threshold = 0.10  # 10% of pixels must be BLACK to detect line
-            self.num_kernels_per_side = 30  # Number of kernels to scan from each edge
-            self.min_x_shift_threshold = 50  # X deviation to trigger new print head polygon
+            self.base_kernel_width = 4
+            self.base_kernel_height = 8
+            self.line_detection_threshold = 0.45  # 45% of pixels must be BLACK to detect line
+            self.num_kernels_per_side = 80  # Scan 80 kernels from left, 80 from right per row
+            self.min_x_shift_threshold = 150  # If X shifts more than this, new print head
         elif sensitivity == 'low':
-            self.base_kernel_width = 10
-            self.base_kernel_height = 100
-            self.line_detection_threshold = 0.30  # 30% of pixels must be BLACK
-            self.num_kernels_per_side = 20
-            self.min_x_shift_threshold = 100
+            self.base_kernel_width = 6
+            self.base_kernel_height = 12
+            self.line_detection_threshold = 0.85  # 85% of pixels must be BLACK to detect line
+            self.num_kernels_per_side = 60  # Scan 60 kernels from left, 60 from right per row
+            self.min_x_shift_threshold = 250  # If X shifts more than this, new print head
         else:  # medium (default)
             self.base_kernel_width = 5
             self.base_kernel_height = 10
-            self.line_detection_threshold = 0.80  # 80% of pixels must be BLACK to detect line
+            self.line_detection_threshold = 0.75  # 75% of pixels must be BLACK to detect line
             self.num_kernels_per_side = 70  # Scan 70 kernels from left, 70 from right per row
             self.min_x_shift_threshold = 200  # If X shifts more than this, new print head
         

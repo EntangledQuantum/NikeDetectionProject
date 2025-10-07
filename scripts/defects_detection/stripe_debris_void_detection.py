@@ -69,8 +69,8 @@ class StripeDebrisVoidDetector(BaseDetector):
         else:  # medium (default)
             # Balanced detection - ADJUSTED FOR BETTER DEBRIS DETECTION
             self.dark_factor = 0.82        # More sensitive to debris (was 0.65)
-            self.bright_factor = 1.22      # More sensitive to voids (was 1.35)
-            self.min_blob_area = 40        # Lower minimum size to catch smaller debris (was 80)
+            self.bright_factor = 1.0      # More sensitive to voids (was 1.35)
+            self.min_blob_area = 80        # Lower minimum size to catch smaller debris (was 80)
             self.morph_kernel_size = 3     # Smaller kernel to preserve details (was 6)
             self.morph_iterations = 1      # Less aggressive cleaning (was 2)
     
@@ -404,10 +404,9 @@ class StripeDebrisVoidDetector(BaseDetector):
         Returns:
             Visualization image with detections marked.
         """
-        # Draw debris in red
+        # Draw debris in red - boxes only
         for defect in debris_defects:
             x, y, w, h = defect['bbox']
-            cx, cy = defect['centroid']
             severity = defect['severity']
             
             # Color intensity based on severity
@@ -421,21 +420,12 @@ class StripeDebrisVoidDetector(BaseDetector):
                 color = (0, 128, 255)  # Light red
                 thickness = 2
             
-            # Draw bounding box
+            # Draw bounding box only
             cv2.rectangle(visualization, (x, y), (x + w, y + h), color, thickness)
-            
-            # Draw centroid
-            cv2.circle(visualization, (cx, cy), 5, color, -1)
-            
-            # Add label
-            label = f"Debris ({severity})"
-            cv2.putText(visualization, label, (x, y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
-        # Draw voids in cyan
+        # Draw voids in cyan - boxes only
         for defect in void_defects:
             x, y, w, h = defect['bbox']
-            cx, cy = defect['centroid']
             severity = defect['severity']
             
             # Color intensity based on severity
@@ -449,16 +439,8 @@ class StripeDebrisVoidDetector(BaseDetector):
                 color = (255, 150, 0)  # Pale cyan
                 thickness = 2
             
-            # Draw bounding box
+            # Draw bounding box only
             cv2.rectangle(visualization, (x, y), (x + w, y + h), color, thickness)
-            
-            # Draw centroid
-            cv2.circle(visualization, (cx, cy), 5, color, -1)
-            
-            # Add label
-            label = f"Void ({severity})"
-            cv2.putText(visualization, label, (x, y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
         # Add summary text
         summary = f"Debris: {len(debris_defects)} | Voids: {len(void_defects)}"
@@ -522,11 +504,22 @@ if __name__ == "__main__":
     # Run detection
     visualization, defects = detector.detect(image, image_path)
     
-    # Save result
-    output_path = image_path.replace('.tif', '_debris_void_result.jpg').replace('.tiff', '_debris_void_result.jpg')
-    cv2.imwrite(output_path, visualization)
+    # Save result using image_saver utility
+    from utils.image_saver import save_image
     
-    print(f"\nResults saved to: {output_path}")
+    # Get directory and base name from input image path
+    output_dir = os.path.dirname(image_path)
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    
+    print(f"Saving result to directory: {output_dir}")
+    output_path = save_image(output_dir, base_name, visualization, "debris_void_result")
+    
+    detector.save_debug_images(output_dir, base_name)
+
+    if output_path:
+        print(f"\nResults saved to: {output_path}")
+    else:
+        print(f"\nFailed to save results")
     print(f"Total defects: {len(defects)}")
     
     # Print defect details

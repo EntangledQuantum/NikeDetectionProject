@@ -41,17 +41,17 @@ class LineDefectDetector:
         
         # Set parameters based on sensitivity
         if sensitivity == 'high':
-            self.kernel_size = 15
-            self.step_size = 10  # Horizontal step between kernel checks
-            self.line_threshold = 0.25  # Require 25% pixels for a valid line
-            self.min_gap_size = 50  # Minimum gap size to report missing line
-            self.jagged_threshold = 10  # Y delta threshold for jagged detection
+            self.kernel_size = 25
+            self.step_size = 20  # Horizontal step between kernel checks
+            self.line_threshold = 0.18  # Require 18% pixels for a valid line
+            self.min_gap_size = 80  # Minimum gap size to report missing line
+            self.jagged_threshold = 3  # Y delta threshold for jagged detection
         elif sensitivity == 'low':
-            self.kernel_size = 50
-            self.step_size = 40
-            self.line_threshold = 0.15
-            self.min_gap_size = 200
-            self.jagged_threshold = 25
+            self.kernel_size = 35
+            self.step_size = 30
+            self.line_threshold = 0.22
+            self.min_gap_size = 120
+            self.jagged_threshold = 7
         else:  # medium (default)
             self.kernel_size = 30
             self.step_size = 25

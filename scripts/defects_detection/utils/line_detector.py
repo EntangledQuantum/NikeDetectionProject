@@ -43,24 +43,25 @@ class LineDetector:
         self.IDEAL_IMAGE_HEIGHT = 44228
         
         # Set base parameters based on sensitivity (for ideal image size)
-        if sensitivity == 'high':
-            self.base_kernel_width = 20
-            self.base_kernel_height = 20
-            self.base_num_vertical_scans = 7  # More scans for high sensitivity
-            self.line_detection_threshold = 0.10
-            self.min_detection_count = 2
-        elif sensitivity == 'low':
-            self.base_kernel_width = 40
-            self.base_kernel_height = 40
-            self.base_num_vertical_scans = 3  # Fewer scans for low sensitivity
-            self.line_detection_threshold = 0.20
-            self.min_detection_count = 3  # Require more detections
-        else:  # medium (default)
+        # Medium sensitivity as default working baseline
+        if sensitivity == 'medium':
             self.base_kernel_width = 10
             self.base_kernel_height = 10
             self.base_num_vertical_scans = 50
             self.line_detection_threshold = 0.3
             self.min_detection_count = 5
+        elif sensitivity == 'high':
+            self.base_kernel_width = 8  # Smaller kernel for higher sensitivity
+            self.base_kernel_height = 8
+            self.base_num_vertical_scans = 60  # More scans for high sensitivity
+            self.line_detection_threshold = 0.25  # Lower threshold for easier detection
+            self.min_detection_count = 4  # Fewer detections required
+        elif sensitivity == 'low':
+            self.base_kernel_width = 15  # Larger kernel for lower sensitivity
+            self.base_kernel_height = 15
+            self.base_num_vertical_scans = 35  # Fewer scans for low sensitivity
+            self.line_detection_threshold = 0.4  # Higher threshold for stricter detection
+            self.min_detection_count = 7  # More detections required
         
         # These will be set dynamically based on actual image size
         self.kernel_width = self.base_kernel_width

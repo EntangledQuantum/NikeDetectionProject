@@ -44,15 +44,15 @@ class OversprayIslandDetector(BaseDetector):
         
         # Set overspray detection parameters based on sensitivity
         if sensitivity == 'high':
-            self.line_thickness = 5
-            self.background_threshold = 5  # Very sensitive to color differences
-            self.overspray_min_area = 100  # Smaller minimum area (more sensitive)
-            self.overspray_max_distance = 300  # Closer grouping distance
+            self.line_thickness = 12  # Slightly thinner than medium
+            self.background_threshold = 40  # More sensitive to color differences
+            self.overspray_min_area = 3000  # Smaller minimum area (more sensitive)
+            self.overspray_max_distance = 800  # Closer grouping distance
         elif sensitivity == 'low':
-            self.line_thickness = 5
-            self.background_threshold = 20  # Less sensitive to color differences
-            self.overspray_min_area = 1000  # Larger minimum area (less sensitive)
-            self.overspray_max_distance = 800  # Larger grouping distance
+            self.line_thickness = 18  # Slightly thicker than medium
+            self.background_threshold = 60  # Less sensitive to color differences
+            self.overspray_min_area = 7000  # Larger minimum area (less sensitive)
+            self.overspray_max_distance = 1200  # Larger grouping distance
         else:  # medium (default)
             self.line_thickness = 15  # Thicker to ensure lines are fully covered
             self.background_threshold = 50  # Sensitivity to color detection
