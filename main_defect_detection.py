@@ -163,13 +163,14 @@ def validate_inputs(image_path: str, config_path: str) -> bool:
     return True
 
 
-def extract_regions(image_path: str, config_path: str) -> Optional[str]:
+def extract_regions(image_path: str, config_path: str, origin_coordinates: dict) -> Optional[str]:
     """
     Extract regions from the TIFF image using tiff_extractor.py.
     
     Args:
         image_path: Path to the TIFF image file
         config_path: Path to the JSON configuration file
+        origin_coordinates: (x, y) Top-left coordinates of the black stripe 
         
     Returns:
         str: Path to the extraction output directory, or None if failed
@@ -188,6 +189,19 @@ def extract_regions(image_path: str, config_path: str) -> Optional[str]:
     # This allows users to have cleaner JSON files with just region definitions
     abs_image_path = os.path.abspath(image_path)
     config_data['original_image_path'] = abs_image_path
+
+    # Add the origin coordinates to the config file
+    config_data['origin_x'] = origin_coordinates[0]
+    config_data['origin_y'] = origin_coordinates[1]
+    
+    # Add the offsets json file to config file. TODO: Revamp this part so that it can choose either 2400 dpi or 4800 dpi offset json file based on user input
+    offset_path = Path(__file__).parent / 'regions_json/offsets.json'
+    
+    if offset_path.exists():
+        config_data['offset_path'] = str(offset_path)
+    else:
+        print_error(f"Unable to open the offset JSON file: {offset_path}")
+        return None
     
     # Create a temporary config file with updated path
     temp_config_path = config_path + '.tmp'
@@ -383,6 +397,18 @@ Examples:
         choices=['2400', '4800'],
         help='Image DPI resolution (required, determines which template to use)'
     )
+
+    parser.add_argument(
+        '--origin_x', '-x',
+        required=True,
+        help='Starting x-coordinate of the top-left black stripe (required)'
+    )
+
+    parser.add_argument(
+        '--origin_y', '-y',
+        required=True,
+        help='Starting y-coordinate of the top-left black stripe (required)'
+    )
     
     parser.add_argument(
         '--config', '-c',
@@ -426,7 +452,7 @@ Examples:
         sys.exit(1)
     
     # Step 1: Extract regions
-    extracted_dir = extract_regions(args.image, config_path)
+    extracted_dir = extract_regions(args.image, config_path, (args.origin_x, args.origin_y))
     
     if not extracted_dir:
         print_error("Region extraction failed. Exiting.")

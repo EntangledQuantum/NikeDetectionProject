@@ -250,6 +250,13 @@ def process_tiff_with_config(config: Union[str, Dict]) -> Dict[str, bool]:
     original_image_path = config_data.get('original_image_path')
     sub_images = config_data.get('sub_images', [])
     exclusion_zones = config_data.get('exclusion_zones', [])
+    origin_x = float(config_data.get('origin_x'))
+    origin_y = float(config_data.get('origin_y'))
+    offsets_path = config_data.get('offset_path')
+
+    sub_images = localize_sub_images(origin_x, origin_y, sub_images, offsets_path)
+    exclusion_zones = localize_exclusion_zones(origin_x, origin_y, exclusion_zones, offsets_path)
+
     
     if not original_image_path or not os.path.exists(original_image_path):
         logger.error(f"Original image not found: {original_image_path}")
@@ -331,6 +338,129 @@ def process_tiff_with_config(config: Union[str, Dict]) -> Dict[str, bool]:
     
     return results
 
+def localize_sub_images(x, y, sub_images, offsets_path):
+    # TODO: Add comments
+    # TODO: Generalize the logic for both sub images and exclusion zones as a single helper function
+    obj_list = []
+
+    # Load in the offsets json file
+    offset_data = {}
+    with open(offsets_path, 'r') as f:
+        offset_data = json.load(f)
+    sub_image_offsets = offset_data.get('sub_images')
+
+    for sub_image, offsets in zip(sub_images, sub_image_offsets):
+        # Convert the x coordinates
+        sub_image['bounding_box_pixels']['top_x'] = offsets['bounding_box_pixels']['top_x'] + x
+        sub_image['bounding_box_pixels']['bottom_x'] = offsets['bounding_box_pixels']['bottom_x'] + x
+        
+        # Convert the y coordinates
+        sub_image['bounding_box_pixels']['top_y'] = offsets['bounding_box_pixels']['top_y'] - y
+        sub_image['bounding_box_pixels']['bottom_y'] = offsets['bounding_box_pixels']['bottom_y'] - y
+
+        # Write to the JSON object
+        obj_list.append(sub_image)
+
+    return obj_list
+
+def localize_exclusion_zones(x, y, exclusion_zones, offsets_path):
+    # TODO: Add comments
+    # TODO: Generalize the logic for both sub images and exclusion zones as a single helper function
+
+    obj_list = []
+
+    # Load in the offsets json file
+    offset_data = {}
+    with open(offsets_path, 'r') as f:
+        offset_data = json.load(f)
+    
+    ez_offsets = offset_data.get('exclusion_zones')
+
+    for ez, offsets in zip(exclusion_zones, ez_offsets):
+        # Convert the x coordinates
+        ez['bounding_box_pixels']['top_x'] = offsets['bounding_box_pixels']['top_x'] + x
+        ez['bounding_box_pixels']['bottom_x'] = offsets['bounding_box_pixels']['bottom_x'] + x
+        
+        # Convert the y coordinates
+        ez['bounding_box_pixels']['top_y'] = offsets['bounding_box_pixels']['top_y'] - y
+        ez['bounding_box_pixels']['bottom_y'] = offsets['bounding_box_pixels']['bottom_y'] - y
+
+        # Write to the JSON object
+        obj_list.append(ez)
+
+    return obj_list
+
+def generate_offsets_json(x: int, y: int, json_path: str):
+    """
+   Generates offsets for sub images and exclusion zones in JSON format given a reference point.  
+    
+    Args:
+        x: x coordinate of the top left scan
+        y: y coordinate of the top left scan
+        json_path: path of the json file where sub-regions are defined
+        
+    Returns:
+        bool: True if detection completed successfully, False otherwise
+    """
+
+    # Load the json file
+    try:
+        logger.info(f'Opening the file: {json_path}')    
+        json_data = {}
+        with open(json_path, 'r') as f:
+            json_data = json.load(f)
+        
+        # Iterate through the sub images and localize to the ROI
+        for indx, sub_image in enumerate(json_data['sub_images']):
+            # Convert the x coordinates
+            sub_image['bounding_box_pixels']['top_x'] = sub_image['bounding_box_pixels']['top_x'] - x
+            sub_image['bounding_box_pixels']['bottom_x'] = sub_image['bounding_box_pixels']['bottom_x'] - x
+            
+            # Convert the y coordinates
+            sub_image['bounding_box_pixels']['top_y'] = sub_image['bounding_box_pixels']['top_y'] - y
+            sub_image['bounding_box_pixels']['bottom_y'] = sub_image['bounding_box_pixels']['bottom_y'] - y
+
+            # Write to the JSON object
+            json_data['sub_images'][indx] = sub_image
+
+        # Iterate through the sub images and localize to the ROI
+        for indx, exclusion_zone in enumerate(json_data['exclusion_zones']):
+            # Convert the x coordinates
+            exclusion_zone['bounding_box_pixels']['top_x'] = exclusion_zone['bounding_box_pixels']['top_x'] - x
+            exclusion_zone['bounding_box_pixels']['bottom_x'] = exclusion_zone['bounding_box_pixels']['bottom_x'] - x
+            
+            # Convert the y coordinates
+            exclusion_zone['bounding_box_pixels']['top_y'] = exclusion_zone['bounding_box_pixels']['top_y'] - y
+            exclusion_zone['bounding_box_pixels']['bottom_y'] = exclusion_zone['bounding_box_pixels']['bottom_y'] - y
+
+            # Write to the JSON object
+            json_data['exclusion_zones'][indx] = exclusion_zone
+        
+        # TODO: Add check to see if the value falls out of bounds of the image
+
+        # TODO: Add a check to see if its a negative x coordinate
+
+        # TODO: Add a check to see if the values are invalid
+
+        # Create a output path
+        folder_path = 'offsets/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        # Output to JSON file        
+        with open(f"{folder_path}/offset.json", "w") as json_file:
+            json.dump(json_data, json_file, indent=4)
+
+        # Success!
+        return True
+    
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON file: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error reading configuration: {e}")
+        return False
+
 
 def main():
     """Main function for command-line interface."""
@@ -370,4 +500,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

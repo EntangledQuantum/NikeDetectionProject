@@ -1,0 +1,159 @@
+{
+    "sub_images": [
+        {
+            "name": "blackStripe",
+            "bounding_box_pixels": {
+                "top_x": -308.63942999999927,
+                "top_y": 140.76265999999998,
+                "bottom_x": 1201.6001699999997,
+                "bottom_y": -44016.65002
+            }
+        },
+        {
+            "name": "island-black-blue",
+            "bounding_box_pixels": {
+                "top_x": 1416.7164799999991,
+                "top_y": 166.73357999999996,
+                "bottom_x": 6579.95038,
+                "bottom_y": -44061.72283
+            }
+        },
+        {
+            "name": "blueStripe",
+            "bounding_box_pixels": {
+                "top_x": 6528.07106,
+                "top_y": 65.07844,
+                "bottom_x": 7831.579269999998,
+                "bottom_y": -44070.19409
+            }
+        },
+        {
+            "name": "island-blue-pink",
+            "bounding_box_pixels": {
+                "top_x": 8044.991600000001,
+                "top_y": 135.125,
+                "bottom_x": 13264.552380000001,
+                "bottom_y": -44068.00802
+            }
+        },
+        {
+            "name": "pinkStripe",
+            "bounding_box_pixels": {
+                "top_x": 13365.21686,
+                "top_y": 50.88095999999996,
+                "bottom_x": 14429.333310000002,
+                "bottom_y": -44024.45813
+            }
+        }
+    ],
+    "exclusion_zones": [
+        {
+            "name": "letter K1 (1)",
+            "bounding_box_pixels": {
+                "top_x": 1064.7507499999992,
+                "top_y": -4229.08807,
+                "bottom_x": 1594.9182199999996,
+                "bottom_y": -5561.48263
+            }
+        },
+        {
+            "name": "letter C1 (5)",
+            "bounding_box_pixels": {
+                "top_x": 7782.53068,
+                "top_y": -4096.5462,
+                "bottom_x": 8242.939279999999,
+                "bottom_y": -5582.4103
+            }
+        },
+        {
+            "name": "letter M1 (9)",
+            "bounding_box_pixels": {
+                "top_x": 14472.407070000001,
+                "top_y": -4166.30508,
+                "bottom_x": 14981.64688,
+                "bottom_y": -5596.36207
+            }
+        },
+        {
+            "name": "letter K2 (2)",
+            "bounding_box_pixels": {
+                "top_x": 1029.8713100000004,
+                "top_y": -15244.01488,
+                "bottom_x": 1539.1111199999996,
+                "bottom_y": -16694.99954
+            }
+        },
+        {
+            "name": "letter C2 (6)",
+            "bounding_box_pixels": {
+                "top_x": 7733.69947,
+                "top_y": -15257.96665,
+                "bottom_x": 8249.91516,
+                "bottom_y": -16667.09599
+            }
+        },
+        {
+            "name": "letter M2 (10)",
+            "bounding_box_pixels": {
+                "top_x": 14458.455290000002,
+                "top_y": -14958.00348,
+                "bottom_x": 14981.64688,
+                "bottom_y": -16646.16832
+            }
+        },
+        {
+            "name": "letter K3 (3)",
+            "bounding_box_pixels": {
+                "top_x": 1022.8954200000007,
+                "top_y": -26349.62823,
+                "bottom_x": 1539.1111199999996,
+                "bottom_y": -27758.75756
+            }
+        },
+        {
+            "name": "letter C3 (7)",
+            "bounding_box_pixels": {
+                "top_x": 7705.7959200000005,
+                "top_y": -26391.48356,
+                "bottom_x": 8222.011610000001,
+                "bottom_y": -27758.75756
+            }
+        },
+        {
+            "name": "letter M3 (11)",
+            "bounding_box_pixels": {
+                "top_x": 14472.407070000001,
+                "top_y": -26042.68917,
+                "bottom_x": 14932.81566,
+                "bottom_y": -27758.75756
+            }
+        },
+        {
+            "name": "letter K4 (4)",
+            "bounding_box_pixels": {
+                "top_x": 1064.7507499999992,
+                "top_y": -37497.09691,
+                "bottom_x": 1539.1111199999996,
+                "bottom_y": -38920.17802
+            }
+        },
+        {
+            "name": "letter C4 (8)",
+            "bounding_box_pixels": {
+                "top_x": 7761.603019999999,
+                "top_y": -37483.14513,
+                "bottom_x": 8263.86694,
+                "bottom_y": -38906.22624
+            }
+        },
+        {
+            "name": "letter M4 (12)",
+            "bounding_box_pixels": {
+                "top_x": 14444.503519999998,
+                "top_y": -37190.15785,
+                "bottom_x": 14904.912110000001,
+                "bottom_y": -38934.12979
+            }
+        }
+    ]
+}
