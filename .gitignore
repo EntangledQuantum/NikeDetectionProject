@@ -203,3 +203,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 /Images/
+
+# Ignore test image files
+test_images/
