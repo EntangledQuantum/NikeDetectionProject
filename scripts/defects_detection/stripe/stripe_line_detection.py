@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import tifffile
 import sys
+import matplotlib.pyplot as plt
 
 # Add the utils directory to the Python path
 utils_dir = os.path.join(os.path.dirname(__file__), '..', 'utils')
@@ -93,6 +94,27 @@ class StripeLineDetector:
     def save_debug_images(self, output_dir, base_name):
         self.hough_detector.save_debug_images(output_dir, base_name)
 
+    def create_line_graph(self, lines, image_height, image_width, output_dir, base_name):
+        """Create and save graph of line x vs image y."""
+        fig, ax = plt.subplots(figsize=(4, 12))  # Tall narrow figure
+        
+        ax.set_xlim(0, image_height)
+        ax.set_ylim(0, image_width)
+        ax.set_xlabel('Image Y (Top to Bottom)')
+        ax.set_ylabel('Line X Position')
+        ax.invert_yaxis()  # Image y=0 at top
+        
+        if lines:
+            for x1, y1, x2, y2 in lines:
+                ax.plot([y1, y2], [x1, x2], 'b-', linewidth=1)
+        
+        graph_path = os.path.join(output_dir, f"{base_name}_line_x_profile.png")
+        plt.savefig(graph_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"    Line profile graph saved to {graph_path}")
+        return graph_path
+
 # Standalone
 if __name__ == "__main__":
     import argparse
@@ -120,4 +142,7 @@ if __name__ == "__main__":
         serializable_lines = [[int(c) for c in line] for line in lines] if lines else []
         json.dump(serializable_lines, f, indent=2)
     
+    height, width = image.shape[:2] if len(image.shape) > 2 else image.shape
+    detector.create_line_graph(lines, height, width, output_dir, base_name)
+
     print(f"Done. Detected {len(lines)} lines. Outputs in {output_dir}")
