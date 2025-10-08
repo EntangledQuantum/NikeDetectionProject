@@ -53,24 +53,30 @@ class StripeDebrisVoidDetector(BaseDetector):
         if self.sensitivity == 'low':
             # Conservative detection - fewer false positives
             self.dark_factor = 0.60        # More restrictive for dark anomalies
-            self.bright_factor = 1.45      # More restrictive for bright anomalies
-            self.min_blob_area = 100       # Larger minimum size
+            self.bright_factor = 1.05      # More restrictive for bright anomalies
+            self.min_blob_area_debris = 150  # Larger minimum for debris
+            self.min_blob_area_void = 300     # Larger minimum for voids
+            self.min_blob_area_void_max = 50000  # Maximum size
             self.morph_kernel_size = 4     # Smaller morphological operations
             self.morph_iterations = 1
             
         elif self.sensitivity == 'high':
             # Aggressive detection - catch more defects
             self.dark_factor = 0.88        # Less restrictive for dark anomalies
-            self.bright_factor = 1.15      # Less restrictive for bright anomalies
-            self.min_blob_area = 20        # Smaller minimum size
+            self.bright_factor = 0.92      # Very sensitive for voids
+            self.min_blob_area_debris = 40   # Smaller minimum for debris
+            self.min_blob_area_void = 150     # Smaller minimum for voids
+            self.min_blob_area_void_max = 50000  # Maximum size
             self.morph_kernel_size = 5     # Larger morphological operations
             self.morph_iterations = 2
             
         else:  # medium (default)
             # Balanced detection - ADJUSTED FOR BETTER DEBRIS DETECTION
             self.dark_factor = 0.82        # More sensitive to debris (was 0.65)
-            self.bright_factor = 1.0      # More sensitive to voids (was 1.35)
-            self.min_blob_area = 80        # Lower minimum size to catch smaller debris (was 80)
+            self.bright_factor = 0.95      # MUCH more sensitive to voids - fingerprints are subtle (was 1.0)
+            self.min_blob_area_debris = 80 # Minimum size for debris (larger objects)
+            self.min_blob_area_void = 200  # LARGER minimum for voids - fingerprints are big (was 30)
+            self.min_blob_area_void_max = 50000  # Maximum size to avoid detecting entire stripe as void
             self.morph_kernel_size = 3     # Smaller kernel to preserve details (was 6)
             self.morph_iterations = 1      # Less aggressive cleaning (was 2)
     
@@ -114,7 +120,8 @@ class StripeDebrisVoidDetector(BaseDetector):
             print(f"Parameters:")
             print(f"  - dark_factor: {self.dark_factor}")
             print(f"  - bright_factor: {self.bright_factor}")
-            print(f"  - min_blob_area: {self.min_blob_area}")
+            print(f"  - min_blob_area_debris: {self.min_blob_area_debris}")
+            print(f"  - min_blob_area_void: {self.min_blob_area_void} to {self.min_blob_area_void_max}")
             print(f"  - morph_kernel_size: {self.morph_kernel_size}")
             print(f"  - morph_iterations: {self.morph_iterations}")
         
@@ -275,18 +282,40 @@ class StripeDebrisVoidDetector(BaseDetector):
         
         if self.debug:
             print(f"  Found {len(contours)} {defect_type} contours before filtering")
+            # Calculate area distribution
+            if len(contours) > 0:
+                areas = [cv2.contourArea(c) for c in contours]
+                print(f"  Contour area distribution: min={min(areas):.1f}, max={max(areas):.1f}, mean={sum(areas)/len(areas):.1f}")
         
         defects = []
-        filtered_by_size = 0
+        filtered_by_size_min = 0
+        filtered_by_size_max = 0
         filtered_by_exclusion = 0
+        
+        # Select appropriate minimum area based on defect type
+        min_area_threshold = self.min_blob_area_debris if defect_type == 'debris' else self.min_blob_area_void
+        
+        # For voids, also check maximum size (to avoid detecting entire stripe as void)
+        max_area_threshold = self.min_blob_area_void_max if defect_type == 'void' else float('inf')
         
         for contour in contours:
             # Compute blob properties
             area = cv2.contourArea(contour)
             
-            # Filter by minimum area
-            if area < self.min_blob_area:
-                filtered_by_size += 1
+            # Filter by minimum area (different thresholds for debris vs voids)
+            if area < min_area_threshold:
+                filtered_by_size_min += 1
+                if self.debug and defect_type == 'void':
+                    # Show details for first few filtered voids
+                    if filtered_by_size_min <= 5:
+                        print(f"    Filtered void (too small) #{filtered_by_size_min}: area={area:.1f} < min={min_area_threshold}")
+                continue
+            
+            # Filter by maximum area (only for voids)
+            if area > max_area_threshold:
+                filtered_by_size_max += 1
+                if self.debug and defect_type == 'void':
+                    print(f"    Filtered void (too large): area={area:.1f} > max={max_area_threshold}")
                 continue
             
             # Compute centroid
@@ -332,8 +361,12 @@ class StripeDebrisVoidDetector(BaseDetector):
             defects.append(defect)
         
         if self.debug:
+            min_threshold = self.min_blob_area_debris if defect_type == 'debris' else self.min_blob_area_void
+            max_threshold = max_area_threshold if defect_type == 'void' else float('inf')
             print(f"  {defect_type.capitalize()} extraction complete:")
-            print(f"    - Filtered by size (<{self.min_blob_area}px): {filtered_by_size}")
+            print(f"    - Filtered by size (too small <{min_threshold}px): {filtered_by_size_min}")
+            if defect_type == 'void':
+                print(f"    - Filtered by size (too large >{max_threshold}px): {filtered_by_size_max}")
             print(f"    - Filtered by exclusion zones: {filtered_by_exclusion}")
             print(f"    - Final {defect_type} count: {len(defects)}")
             if len(defects) > 0:
