@@ -25,10 +25,13 @@ from scripts.defects_detection.utils.image_saver import save_image
 class VerticalHoughDetector:
     """Detector using Probabilistic Hough Transform for vertical-ish lines."""
     
-    def __init__(self, sensitivity='medium', debug=True):
+    def __init__(self, sensitivity='medium', debug=True, edge_detector=None):
         self.debug = debug
         self.sensitivity = sensitivity
-        self.edge_detector = VerticalEdgeDetector(sensitivity=sensitivity, debug=False)
+        if edge_detector is None:
+            self.edge_detector = VerticalEdgeDetector(sensitivity=sensitivity, debug=debug)
+        else:
+            self.edge_detector = edge_detector
         self.set_parameters_based_on_sensitivity()
     
     def set_parameters_based_on_sensitivity(self):
