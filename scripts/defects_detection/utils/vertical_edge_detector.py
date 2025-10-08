@@ -80,20 +80,19 @@ class VerticalEdgeDetector(BaseDetector):
         if self.debug:
             self.debug_images['blurred'] = blurred
         
-        # Step 3: Detect vertical edges using Sobel operator
-        # Sobel for vertical edges (dx=1, dy=0)
-        edges = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=self.kernel_size)
-        edges = cv2.convertScaleAbs(edges)
+        # Remove Sobel
+        # # Step 3: Detect vertical edges using Sobel
+        # edges = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=self.kernel_size)
+        # edges = cv2.convertScaleAbs(edges)
+        # if self.debug:
+        #     self.debug_images['sobel_vertical'] = edges
+        
+        # Step 3: Apply Canny directly on blurred
+        binary_edges = cv2.Canny(blurred, self.edge_threshold_low, self.edge_threshold_high)
         
         if self.debug:
-            self.debug_images['vertical_edges'] = edges
+            self.debug_images['canny_edges'] = binary_edges
         
-        # Step 4: Apply thresholding to binarize edges (optional, for clearer visualization)
-        _, binary_edges = cv2.threshold(edges, self.edge_threshold_low, 255, cv2.THRESH_BINARY)
-        if self.debug:
-            self.debug_images['binary_edges'] = binary_edges
-        
-        # After computing binary_edges
         self.binary_edges = binary_edges
         
         # Create edge overlay always
@@ -107,8 +106,7 @@ class VerticalEdgeDetector(BaseDetector):
             self.debug_images = {
                 'grayscale': gray,
                 'blurred': blurred,
-                'vertical_edges': edges,
-                'binary_edges': binary_edges,
+                'canny_edges': binary_edges,
                 'edge_overlay': overlay
             }
         else:

@@ -41,6 +41,7 @@ class StripeLineDetector:
         
         self.stripe_width = 1010
         self.width_tolerance = 100
+        self.max_x_dev = 15  # Deviation tolerance for continuous
     
     def get_params_for_sensitivity(self):
         if self.sensitivity == 'low':
@@ -60,8 +61,8 @@ class StripeLineDetector:
         elif self.sensitivity == 'medium':
             edge_params = {
                 'kernel_size': 3,
-                'edge_threshold_low': 200,
-                'edge_threshold_high': 110
+                'edge_threshold_low': 80,
+                'edge_threshold_high': 100
             }
             hough_params = {
                 'rho': 1,
@@ -74,16 +75,16 @@ class StripeLineDetector:
         elif self.sensitivity == 'high':
             edge_params = {
                 'kernel_size': 3,
-                'edge_threshold_low': 30,
-                'edge_threshold_high': 100
+                'edge_threshold_low': 120,
+                'edge_threshold_high': 160
             }
             hough_params = {
                 'rho': 1,
                 'theta': np.pi / 180,
-                'threshold': 30,
-                'minLineLength': 30,
-                'maxLineGap': 40,
-                'angle_tolerance': 15
+                'threshold': 40,
+                'minLineLength': 80,
+                'maxLineGap': 60,
+                'angle_tolerance': 10
             }
         else:
             raise ValueError("Invalid sensitivity.")
@@ -100,7 +101,8 @@ class StripeLineDetector:
         for x1, y1, x2, y2 in filtered_lines:
             cv2.line(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
-        return vis, filtered_lines
+        vis, regions = self.create_regions_and_overlay(filtered_lines, vis)
+        return vis, filtered_lines  # Or return vis, filtered_lines, regions if needed
     
     def filter_stripe_lines(self, lines, image_height):
         """Per-y filtering for valid line pairs."""
@@ -170,6 +172,101 @@ class StripeLineDetector:
         
         print(f"    Line profile graph saved to {graph_path}")
         return graph_path
+
+    def create_regions_and_overlay(self, filtered_lines, vis):
+        """Create regions from filtered lines and overlay on vis."""
+        if not filtered_lines:
+            return vis, []
+        
+        # Split into left and right groups
+        avg_xs = [(l, (l[0] + l[2])/2) for l in filtered_lines]
+        median_avg_x = np.median([ax for _, ax in avg_xs])
+        left_lines = [l for l, ax in avg_xs if ax <= median_avg_x]
+        right_lines = [l for l, ax in avg_xs if ax > median_avg_x]
+        
+        # Sort by starting y
+        left_lines.sort(key=lambda l: min(l[1], l[3]))
+        right_lines.sort(key=lambda l: min(l[1], l[3]))
+        
+        # Build continuous chains for left and right
+        def build_chains(lines_group):
+            if not lines_group:
+                return []
+            chains = []
+            current_chain = [lines_group[0]]
+            for line in lines_group[1:]:
+                prev = current_chain[-1]
+                prev_end_x = prev[2] if prev[3] > prev[1] else prev[0]
+                curr_start_x = line[0] if line[1] < line[3] else line[2]
+                if abs(curr_start_x - prev_end_x) < self.max_x_dev:
+                    current_chain.append(line)
+                else:
+                    chains.append(current_chain)
+                    current_chain = [line]
+            if current_chain:
+                chains.append(current_chain)
+            return chains
+        
+        left_chains = build_chains(left_lines)
+        right_chains = build_chains(right_lines)
+        
+        # For simplicity, assume parallel chains; create regions for matching pairs by index
+        regions = []
+        num_regions = min(len(left_chains), len(right_chains))
+        for i in range(num_regions):
+            l_chain = left_chains[i]
+            r_chain = right_chains[i]
+            
+            # Get overall top/bottom y, avg top/bottom x
+            top_y = min(min(min(l[1],l[3]) for l in l_chain), min(min(r[1],r[3]) for r in r_chain))
+            bot_y = max(max(max(l[1],l[3]) for l in l_chain), max(max(r[1],r[3]) for r in r_chain))
+            
+            # Get top/bottom x from chain endpoints
+            l_chain.sort(key=lambda l: min(l[1], l[3]))  # Ensure sorted
+            r_chain.sort(key=lambda l: min(l[1], l[3]))
+            
+            # Left top: first segment's top endpoint x
+            l_first = l_chain[0]
+            l_top_y_idx = 1 if l_first[1] < l_first[3] else 3
+            l_top_x = l_first[l_top_y_idx -1]  # x1 if y1 top, x2 if y2 top
+            
+            # Left bottom: last segment's bottom endpoint x
+            l_last = l_chain[-1]
+            l_bot_y_idx = 3 if l_last[3] > l_last[1] else 1
+            l_bot_x = l_last[l_bot_y_idx -1]
+            
+            # Similarly for right
+            r_first = r_chain[0]
+            r_top_y_idx = 1 if r_first[1] < r_first[3] else 3
+            r_top_x = r_first[r_top_y_idx -1]
+            
+            r_last = r_chain[-1]
+            r_bot_y_idx = 3 if r_last[3] > r_last[1] else 1
+            r_bot_x = r_last[r_bot_y_idx -1]
+            
+            # top_y = min(l_first[l_top_y_idx], r_first[r_top_y_idx])
+            # bot_y = max(l_last[l_bot_y_idx], r_last[r_bot_y_idx])
+            # But keep original top_y bot_y as min/max of all
+            
+            # Create polygon
+            polygon = np.array([
+                (int(l_top_x), int(top_y)),
+                (int(r_top_x), int(top_y)),
+                (int(r_bot_x), int(bot_y)),
+                (int(l_bot_x), int(bot_y))
+            ], np.int32)
+            
+            regions.append(polygon)
+        
+        # Overlay on vis with different random colors, semi-transparent
+        overlay = vis.copy()
+        for poly in regions:
+            color = tuple(np.random.randint(0, 255, 3).tolist())
+            cv2.fillPoly(overlay, [poly], color)
+        
+        vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+        
+        return vis, regions
 
 # Standalone
 if __name__ == "__main__":
