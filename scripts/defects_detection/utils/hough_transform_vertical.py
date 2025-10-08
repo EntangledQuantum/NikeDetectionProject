@@ -11,9 +11,16 @@ import cv2
 import numpy as np
 import os
 from pathlib import Path
+import sys
+import os
+import json
 
-from .vertical_edge_detector import VerticalEdgeDetector
-from .image_saver import save_image
+# Add the project root to the Python path
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, project_root)
+
+from scripts.defects_detection.utils.vertical_edge_detector import VerticalEdgeDetector
+from scripts.defects_detection.utils.image_saver import save_image
 
 class VerticalHoughDetector:
     """Detector using Probabilistic Hough Transform for vertical-ish lines."""
@@ -21,7 +28,7 @@ class VerticalHoughDetector:
     def __init__(self, sensitivity='medium', debug=True):
         self.debug = debug
         self.sensitivity = sensitivity
-        self.edge_detector = VerticalEdgeDetector(sensitivity=sensitivity, debug=debug)
+        self.edge_detector = VerticalEdgeDetector(sensitivity=sensitivity, debug=False)
         self.set_parameters_based_on_sensitivity()
     
     def set_parameters_based_on_sensitivity(self):
@@ -49,44 +56,93 @@ class VerticalHoughDetector:
     def detect(self, image, image_path=None):
         """Apply edge detection then Hough transform to detect vertical lines.
         
+        Handles large images by processing in windows along height.
+        
         Returns:
             tuple: (visualization_bgr, lines) where lines is list of detected segments.
         """
-        # Get binary edges from edge detector
+        if self.debug:
+            self.debug_images = {}  # Initialize here
+        
+        # Get binary edges from edge detector (full image)
         _, _ = self.edge_detector.detect(image, image_path)
         if not hasattr(self.edge_detector, 'debug_images') or 'binary_edges' not in self.edge_detector.debug_images:
             raise ValueError("Edge detection must be run with debug=True to get binary_edges.")
         binary_edges = self.edge_detector.debug_images['binary_edges']
         
-        # Apply Probabilistic Hough Transform
-        lines = cv2.HoughLinesP(
-            binary_edges, 
-            self.rho, 
-            self.theta, 
-            self.threshold, 
-            minLineLength=self.minLineLength, 
-            maxLineGap=self.maxLineGap
-        )
+        height, width = binary_edges.shape
+        all_lines = []
         
-        # Filter to nearly vertical lines (angle close to 90 degrees, e.g., 70-110 degrees)
-        filtered_lines = []
-        if lines is not None:
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
-                if 70 <= abs(angle) <= 110:  # Roughly vertical
-                    filtered_lines.append((x1, y1, x2, y2))
+        # Define window parameters
+        window_height = 5000  # Process 5000 px at a time
+        overlap = 500  # Overlap to connect lines across windows
+        
+        if height <= window_height:
+            # Small image: process whole
+            lines = cv2.HoughLinesP(
+                binary_edges, 
+                self.rho, 
+                self.theta, 
+                self.threshold, 
+                minLineLength=self.minLineLength, 
+                maxLineGap=self.maxLineGap
+            )
+            if lines is not None:
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
+                    if 70 <= abs(angle) <= 110:
+                        all_lines.append((x1, y1, x2, y2))
+        else:
+            # Large image: process in windows
+            start_y = 0
+            window_num = 0
+            while start_y < height:
+                end_y = min(start_y + window_height, height)
+                window = binary_edges[start_y:end_y, :]
+                
+                lines = cv2.HoughLinesP(
+                    window, 
+                    self.rho, 
+                    self.theta, 
+                    self.threshold, 
+                    minLineLength=self.minLineLength, 
+                    maxLineGap=self.maxLineGap
+                )
+                
+                if lines is not None:
+                    for line in lines:
+                        x1, y1, x2, y2 = line[0]
+                        angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
+                        if 70 <= abs(angle) <= 110:
+                            # Adjust to global coordinates
+                            all_lines.append((x1, y1 + start_y, x2, y2 + start_y))
+                
+                if self.debug:
+                    # Save window visualization
+                    window_vis = cv2.cvtColor(window, cv2.COLOR_GRAY2BGR)
+                    if lines is not None:
+                        for line in lines:
+                            x1, y1, x2, y2 = line[0]
+                            cv2.line(window_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    self.debug_images[f'hough_window_{window_num}'] = window_vis
+                
+                start_y += window_height - overlap
+                window_num += 1
+        
+        if self.debug:
+            self.debug_images.update(self.edge_detector.debug_images)
         
         # Create visualization: draw lines on original image
         vis = image.copy() if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        for x1, y1, x2, y2 in filtered_lines:
+        for x1, y1, x2, y2 in all_lines:
             cv2.line(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         if self.debug:
-            self.debug_images = self.edge_detector.debug_images  # Inherit edge debug images
-            self.debug_images['hough_lines'] = vis
+            self.debug_images = self.edge_detector.debug_images  # Inherit
+            self.debug_images['hough_lines'] = vis  # Full vis
         
-        return vis, filtered_lines
+        return vis, all_lines
     
     def save_debug_images(self, output_dir: str, base_name: str):
         """Save all debug images."""
@@ -99,6 +155,7 @@ class VerticalHoughDetector:
 # Standalone running
 if __name__ == "__main__":
     import argparse
+    import tifffile  # Add this import
     
     parser = argparse.ArgumentParser(description="Vertical Hough Transform on Stripe TIFF Image")
     parser.add_argument("image_path", help="Path to the input TIFF image")
@@ -107,9 +164,9 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Load image
+    # Load image with tifffile for large TIFF support
     try:
-        image = cv2.imread(args.image_path, cv2.IMREAD_UNCHANGED)
+        image = tifffile.imread(args.image_path)
     except Exception as e:
         print(f"Error loading image: {e}")
         exit(1)
@@ -127,6 +184,11 @@ if __name__ == "__main__":
     # Save lines to JSON
     json_path = os.path.join(output_dir, f"{base_name}_vertical_lines.json")
     with open(json_path, 'w') as f:
-        json.dump(lines, f, indent=2)
+        # Convert numpy ints to python ints for serialization
+        if lines:
+            serializable_lines = [[int(coord) for coord in line] for line in lines]
+        else:
+            serializable_lines = []
+        json.dump(serializable_lines, f, indent=2)
     
     print(f"Processing complete. Detected {len(lines)} vertical lines. Outputs saved to {output_dir}")
