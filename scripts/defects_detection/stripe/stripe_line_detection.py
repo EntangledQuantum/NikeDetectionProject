@@ -38,6 +38,9 @@ class StripeLineDetector:
         self.hough_detector = VerticalHoughDetector(debug=self.debug, edge_detector=self.edge_detector)
         for key, value in self.hough_params.items():
             setattr(self.hough_detector, key, value)
+        
+        self.stripe_width = 1010
+        self.width_tolerance = 100
     
     def get_params_for_sensitivity(self):
         if self.sensitivity == 'low':
@@ -88,8 +91,61 @@ class StripeLineDetector:
         return edge_params, hough_params
     
     def detect(self, image, image_path=None):
-        vis, lines = self.hough_detector.detect(image, image_path)
-        return vis, lines
+        height = image.shape[0]
+        _, lines = self.hough_detector.detect(image, image_path)  # Get only lines, skip early vis
+        filtered_lines = self.filter_stripe_lines(lines, height)
+        
+        # Create visualization with filtered lines
+        vis = image.copy() if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        for x1, y1, x2, y2 in filtered_lines:
+            cv2.line(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        
+        return vis, filtered_lines
+    
+    def filter_stripe_lines(self, lines, image_height):
+        """Per-y filtering for valid line pairs."""
+        if len(lines) < 2:
+            print("    Fewer than 2 lines - skipping")
+            return []
+        
+        kept = set()
+        
+        for y in range(image_height):
+            # Collect x at this y for intersecting lines
+            x_at_y = []
+            for idx, (x1, y1, x2, y2) in enumerate(lines):
+                y_min, y_max = min(y1, y2), max(y1, y2)
+                if y_min <= y <= y_max:
+                    if y1 == y2:  # Horizontal, skip or avg x
+                        continue
+                    # Interpolate x
+                    t = (y - y1) / (y2 - y1)
+                    x = x1 + t * (x2 - x1)
+                    x_at_y.append((x, idx))  # (x, line_index)
+            
+            if len(x_at_y) < 2:
+                continue
+            
+            # Sort by x
+            x_at_y.sort(key=lambda p: p[0])
+            
+            # Check pairwise
+            found = False
+            for i in range(len(x_at_y)):
+                for j in range(i+1, len(x_at_y)):
+                    dist = abs(x_at_y[j][0] - x_at_y[i][0])
+                    if abs(dist - self.stripe_width) <= self.width_tolerance:
+                        # Keep these two lines
+                        kept.add(tuple(lines[x_at_y[i][1]]))
+                        kept.add(tuple(lines[x_at_y[j][1]]))
+                        found = True
+                        break  # Skip further pairs for this y
+                if found:
+                    break  # Move to next y
+        
+        filtered = [list(l) for l in kept]  # Convert back to lists
+        print(f"    Filtered to {len(filtered)} unique lines from per-y pairs")
+        return filtered
     
     def save_debug_images(self, output_dir, base_name):
         self.hough_detector.save_debug_images(output_dir, base_name)
