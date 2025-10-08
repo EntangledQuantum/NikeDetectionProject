@@ -38,18 +38,21 @@ class VerticalHoughDetector:
             self.threshold = 100  # Higher for fewer false positives
             self.minLineLength = 100  # Larger to ignore short segments
             self.maxLineGap = 10  # Smaller gap for conservative bridging
+            self.angle_tolerance = 5  # degrees
         elif self.sensitivity == 'medium':
             self.rho = 1
             self.theta = np.pi / 180
             self.threshold = 50
             self.minLineLength = 50
             self.maxLineGap = 20
+            self.angle_tolerance = 10
         elif self.sensitivity == 'high':
             self.rho = 1
             self.theta = np.pi / 180
             self.threshold = 30  # Lower for more detections
             self.minLineLength = 30  # Smaller to catch short segments
             self.maxLineGap = 40  # Larger gap to bridge broken lines
+            self.angle_tolerance = 15
         else:
             raise ValueError("Invalid sensitivity level. Choose 'low', 'medium', or 'high'.")
     
@@ -91,7 +94,7 @@ class VerticalHoughDetector:
                 for line in lines:
                     x1, y1, x2, y2 = line[0]
                     angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
-                    if 70 <= abs(angle) <= 110:
+                    if (90 - self.angle_tolerance) <= abs(angle) <= (90 + self.angle_tolerance):
                         all_lines.append((x1, y1, x2, y2))
         else:
             # Large image: process in windows
@@ -114,7 +117,7 @@ class VerticalHoughDetector:
                     for line in lines:
                         x1, y1, x2, y2 = line[0]
                         angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
-                        if 70 <= abs(angle) <= 110:
+                        if (90 - self.angle_tolerance) <= abs(angle) <= (90 + self.angle_tolerance):
                             # Adjust to global coordinates
                             all_lines.append((x1, y1 + start_y, x2, y2 + start_y))
                 
