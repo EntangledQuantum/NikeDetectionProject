@@ -34,6 +34,7 @@ class VerticalEdgeDetector(BaseDetector):
         self.debug = debug
         self.sensitivity = sensitivity
         self.set_parameters_based_on_sensitivity()
+        self.binary_edges = None
     
     def set_parameters_based_on_sensitivity(self):
         if self.sensitivity == 'low':
@@ -92,22 +93,29 @@ class VerticalEdgeDetector(BaseDetector):
         if self.debug:
             self.debug_images['binary_edges'] = binary_edges
         
-        # Create edge overlay on original image
+        # After computing binary_edges
+        self.binary_edges = binary_edges
+        
+        # Create edge overlay always
+        overlay = image.copy() if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        red_channel = overlay[:, :, 2]
+        red_channel[binary_edges == 255] = 255
+        overlay[binary_edges == 255, 0] = 0
+        overlay[binary_edges == 255, 1] = 0
+        
         if self.debug:
-            # Make color copy of original
-            overlay = image.copy() if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-            # Overlay red where edges are detected
-            red_channel = overlay[:, :, 2]  # BGR red channel
-            red_channel[binary_edges == 255] = 255
-            # Optionally tone down other channels for emphasis
-            overlay[binary_edges == 255, 0] = 0  # Set blue to 0
-            overlay[binary_edges == 255, 1] = 0  # Set green to 0
-            self.debug_images['edge_overlay'] = overlay
+            self.debug_images = {
+                'grayscale': gray,
+                'blurred': blurred,
+                'vertical_edges': edges,
+                'binary_edges': binary_edges,
+                'edge_overlay': overlay
+            }
+        else:
+            self.debug_images = {'edge_overlay': overlay}
         
-        # Create visualization: color version of edges
-        visualization = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+        visualization = overlay
         
-        # For now, no defects detected (just edges); to be extended with Hough
         defects = []
         
         return visualization, defects

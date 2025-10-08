@@ -64,11 +64,11 @@ class VerticalHoughDetector:
         if self.debug:
             self.debug_images = {}  # Initialize here
         
-        # Get binary edges from edge detector (full image)
+        # Get binary edges from edge_detector attribute (always available)
         _, _ = self.edge_detector.detect(image, image_path)
-        if not hasattr(self.edge_detector, 'debug_images') or 'binary_edges' not in self.edge_detector.debug_images:
-            raise ValueError("Edge detection must be run with debug=True to get binary_edges.")
-        binary_edges = self.edge_detector.debug_images['binary_edges']
+        binary_edges = self.edge_detector.binary_edges
+        if binary_edges is None:
+            raise ValueError("Failed to get binary_edges from edge detector.")
         
         height, width = binary_edges.shape
         all_lines = []
@@ -130,17 +130,16 @@ class VerticalHoughDetector:
                 start_y += window_height - overlap
                 window_num += 1
         
-        if self.debug:
-            self.debug_images.update(self.edge_detector.debug_images)
-        
-        # Create visualization: draw lines on original image
+        # Move vis creation here, outside if
         vis = image.copy() if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         for x1, y1, x2, y2 in all_lines:
             cv2.line(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         if self.debug:
-            self.debug_images = self.edge_detector.debug_images  # Inherit
-            self.debug_images['hough_lines'] = vis  # Full vis
+            self.debug_images = {}  
+            if hasattr(self.edge_detector, 'debug_images'):
+                self.debug_images.update(self.edge_detector.debug_images)
+            self.debug_images['hough_lines'] = vis
         
         return vis, all_lines
     
