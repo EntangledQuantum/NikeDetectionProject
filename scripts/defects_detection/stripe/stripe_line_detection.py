@@ -62,7 +62,7 @@ class StripeLineDetector:
             edge_params = {
                 'kernel_size': 3,
                 'edge_threshold_low': 80,
-                'edge_threshold_high': 100
+                'edge_threshold_high': 150
             }
             hough_params = {
                 'rho': 1,
