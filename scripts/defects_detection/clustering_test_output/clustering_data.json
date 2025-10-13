@@ -1,0 +1,286 @@
+{
+  "debris": [
+    {
+      "cluster_id": 0,
+      "defect_type": "debris",
+      "defects": [
+        {
+          "type": "debris",
+          "location": [
+            150,
+            100
+          ],
+          "area": 25,
+          "bbox": [
+            95,
+            140,
+            105,
+            160
+          ]
+        },
+        {
+          "type": "debris",
+          "location": [
+            170,
+            120
+          ],
+          "area": 30,
+          "bbox": [
+            115,
+            160,
+            125,
+            180
+          ]
+        },
+        {
+          "type": "debris",
+          "location": [
+            160,
+            90
+          ],
+          "area": 20,
+          "bbox": [
+            85,
+            150,
+            95,
+            170
+          ]
+        },
+        {
+          "type": "debris",
+          "location": [
+            180,
+            110
+          ],
+          "area": 35,
+          "bbox": [
+            105,
+            170,
+            115,
+            190
+          ]
+        }
+      ],
+      "centroid": [
+        165,
+        105
+      ],
+      "bounding_box": [
+        85,
+        140,
+        125,
+        190
+      ],
+      "cluster_size": 4,
+      "cluster_area": 110
+    },
+    {
+      "cluster_id": "noise_4",
+      "defect_type": "debris",
+      "defects": [
+        {
+          "type": "debris",
+          "location": [
+            100,
+            500
+          ],
+          "area": 40,
+          "bbox": [
+            490,
+            90,
+            510,
+            110
+          ]
+        }
+      ],
+      "centroid": [
+        100,
+        500
+      ],
+      "bounding_box": [
+        490,
+        90,
+        510,
+        110
+      ],
+      "cluster_size": 1,
+      "cluster_area": 40
+    }
+  ],
+  "smudge": [
+    {
+      "cluster_id": 0,
+      "defect_type": "smudge",
+      "defects": [
+        {
+          "type": "smudge",
+          "location": [
+            400,
+            250
+          ],
+          "area": 150,
+          "bbox": [
+            240,
+            380,
+            260,
+            420
+          ]
+        },
+        {
+          "type": "smudge",
+          "location": [
+            420,
+            270
+          ],
+          "area": 180,
+          "bbox": [
+            260,
+            400,
+            280,
+            440
+          ]
+        },
+        {
+          "type": "smudge",
+          "location": [
+            390,
+            230
+          ],
+          "area": 120,
+          "bbox": [
+            220,
+            370,
+            240,
+            410
+          ]
+        }
+      ],
+      "centroid": [
+        403,
+        250
+      ],
+      "bounding_box": [
+        220,
+        370,
+        280,
+        440
+      ],
+      "cluster_size": 3,
+      "cluster_area": 450
+    }
+  ],
+  "void": [
+    {
+      "cluster_id": 0,
+      "defect_type": "void",
+      "defects": [
+        {
+          "type": "void",
+          "location": [
+            650,
+            300
+          ],
+          "area": 80,
+          "bbox": [
+            290,
+            640,
+            310,
+            660
+          ]
+        },
+        {
+          "type": "void",
+          "location": [
+            670,
+            320
+          ],
+          "area": 75,
+          "bbox": [
+            310,
+            660,
+            330,
+            680
+          ]
+        }
+      ],
+      "centroid": [
+        660,
+        310
+      ],
+      "bounding_box": [
+        290,
+        640,
+        330,
+        680
+      ],
+      "cluster_size": 2,
+      "cluster_area": 155
+    },
+    {
+      "cluster_id": "noise_2",
+      "defect_type": "void",
+      "defects": [
+        {
+          "type": "void",
+          "location": [
+            300,
+            450
+          ],
+          "area": 60,
+          "bbox": [
+            440,
+            290,
+            460,
+            310
+          ]
+        }
+      ],
+      "centroid": [
+        300,
+        450
+      ],
+      "bounding_box": [
+        440,
+        290,
+        460,
+        310
+      ],
+      "cluster_size": 1,
+      "cluster_area": 60
+    }
+  ],
+  "head_calibration": [
+    {
+      "cluster_id": 0,
+      "defect_type": "head_calibration",
+      "defects": [
+        {
+          "type": "head_calibration",
+          "location": [
+            700,
+            150
+          ],
+          "area": 200,
+          "bbox": [
+            140,
+            680,
+            160,
+            720
+          ]
+        }
+      ],
+      "centroid": [
+        700,
+        150
+      ],
+      "bounding_box": [
+        140,
+        680,
+        160,
+        720
+      ],
+      "cluster_size": 1,
+      "cluster_area": 200
+    }
+  ]
+}
