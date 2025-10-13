@@ -37,7 +37,7 @@ class LineDetector:
         self.Y_DELTA_MIN = 85
         self.Y_DELTA_MAX = 120
         self.SLOPE_MIN = 0.0150
-        self.SLOPE_MAX = 0.0219
+        self.SLOPE_MAX = 0.0200
 
         self.IDEAL_IMAGE_WIDTH = 5163
         self.IDEAL_IMAGE_HEIGHT = 44228
@@ -47,7 +47,7 @@ class LineDetector:
         if sensitivity == 'medium':
             self.base_kernel_width = 10
             self.base_kernel_height = 10
-            self.base_num_vertical_scans = 50
+            self.base_num_vertical_scans = 100
             self.line_detection_threshold = 0.3
             self.min_detection_count = 5
         elif sensitivity == 'high':

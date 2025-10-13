@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.abspath(utils_dir))
 from vertical_edge_detector import VerticalEdgeDetector
 from hough_transform_vertical import VerticalHoughDetector
 from image_saver import save_image
+from line_detector import LineDetector
 
 class IslandLineDetector:
     """Detector for lines in island images using edge and Hough."""
@@ -46,6 +47,7 @@ class IslandLineDetector:
         self.pair_tolerance = 10
         self.deviation_factor = 50
         self.window_size = 50
+        self.num_average_boundary = 5
     
     def get_params_for_sensitivity(self):
         if self.sensitivity == 'low':
@@ -266,6 +268,18 @@ class IslandLineDetector:
                 color = (0, 255, 255)
             cv2.line(vis, (x1, y1), (x2, y2), color, 2)
         
+        if groups['left_start'] and groups['left_end']:
+            left_region, left_min_x, left_min_y = self.compute_region(groups['left_start'], groups['left_end'], image)
+        else:
+            left_region, left_min_x, left_min_y = None, 0, 0
+            horiz_left = []
+
+        if groups['right_start'] and groups['right_end']:
+            right_region, right_min_x, right_min_y = self.compute_region(groups['right_start'], groups['right_end'], image)
+        else:
+            right_region, right_min_x, right_min_y = None, 0, 0
+            horiz_right = []
+
         return vis, filtered_lines
     
     def save_debug_images(self, output_dir, base_name):
@@ -280,6 +294,63 @@ class IslandLineDetector:
         if y1 == y2: return (x1 + x2) / 2
         t = (y - y1) / (y2 - y1)
         return x1 + t * (x2 - x1)
+
+    def compute_region(self, start_group, end_group, image):
+        if not start_group or not end_group:
+            return None, 0, 0
+        
+        # Sort by min y
+        start_sorted = sorted(start_group, key=lambda l: min(l[1], l[3]))
+        end_sorted = sorted(end_group, key=lambda l: min(l[1], l[3]))
+        
+        n = min(self.num_average_boundary, len(start_sorted))
+        first_n_x = np.mean([ (l[0] + l[2])/2 for l in start_sorted[:n] ])
+        min_y = min(min(l[1], l[3]) for l in start_sorted[:n])
+        
+        n = min(self.num_average_boundary, len(end_sorted))
+        last_n_x = np.mean([ (l[0] + l[2])/2 for l in end_sorted[-n:] ])
+        max_y = max(max(l[1], l[3]) for l in end_sorted[-n:])
+        
+        min_x = int(min(first_n_x, last_n_x))
+        max_x = int(max(first_n_x, last_n_x)) + 1  # Include
+        
+        region = image[min_y:max_y+1, min_x:max_x+1]
+        
+        return region, min_x, min_y
+
+    def create_horizontal_vis(self, image, horiz_left, horiz_right, left_offset, right_offset):
+        vis = image.copy() if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        for m in horiz_left:
+            left = m['left']
+            right = m['right']
+            # Adjust to global
+            left_x = left['x'] + left_offset[0]
+            right_x = right['x'] + left_offset[0]
+            left_y = left['y'] + left_offset[1]
+            right_y = right['y'] + left_offset[1]
+            cv2.line(vis, (left_x, left_y), (right_x, right_y), (0, 0, 255), 2)  # Red
+        for m in horiz_right:
+            left = m['left']
+            right = m['right']
+            left_x = left['x'] + right_offset[0]
+            right_x = right['x'] + right_offset[0]
+            left_y = left['y'] + right_offset[1]
+            right_y = right['y'] + right_offset[1]
+            cv2.line(vis, (left_x, left_y), (right_x, right_y), (255, 0, 255), 2)  # Magenta
+        return vis
+
+    def create_region_horiz_vis(self, region, horiz, left_k, right_k, side):
+        vis = region.copy() if len(region.shape) == 3 else cv2.cvtColor(region, cv2.COLOR_GRAY2BGR)
+        line_color = (0,0,255) if side == 'left' else (255,0,255)
+        for m in horiz:
+            cv2.line(vis, (m['left']['x'], m['left']['y']), (m['right']['x'], m['right']['y']), line_color, 2)
+        for k in left_k:
+            x1,y1,x2,y2 = k['bbox']
+            cv2.rectangle(vis, (x1,y1), (x2,y2), (0,255,255), 1)
+        for k in right_k:
+            x1,y1,x2,y2 = k['bbox']
+            cv2.rectangle(vis, (x1,y1), (x2,y2), (255,255,0), 1)
+        return vis
 
 # Standalone
 if __name__ == "__main__":
@@ -311,5 +382,51 @@ if __name__ == "__main__":
     height, width = image.shape[:2] if len(image.shape) > 2 else image.shape
     detector.create_line_graph(lines, height, width, output_dir, base_name)
     print(f"Graph saved.")
+
+    # Remove outliers per group
+    groups = {'left_start': [], 'left_end': [], 'right_start': [], 'right_end': []}
+    for line, group in lines:
+        groups[group].append(line)
+
+    for g in groups:
+        groups[g] = detector.remove_outliers(groups[g])
+
+    lines = [(line, g) for g in groups for line in groups[g]]
+
+    if groups['left_start'] and groups['left_end']:
+        left_region, left_min_x, left_min_y = detector.compute_region(groups['left_start'], groups['left_end'], image)
+    else:
+        left_region, left_min_x, left_min_y = None, 0, 0
+        horiz_left = []
+
+    if left_region is not None:
+        line_detector = LineDetector(sensitivity=detector.sensitivity)
+        horiz_left, _, _, left_k, right_k_left = line_detector.detect_lines(left_region, debug=True)
+        
+        left_horiz_vis = detector.create_region_horiz_vis(left_region, horiz_left, left_k, right_k_left, 'left')
+        save_image(output_dir, base_name, left_horiz_vis, "left_region_horiz_vis")
+    else:
+        horiz_left = []
+
+    if groups['right_start'] and groups['right_end']:
+        right_region, right_min_x, right_min_y = detector.compute_region(groups['right_start'], groups['right_end'], image)
+    else:
+        right_region, right_min_x, right_min_y = None, 0, 0
+        horiz_right = []
+
+    if right_region is not None:
+        line_detector = LineDetector(sensitivity=detector.sensitivity)
+        horiz_right, _, _, left_k_right, right_k_right = line_detector.detect_lines(right_region, debug=True)
+        
+        right_horiz_vis = detector.create_region_horiz_vis(right_region, horiz_right, left_k_right, right_k_right, 'right')
+        save_image(output_dir, base_name, right_horiz_vis, "right_region_horiz_vis")
+    else:
+        horiz_right = []
+
+    # Save horizontal lines to JSON
+    json_horiz_path = os.path.join(output_dir, f"{base_name}_horizontal_lines.json")
+    serializable_horiz = [ {'left': m['left'], 'right': m['right']} for m in horiz_left + horiz_right ]  # Simplify
+    with open(json_horiz_path, 'w') as f:
+        json.dump(serializable_horiz, f, indent=2)
 
     print(f"Done. Detected {len(lines)} lines. Outputs in {output_dir}")
