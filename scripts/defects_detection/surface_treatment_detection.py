@@ -1,9 +1,6 @@
 """
 Surface Treatment Defect Detection Algorithm
 Detects bad surface energy causing ink coalescence and missing ink areas
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

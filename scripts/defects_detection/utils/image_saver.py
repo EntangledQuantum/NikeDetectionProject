@@ -1,9 +1,6 @@
 """
 Image Saving Utility
 Provides a robust function for saving images, automatically handling large image dimensions.
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

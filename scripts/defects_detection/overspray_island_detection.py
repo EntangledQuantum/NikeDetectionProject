@@ -2,9 +2,6 @@
 Overspray Detection Algorithm for Island Images
 Uses line detection to remove lines, then clusters nearby debris to detect overspray
 Overspray is detected as groups of small debris particles close to each other
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

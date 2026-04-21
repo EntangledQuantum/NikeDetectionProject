@@ -2,9 +2,6 @@
 Line Detection Utility for Island Images
 Detects horizontal slanted lines by scanning from both sides
 Can be used independently by other scripts
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

@@ -20,6 +20,7 @@ from stripe_misalignment_detection import StripeMisalignmentDetector
 from overspray_detection import OversprayDetector
 from debris_island_detection import DebrisIslandDetector
 from overspray_island_detection import OversprayIslandDetector
+from void_detection import VoidDetector
 
 
 class ImageType(Enum):
@@ -309,6 +310,21 @@ class DetectorFactory:
             debug=False               # Enable debug visualization
         )
 
+    @staticmethod
+    def create_void_detector(sensitivity: str) -> VoidDetector:
+        """Create a `VoidDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `VoidDetector` instance.
+        """
+        return VoidDetector(
+            sensitivity=sensitivity,
+            debug=False
+        )
+
 
 class DetectionStrategy(ABC):
     """Abstract strategy for selecting detectors based on image type."""
@@ -339,14 +355,15 @@ class StripeDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for stripe images."""
-        return ['stripe_misalignment', 'overspray', 'surface_treatment']
+        return ['stripe_misalignment', 'overspray', 'surface_treatment', 'void']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         """Create detector instances for stripe images."""
         return {
             'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
             'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
-            'overspray': DetectorFactory.create_overspray_detector(sensitivity)
+            'overspray': DetectorFactory.create_overspray_detector(sensitivity),
+            'void': DetectorFactory.create_void_detector(sensitivity)
         }
 
 
@@ -512,6 +529,15 @@ class SingleImageProcessor:
                     # The detector has its own preprocessing for scatter detection
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
                     result_img, defects = detector.detect(original)
+                elif detector_name == 'void':
+                    # Void detection works directly on the original stripe image.
+                    # It derives stripe and paper color references from the same image
+                    # and outputs a TIFF-sized visualization with black bounding boxes.
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original, image_path)
+
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
                 elif detector_name == 'debris_island':
                     # For debris island detection, pass the original image and image path
                     # The detector handles its own preprocessing and can load exclusion zones
@@ -545,8 +571,12 @@ class SingleImageProcessor:
                     result_img, defects = detector.detect(original)
                 
                 # Save visualization
-                vis_path = os.path.join(output_dir, f"{detector_name}_visualization.jpg")
-                operation_success = cv2.imwrite(vis_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                vis_ext = ".tiff" if detector_name == 'void' else ".jpg"
+                vis_path = os.path.join(output_dir, f"{detector_name}_visualization{vis_ext}")
+                if detector_name == 'void':
+                    operation_success = cv2.imwrite(vis_path, result_img)
+                else:
+                    operation_success = cv2.imwrite(vis_path, result_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 if operation_success:
                     print(f"    Visualization saved to: {vis_path}")
                 else:
@@ -848,13 +878,13 @@ class DefectDetectionPipeline:
             image_output_dir = os.path.join(output_dir, result.image_name)
             ResultsSaver.save_image_result(result, image_output_dir)
             
-            print(f"  ✅ Completed processing {result.image_name}")
+            print(f"  [OK] Completed processing {result.image_name}")
         
         # Generate summary report
         ResultsSaver.save_summary_report(self.results, output_dir, self.config)
         
-        print(f"\n✅ Processing complete! Results saved to: {output_dir}")
-        print(f"📊 Processed {len(self.results)} images total")
+        print(f"\n[OK] Processing complete! Results saved to: {output_dir}")
+        print(f"[INFO] Processed {len(self.results)} images total")
         
         # Print summary statistics
         self._print_summary_statistics()
@@ -879,7 +909,7 @@ class DefectDetectionPipeline:
                     detector_counts[detector_name] = 0
                 detector_counts[detector_name] += detection.defect_count
         
-        print("\n📈 Summary Statistics:")
+        print("\nSummary Statistics:")
         print("-" * 40)
         
         print("Image Types Processed:")
@@ -931,8 +961,8 @@ def main():
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
-    print(f"  - Stripe images: Stripe Misalignment")
-    print(f"  - Island images: Debris Island, Overspray Island")
+    print(f"  - Stripe images: Stripe Misalignment, Overspray, Surface Treatment, Void")
+    print(f"  - Island images: Debris Island, Overspray Island, Line Defect")
     print(f"  - Unknown images: Surface Treatment")
     print("=" * 60)
     

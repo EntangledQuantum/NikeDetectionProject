@@ -2,9 +2,6 @@
 Line Defect Detection Algorithm using LineDetector
 Detects missing lines and jagged/zig-zag lines in island images
 Uses the robust LineDetector to find where lines are, then scans along each line
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

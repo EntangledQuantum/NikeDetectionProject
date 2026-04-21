@@ -2,9 +2,6 @@
 Debris Detection Algorithm for Island Images
 Detects horizontal slanted lines and prepares for debris detection
 Specifically designed for island-type images
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

@@ -1,9 +1,6 @@
 """
 Overspray Detection Algorithm
 Detects overspray defects by finding regions with scattered pixels
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

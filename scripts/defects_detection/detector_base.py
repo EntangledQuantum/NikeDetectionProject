@@ -1,9 +1,6 @@
 """
 Base Detector Class
 Provides standard interface for all defect detectors
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2

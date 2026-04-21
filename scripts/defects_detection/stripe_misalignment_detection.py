@@ -1,9 +1,6 @@
 """
 Stripe Misalignment Detection Algorithm
 Detects misalignment of vertical stripes caused by printer head misalignment
-
-Author: Assistant
-Date: 2024
 """
 
 import cv2
