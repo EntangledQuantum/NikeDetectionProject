@@ -216,6 +216,19 @@ python main_defect_detection.py \
 - Saves visualizations and JSON results for each region
 - Generates summary report
 
+### Processing Pre-Extracted Images (Skip Extraction)
+
+If you already have extracted stripe or island images and want to run detection directly without re-extracting from the full scan, you can point the detection script directly at your folder:
+
+```bash
+python scripts/defects_detection/run_all_detections.py --input_folder path/to/extracted_images
+```
+
+**Important Naming Convention Rule:**
+The script knows which regions are stripes and which are islands **based solely on the image filename**:
+- Filenames containing **"stripe"** (e.g., `blackStripe.tiff`) will automatically be classified as stripes and evaluated for Overspray, Surface Treatment, and Stripe Misalignment.
+- Filenames containing **"island"** (e.g., `island-black-blue.tiff`) will automatically be classified as islands and evaluated for Debris, Overspray Island, and Line Defects.
+
 ## Output Structure
 
 After running, you'll find:
@@ -385,6 +398,36 @@ python scripts/defects_detection/run_all_detections.py --input_folder path/to/ex
 - **`utils/edge_detector.py`**: Enhanced edge detection with noise reduction
 - **`utils/image_saver.py`**: Smart image saving (auto-switches to TIFF for large images)
 - **`utils/line_detector.py`**: Slanted line detection for island images
+
+## Try It Yourself / Example Use Cases
+
+Assuming you have access to the example TIFF images, you can try the following commands to see how the system detects various defects. (Make sure to replace the `<location to tif file...>` placeholders with the actual file paths on your system before running.)
+
+### 1. Bad/Missing Nozzles (Misprinted Lines in Island Images)
+Detects the misprint of individual horizontal lines on island sections.
+- **Example Image:** `test_Paper2400_BlackPt210_Sharpen1_R4_T1.tif`
+- **Command:**
+  ```bash
+  python .\main_defect_detection.py --image "<location to tif file test_Paper2400_BlackPt210_Sharpen1_R4_T1.tif>" --dpi 2400 --config '.\regions_json\template-2400-configs.json'
+  ```
+- **Where to Check:** The results will be generated in an output folder located alongside your input image. Inside that output folder, open the `island-black-blue` subfolder and check the `island-black-blue_line_defect_missing.jpg` image to see the detected missing lines.
+
+### 2. Debris on Island Image
+This defect is detected alongside Example 1. 
+- **Where to Check:** In the same `island-black-blue` folder from the previous step, view `debris_island_visualization.jpg` to see highlighted debris or foreign particles.
+
+### 3. Overspray on Island Image
+This defect is also detected alongside Example 1.
+- **Where to Check:** In the same `island-black-blue` folder, view `overspray_island_visualization.jpg` to see scattered ink.
+
+### 4. Calibration Error (Misaligned Head in Stripe Images)
+Detects vertical stripe misalignment errors.
+- **Example Image:** `test_Paper2400.tif`
+- **Command:**
+  ```bash
+  python .\main_defect_detection.py --image "<location to tif file test_Paper2400.tif>" --dpi 2400 --config '.\regions_json\template-2400-configs.json'
+  ```
+- **Where to Check:** Open the output folder generated for this image and find the `blueStripe` subfolder. Open `stripe_misalignment_visualization.jpg` to see the detector highlighting alignment errors.
 
 ## License
 
