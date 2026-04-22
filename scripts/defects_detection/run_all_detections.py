@@ -21,6 +21,7 @@ from overspray_detection import OversprayDetector
 from debris_island_detection import DebrisIslandDetector
 from overspray_island_detection import OversprayIslandDetector
 from void_detection import VoidDetector
+from debris_stripe_detector import DebrisStripeDetector
 
 
 class ImageType(Enum):
@@ -325,6 +326,21 @@ class DetectorFactory:
             debug=False
         )
 
+    @staticmethod
+    def create_debris_stripe_detector(sensitivity: str) -> DebrisStripeDetector:
+        """Create a `DebrisStripeDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `DebrisStripeDetector` instance.
+        """
+        return DebrisStripeDetector(
+            sensitivity=sensitivity,
+            debug=False
+        )
+
 
 class DetectionStrategy(ABC):
     """Abstract strategy for selecting detectors based on image type."""
@@ -355,15 +371,16 @@ class StripeDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for stripe images."""
-        return ['stripe_misalignment', 'overspray', 'surface_treatment', 'void']
+        return ['stripe_misalignment', 'overspray', 'surface_treatment', 'void', 'debris_stripe']
     
     def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
         """Create detector instances for stripe images."""
         return {
-            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
+            #'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
             'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
             'overspray': DetectorFactory.create_overspray_detector(sensitivity),
-            'void': DetectorFactory.create_void_detector(sensitivity)
+            'void': DetectorFactory.create_void_detector(sensitivity),
+            'debris_stripe': DetectorFactory.create_debris_stripe_detector(sensitivity)
         }
 
 
@@ -533,6 +550,15 @@ class SingleImageProcessor:
                     # Void detection works directly on the original stripe image.
                     # It derives stripe and paper color references from the same image
                     # and outputs a TIFF-sized visualization with black bounding boxes.
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original, image_path)
+
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
+                elif detector_name == 'debris_stripe':
+                    # Stripe debris detection operates only on stripe images.
+                    # It uses the original color image to find dark, near-black
+                    # debris spots inside the colored stripe region.
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
                     result_img, defects = detector.detect(original, image_path)
 
@@ -961,7 +987,7 @@ def main():
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
     print(f"Detection routing:")
-    print(f"  - Stripe images: Stripe Misalignment, Overspray, Surface Treatment, Void")
+    print(f"  - Stripe images: Stripe Misalignment, Overspray, Surface Treatment, Void, Debris Stripe")
     print(f"  - Island images: Debris Island, Overspray Island, Line Defect")
     print(f"  - Unknown images: Surface Treatment")
     print("=" * 60)
