@@ -1,0 +1,19 @@
+{
+  "dpi": 2400,
+  "colors": [
+    "Key",
+    "Cyan",
+    "Magenta"
+  ],
+  "color_width": 6800,
+  "x_offset": 100,
+  "num_heads": 3,
+  "head_height": 11020,
+  "y_offset": 80,
+  "island_front": true,
+  "island_width": 0,
+  "buffer": {
+    "horizontal": 50,
+    "vertical": 50
+  }
+}
