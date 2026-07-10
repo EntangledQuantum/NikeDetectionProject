@@ -7,6 +7,9 @@ parameter-driven region config (for example, regions_json/new_pattern_2400.json)
 
 Bounding boxes are derived from color count, column width, head count, and
 offsets rather than hard-coded coordinates.
+
+Optionally, each extracted color TIFF can be further split into Stripe and
+Island regions via --split-stripe-island.
 """
 
 import argparse
@@ -96,6 +99,88 @@ def derive_color_regions(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     return regions
 
 
+def derive_stripe_island_regions(
+    config: Dict[str, Any],
+    color_image_width: int,
+    color_image_height: int,
+) -> List[Dict[str, Any]]:
+    """
+    Derive Stripe and Island bounding boxes within an extracted color TIFF.
+
+    Coordinates are relative to the color TIFF. The color content is assumed to
+    sit between the color horizontal buffers applied during color extraction:
+
+      [horizontal_buffer][color_width content][horizontal_buffer]
+
+    Within the color content:
+      - island_front=true:  [island][stripe]
+      - island_front=false: [stripe][island]
+
+    A stripe_island buffer expands each region horizontally.
+    """
+    color_width = int(_get_config_value(config, "color_width", "colorWidth"))
+    stripe_width = int(_get_config_value(config, "stripe_width", "stripeWidth", default=1030))
+    island_front = bool(_get_config_value(config, "island_front", "islandFront", default=True))
+
+    buffer = _get_config_value(config, "buffer", default={}) or {}
+    color_h_buffer = int(buffer.get("horizontal", 0))
+    split_buffer = int(
+        buffer.get(
+            "stripe_island",
+            _get_config_value(config, "stripe_island_buffer", "stripeIslandBuffer", default=50),
+        )
+    )
+
+    if stripe_width <= 0:
+        raise ValueError("stripe_width must be a positive integer")
+    if stripe_width >= color_width:
+        raise ValueError(
+            f"stripe_width ({stripe_width}) must be less than color_width ({color_width})"
+        )
+
+    island_width = color_width - stripe_width
+    content_x0 = color_h_buffer
+
+    if island_front:
+        island_x0 = content_x0
+        island_x1 = content_x0 + island_width
+        stripe_x0 = content_x0 + island_width
+        stripe_x1 = content_x0 + color_width
+    else:
+        stripe_x0 = content_x0
+        stripe_x1 = content_x0 + stripe_width
+        island_x0 = content_x0 + stripe_width
+        island_x1 = content_x0 + color_width
+
+    regions = [
+        {
+            "suffix": "Stripe",
+            "bounding_box_pixels": {
+                "top_x": stripe_x0 - split_buffer,
+                "top_y": 0,
+                "bottom_x": stripe_x1 + split_buffer,
+                "bottom_y": color_image_height,
+            },
+        },
+        {
+            "suffix": "Island",
+            "bounding_box_pixels": {
+                "top_x": island_x0 - split_buffer,
+                "top_y": 0,
+                "bottom_x": island_x1 + split_buffer,
+                "bottom_y": color_image_height,
+            },
+        },
+    ]
+
+    # Keep derived sizes available for logging
+    for region in regions:
+        region["image_width"] = color_image_width
+        region["image_height"] = color_image_height
+
+    return regions
+
+
 def clip_bbox_to_image(
     bbox: Dict[str, int],
     image_width: int,
@@ -180,13 +265,89 @@ def load_config(config_path: str) -> Dict[str, Any]:
         return json.load(config_file)
 
 
-def extract_colors_from_tiff(
-    tiff_path: str,
+def _extract_named_region(
+    source_tiff: str,
+    name: str,
+    bbox: Dict[str, int],
+    image_width: int,
+    image_height: int,
+    output_path: Path,
+) -> bool:
+    """Clip bbox to image bounds and extract; returns True on success."""
+    clipped_bbox = clip_bbox_to_image(
+        bbox,
+        image_width,
+        image_height,
+        region_name=name,
+    )
+    if clipped_bbox is None:
+        return False
+
+    logger.info(
+        "Region '%s': (%d, %d) to (%d, %d)",
+        name,
+        clipped_bbox["top_x"],
+        clipped_bbox["top_y"],
+        clipped_bbox["bottom_x"],
+        clipped_bbox["bottom_y"],
+    )
+
+    return extract_region_from_tiff(
+        source_tiff,
+        clipped_bbox["top_x"],
+        clipped_bbox["top_y"],
+        clipped_bbox["bottom_x"],
+        clipped_bbox["bottom_y"],
+        str(output_path),
+    )
+
+
+def split_color_into_stripe_island(
+    color_tiff_path: Path,
+    color_name: str,
     config: Dict[str, Any],
     output_dir: Path,
 ) -> Dict[str, bool]:
     """
+    Split one extracted color TIFF into Stripe and Island images.
+
+    Output names follow ColorStripe.tiff / ColorIsland.tiff.
+    """
+    if not color_tiff_path.is_file():
+        logger.error("Color TIFF not found for split: %s", color_tiff_path)
+        return {f"{color_name}Stripe": False, f"{color_name}Island": False}
+
+    image_width, image_height = get_image_size(str(color_tiff_path))
+    sub_regions = derive_stripe_island_regions(config, image_width, image_height)
+
+    results: Dict[str, bool] = {}
+    for sub_region in sub_regions:
+        name = f"{color_name}{sub_region['suffix']}"
+        output_path = output_dir / f"{name}.tiff"
+        success = _extract_named_region(
+            str(color_tiff_path),
+            name,
+            sub_region["bounding_box_pixels"],
+            image_width,
+            image_height,
+            output_path,
+        )
+        results[name] = success
+
+    return results
+
+
+def extract_colors_from_tiff(
+    tiff_path: str,
+    config: Dict[str, Any],
+    output_dir: Path,
+    split_stripe_island: bool = False,
+) -> Dict[str, bool]:
+    """
     Extract one TIFF per configured color and return success by color name.
+
+    When split_stripe_island is True, each successful color TIFF is further
+    split into Stripe and Island images in the same extracted folder.
     """
     tiff_path = str(Path(tiff_path).resolve())
     if not Path(tiff_path).is_file():
@@ -204,36 +365,26 @@ def extract_colors_from_tiff(
     results: Dict[str, bool] = {}
     for region in tqdm(regions, desc="Extracting colors", unit="color"):
         name = region["name"]
-        clipped_bbox = clip_bbox_to_image(
+        output_path = output_dir / f"{name}.tiff"
+
+        success = _extract_named_region(
+            tiff_path,
+            name,
             region["bounding_box_pixels"],
             image_width,
             image_height,
-            region_name=name,
-        )
-        if clipped_bbox is None:
-            results[name] = False
-            continue
-
-        output_path = output_dir / f"{name}.tiff"
-
-        logger.info(
-            "Color '%s': (%d, %d) to (%d, %d)",
-            name,
-            clipped_bbox["top_x"],
-            clipped_bbox["top_y"],
-            clipped_bbox["bottom_x"],
-            clipped_bbox["bottom_y"],
-        )
-
-        success = extract_region_from_tiff(
-            tiff_path,
-            clipped_bbox["top_x"],
-            clipped_bbox["top_y"],
-            clipped_bbox["bottom_x"],
-            clipped_bbox["bottom_y"],
-            str(output_path),
+            output_path,
         )
         results[name] = success
+
+        if success and split_stripe_island:
+            split_results = split_color_into_stripe_island(
+                output_path,
+                name,
+                config,
+                output_dir,
+            )
+            results.update(split_results)
 
     return results
 
@@ -253,6 +404,14 @@ def main() -> None:
         help=(
             "Base output directory. Extracted TIFF files are saved in an "
             "'extracted' subfolder here. Defaults to the input TIFF directory."
+        ),
+    )
+    parser.add_argument(
+        "--split-stripe-island",
+        action="store_true",
+        help=(
+            "After extracting each color TIFF, further split it into Stripe "
+            "and Island images (e.g. CyanStripe.tiff, CyanIsland.tiff)"
         ),
     )
     parser.add_argument(
@@ -276,7 +435,12 @@ def main() -> None:
         output_dir = input_path.parent
 
     try:
-        results = extract_colors_from_tiff(str(input_path), config, output_dir)
+        results = extract_colors_from_tiff(
+            str(input_path),
+            config,
+            output_dir,
+            split_stripe_island=args.split_stripe_island,
+        )
     except Exception as exc:
         logger.error("%s", exc)
         sys.exit(1)
@@ -287,7 +451,7 @@ def main() -> None:
         status = "Success" if success else "Failed"
         print(f"{name}: {status}")
 
-    if all(results.values()):
+    if results and all(results.values()):
         sys.exit(0)
     sys.exit(1)
 

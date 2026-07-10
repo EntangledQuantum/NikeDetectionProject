@@ -12,8 +12,10 @@
   "y_offset": 80,
   "island_front": true,
   "island_width": 0,
+  "stripe_width": 1030,
   "buffer": {
     "horizontal": 50,
-    "vertical": 50
+    "vertical": 50,
+    "stripe_island": 50
   }
 }
