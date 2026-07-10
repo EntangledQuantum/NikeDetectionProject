@@ -22,6 +22,9 @@ from debris_island_detection import DebrisIslandDetector
 from overspray_island_detection import OversprayIslandDetector
 from void_detection import VoidDetector
 from debris_stripe_detector import DebrisStripeDetector
+from new_pattern_debris_island_detection import NewPatternDebrisIslandDetector
+from new_pattern_overspray_island_detection import NewPatternOversprayIslandDetector
+from new_pattern_line_defect_detection import NewPatternLineDefectDetector
 
 
 class ImageType(Enum):
@@ -49,6 +52,7 @@ class ProcessingConfig:
     output_base_dir: str = "output"
     sensitivity: str = 'medium'
     generate_report: bool = False
+    pattern: str = 'legacy'  # island pattern: 'legacy' (single band) or 'new' (dual band)
 
 
 @dataclass
@@ -312,6 +316,42 @@ class DetectorFactory:
         )
 
     @staticmethod
+    def create_new_pattern_debris_island_detector(sensitivity: str) -> NewPatternDebrisIslandDetector:
+        """Create a `NewPatternDebrisIslandDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `NewPatternDebrisIslandDetector` instance.
+        """
+        return NewPatternDebrisIslandDetector(sensitivity=sensitivity, debug=False)
+
+    @staticmethod
+    def create_new_pattern_overspray_island_detector(sensitivity: str) -> NewPatternOversprayIslandDetector:
+        """Create a `NewPatternOversprayIslandDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `NewPatternOversprayIslandDetector` instance.
+        """
+        return NewPatternOversprayIslandDetector(sensitivity=sensitivity, debug=False)
+
+    @staticmethod
+    def create_new_pattern_line_defect_detector(sensitivity: str) -> NewPatternLineDefectDetector:
+        """Create a `NewPatternLineDefectDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `NewPatternLineDefectDetector` instance.
+        """
+        return NewPatternLineDefectDetector(sensitivity=sensitivity, debug=False)
+
+    @staticmethod
     def create_void_detector(sensitivity: str) -> VoidDetector:
         """Create a `VoidDetector` tuned by sensitivity.
 
@@ -405,6 +445,27 @@ class IslandDetectionStrategy(DetectionStrategy):
         }
 
 
+class NewPatternIslandDetectionStrategy(DetectionStrategy):
+    """Detection strategy for new-pattern (dual-band) island images.
+
+    Routes to the dual-band variants of the debris, overspray, and line-defect
+    detectors. Reuses the same detector keys as `IslandDetectionStrategy` so the
+    downstream dispatch and output naming are unchanged.
+    """
+
+    def get_required_detectors(self) -> List[str]:
+        """Detectors to run for new-pattern island images."""
+        return ['debris_island', 'line_defect', 'overspray_island']
+
+    def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
+        """Create dual-band detector instances for new-pattern island images."""
+        return {
+            'debris_island': DetectorFactory.create_new_pattern_debris_island_detector(sensitivity),
+            'overspray_island': DetectorFactory.create_new_pattern_overspray_island_detector(sensitivity),
+            'line_defect': DetectorFactory.create_new_pattern_line_defect_detector(sensitivity)
+        }
+
+
 class UnknownDetectionStrategy(DetectionStrategy):
     """Detection strategy for unknown image types.
 
@@ -433,15 +494,20 @@ class DetectionStrategyFactory:
     }
     
     @classmethod
-    def create_strategy(cls, image_type: ImageType) -> DetectionStrategy:
+    def create_strategy(cls, image_type: ImageType, pattern: str = 'legacy') -> DetectionStrategy:
         """Create an appropriate detection strategy instance.
 
         Args:
             image_type: The classified `ImageType` for the image.
+            pattern: Island pattern selector. When 'new' and the image is an
+                island, the dual-band strategy is used instead of the legacy
+                single-band one.
 
         Returns:
             An instance of a `DetectionStrategy` implementation.
         """
+        if image_type == ImageType.ISLAND and pattern == 'new':
+            return NewPatternIslandDetectionStrategy()
         strategy_class = cls._strategies.get(image_type, UnknownDetectionStrategy)
         return strategy_class()
 
@@ -479,7 +545,7 @@ class SingleImageProcessor:
         image_type = ImageTypeClassifier.classify_image(image_path)
         
         # Get detection strategy
-        strategy = DetectionStrategyFactory.create_strategy(image_type)
+        strategy = DetectionStrategyFactory.create_strategy(image_type, self.config.pattern)
         required_detectors = strategy.get_required_detectors()
         
         # Early return if no detectors needed
@@ -964,6 +1030,8 @@ def main():
                        help='Generate PDF report with all detections')
     parser.add_argument('--sensitivity', choices=['low', 'medium', 'high'], default='medium',
                        help='Detection sensitivity level (default: medium)')
+    parser.add_argument('--pattern', choices=['legacy', 'new'], default='legacy',
+                       help="Island pattern: 'legacy' single-band or 'new' dual-band (default: legacy)")
     
     args = parser.parse_args()
     
@@ -976,7 +1044,8 @@ def main():
     config = ProcessingConfig(
         output_base_dir=args.output,
         sensitivity=args.sensitivity,
-        generate_report=args.generate_report
+        generate_report=args.generate_report,
+        pattern=args.pattern
     )
     
     # Create and run pipeline
@@ -986,9 +1055,13 @@ def main():
     print("Defect Detection Pipeline v2.0")
     print("=" * 60)
     print(f"Input folder: {args.input_folder}")
+    print(f"Island pattern: {args.pattern}")
     print(f"Detection routing:")
     print(f"  - Stripe images: Stripe Misalignment, Overspray, Surface Treatment, Void, Debris Stripe")
-    print(f"  - Island images: Debris Island, Overspray Island, Line Defect")
+    if args.pattern == 'new':
+        print(f"  - Island images (dual-band): Debris Island, Overspray Island, Line Defect")
+    else:
+        print(f"  - Island images: Debris Island, Overspray Island, Line Defect")
     print(f"  - Unknown images: Surface Treatment")
     print("=" * 60)
     
