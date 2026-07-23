@@ -248,6 +248,23 @@ class VerticalBandDetector:
             if bands is None and debug:
                 print("VerticalBandDetector: 4 vertical lines found but band "
                       "geometry was degenerate; falling back to content runs")
+            # Sanity gate: hallucinated vertical lines (noise columns that
+            # survive a generous threshold, e.g. on the low-SNR clear
+            # material) produce bands that exclude real print content, which
+            # silently drops defects near the band edges. If the bands do
+            # not cover most of the inked columns, distrust the lines and
+            # fall back to content-run segregation, which always covers the
+            # full print.
+            if bands is not None and \
+                    not self._bands_cover_content(gray, bands):
+                if debug:
+                    print("VerticalBandDetector: selected vertical lines "
+                          "exclude print content (likely noise); falling "
+                          "back to content runs")
+                bands = None
+                vlines = []
+                self.last_vlines = []
+                candidates = []
 
         if bands is None:
             bands = self._bands_from_content(gray, candidates, debug)
@@ -501,6 +518,30 @@ class VerticalBandDetector:
                 'vlines': [left_v, right_v],
             })
         return bands
+
+    def _bands_cover_content(self, gray, bands, min_fraction=0.7):
+        """True if the bands cover most of the image's inked columns.
+
+        Args:
+            gray: Grayscale image.
+            bands: Band dicts (with 'outer_x0'/'outer_x1').
+            min_fraction: Minimum fraction of content columns that must fall
+                inside the bands for the vertical-line geometry to be
+                trusted.
+        """
+        height, width = gray.shape
+        _, binary = cv2.threshold(gray, self.content_binary_threshold, 255,
+                                  cv2.THRESH_BINARY_INV)
+        col_frac = (binary > 0).sum(axis=0).astype(np.float64) / max(1, height)
+        content = col_frac > self.content_threshold
+        n_content = int(content.sum())
+        if n_content < max(10, int(width * 0.05)):
+            return True  # not enough signal to judge either way
+
+        covered = np.zeros(width, dtype=bool)
+        for band in bands:
+            covered[band['outer_x0']:band['outer_x1'] + 1] = True
+        return float((content & covered).sum()) / n_content >= min_fraction
 
     def _bands_from_content(self, gray, candidates, debug=False):
         """Fallback: derive bands from the ink-content profile.

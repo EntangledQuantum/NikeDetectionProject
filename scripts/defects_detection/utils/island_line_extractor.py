@@ -120,6 +120,10 @@ class IslandLineExtractor:
         self.clear = clear
         self.clear_min_ink_offset = clear_min_ink_offset
         self.clear_max_ink_offset = clear_max_ink_offset
+        # Low-SNR material: a single dark pixel in the corridor is likely
+        # noise, so require 2 ink pixels for a column to count as printed
+        # (otherwise stray specks bridge real missing-nozzle gaps).
+        self.min_ink_per_col = 2 if clear else 1
 
     # ------------------------------------------------------------------
     # Public API
@@ -393,11 +397,15 @@ class IslandLineExtractor:
         in_corridor = window & (dist <= corridor)
 
         ink_count = in_corridor.sum(axis=0).astype(np.int16)
-        ink_cols = ink_count > 0
+        ink_cols = ink_count >= self.min_ink_per_col
 
-        # Number of separate ink runs per column (2+ = split line)
-        starts = in_corridor[0].astype(np.int16) + \
-            (in_corridor[1:] & ~in_corridor[:-1]).sum(axis=0).astype(np.int16)
+        # Number of separate ink runs per column (2+ = split line). Runs are
+        # counted on the vertically eroded corridor so a run must be at least
+        # 2 px thick: single-pixel specks (scanner noise, stray dots) can
+        # never fake a "second line".
+        thick = in_corridor[:-1] & in_corridor[1:]
+        starts = thick[0].astype(np.int16) + \
+            (thick[1:] & ~thick[:-1]).sum(axis=0).astype(np.int16)
 
         # Vertical extent minus ink pixels (hollow = split / double line)
         n_rows = in_corridor.shape[0]
