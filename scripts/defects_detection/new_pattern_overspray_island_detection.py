@@ -33,6 +33,8 @@ from detector_base import BaseDetector
 from overspray_island_detection import OversprayIslandDetector
 from utils.band_line_detector import BandLineDetector
 from utils.band_line_refiner import BandLineRefiner
+from utils.island_line_extractor import IslandLineExtractor
+from utils.material_profile import estimate_background_level
 from utils.vertical_band_detector import VerticalBandDetector, paint_vertical_line_regions
 from utils.image_saver import save_image
 
@@ -44,21 +46,31 @@ class NewPatternOversprayIslandDetector(BaseDetector):
     # ink at the line ends (next to the vertical lines) never leaks through.
     LINE_PAINT_EXTENSION = 20
 
-    def __init__(self, sensitivity='medium', debug=False):
+    # Clear material: overspray threshold sits this far below the measured
+    # background level (per sensitivity).
+    CLEAR_OVERSPRAY_OFFSETS = {'high': 35, 'medium': 45, 'low': 60}
+
+    def __init__(self, sensitivity='medium', debug=False, clear=False):
         """Initialize the dual-band overspray detector.
 
         Args:
             sensitivity: One of {'low', 'medium', 'high'}.
             debug: If True, store and optionally save intermediate debug images.
+            clear: If True, adapt to the clear scan material (gray background,
+                fainter ink, lower SNR): horizontal lines are located with the
+                background-adaptive ``IslandLineExtractor`` and the overspray
+                color threshold is derived from the measured background level.
         """
         super().__init__()
         self.sensitivity = sensitivity
         self.debug = debug
+        self.clear = clear
 
         # Reused per-image helpers (colored regions, grouping, drawing)
         self.base = OversprayIslandDetector(sensitivity=sensitivity, debug=debug)
-        self.band_detector = VerticalBandDetector()
+        self.band_detector = VerticalBandDetector(clear=clear)
         self.refiner = BandLineRefiner()
+        self.extractor = IslandLineExtractor(clear=True) if clear else None
 
         self._debug_bands_image = None
         self._debug_lines_removed_image = None
@@ -91,6 +103,12 @@ class NewPatternOversprayIslandDetector(BaseDetector):
             if x1 - x0 < 5:
                 continue
 
+            if self.clear:
+                total_lines += self._paint_lines_clear(
+                    lines_removed, gray_full, x0, x1,
+                    self.base.line_thickness * 3)
+                continue
+
             crop = image[:, x0:x1 + 1]
             gray_crop = gray_full[:, x0:x1 + 1]
 
@@ -120,6 +138,20 @@ class NewPatternOversprayIslandDetector(BaseDetector):
             lines_removed = paint_vertical_line_regions(lines_removed, vlines)
 
         # ---- Overspray on the full cleaned image (reused helpers) -------
+        if self.clear:
+            # The base computes color_threshold = 180 - background_threshold
+            # (a white-paper convention). Re-anchor it so the effective color
+            # threshold sits `offset` below the measured background, and
+            # despeckle so background noise never forms overspray regions.
+            background = estimate_background_level(gray_full)
+            offset = self.CLEAR_OVERSPRAY_OFFSETS.get(self.sensitivity, 45)
+            color_threshold = int(np.clip(background - offset, 5, 250))
+            self.base.background_threshold = 180 - color_threshold
+            lines_removed = cv2.medianBlur(lines_removed, 5)
+            if self.debug:
+                print(f"NewPatternOversprayIsland: clear mode, background="
+                      f"{background:.0f}, color threshold={color_threshold}")
+
         overspray_regions, _ = self.base.detect_colored_regions(lines_removed)
         overspray_regions = self.base.group_nearby_regions(overspray_regions)
 
@@ -135,6 +167,32 @@ class NewPatternOversprayIslandDetector(BaseDetector):
 
         defects = self._build_defects(bands, total_lines, overspray_regions)
         return visualization, defects
+
+    def _paint_lines_clear(self, lines_removed, gray_full, x0, x1, thickness):
+        """Paint a band's horizontal lines using the clear-mode extractor.
+
+        The legacy coarse detector binarizes at fixed white-paper thresholds,
+        which inverts on the gray clear material, so clear mode locates the
+        line trajectories with the background-adaptive ``IslandLineExtractor``
+        instead. Trajectories are painted with the background level (painting
+        white on a gray background would create bright artifacts).
+
+        Returns:
+            Number of lines painted.
+        """
+        result = self.extractor.extract(gray_full[:, x0:x1 + 1], self.debug)
+        if result is None:
+            return 0
+
+        fill = int(round(estimate_background_level(gray_full)))
+        ext = self.LINE_PAINT_EXTENSION
+        xs = np.arange(-ext, x1 - x0 + 1 + ext, 8)
+        for line in result['lines']:
+            ys = IslandLineExtractor.line_y(result, line, xs)
+            pts = np.stack([xs + x0, np.round(ys)], axis=1)
+            pts = pts.reshape(-1, 1, 2).astype(np.int32)
+            cv2.polylines(lines_removed, [pts], False, fill, thickness)
+        return len(result['lines'])
 
     def _collect_vlines(self, bands):
         """Union of selected boundary lines and per-band vertical lines."""

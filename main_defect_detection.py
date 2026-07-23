@@ -367,7 +367,8 @@ def extract_regions_new_pattern(image_path: str, config_path: str) -> Optional[s
 
 
 def run_defect_detection(extracted_dir: str, sensitivity: str = 'medium', 
-                        generate_report: bool = False, pattern: str = 'legacy') -> bool:
+                        generate_report: bool = False, pattern: str = 'legacy',
+                        clear: bool = False) -> bool:
     """
     Run defect detection on the extracted regions.
     
@@ -376,6 +377,8 @@ def run_defect_detection(extracted_dir: str, sensitivity: str = 'medium',
         sensitivity: Detection sensitivity level ('low', 'medium', 'high')
         generate_report: Whether to generate a PDF report
         pattern: Island pattern: 'legacy' single-band or 'new' dual-band
+        clear: Adapt island detectors to the clear scan material (gray
+            background, fainter ink); requires pattern='new'
         
     Returns:
         bool: True if detection completed successfully, False otherwise
@@ -403,6 +406,8 @@ def run_defect_detection(extracted_dir: str, sensitivity: str = 'medium',
         '--pattern', pattern
     ]
     
+    if clear:
+        cmd.append('--clear')
     if generate_report:
         cmd.append('--generate_report')
     
@@ -507,7 +512,18 @@ Examples:
              "dual-band islands with 4 vertical boundary lines"
     )
     
+    parser.add_argument(
+        '--clear',
+        action='store_true',
+        help='Clear scan material (gray background, fainter ink, lower SNR): '
+             'island thresholds are derived from the measured background level '
+             'per image. Requires --pattern new.'
+    )
+    
     args = parser.parse_args()
+    
+    if args.clear and args.pattern != 'new':
+        parser.error('--clear is only supported with --pattern new')
     
     # Print header
     print(f"\n{Colors.BOLD}{Colors.HEADER}{'='*80}{Colors.ENDC}")
@@ -545,7 +561,8 @@ Examples:
         extracted_dir,
         sensitivity=args.sensitivity,
         generate_report=args.generate_report,
-        pattern=args.pattern
+        pattern=args.pattern,
+        clear=args.clear
     )
     
     if not detection_success:

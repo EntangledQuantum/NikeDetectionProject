@@ -44,6 +44,8 @@ import itertools
 import cv2
 import numpy as np
 
+from utils.material_profile import estimate_background_level
+
 
 def _runs_from_mask(mask, min_gap=0, min_len=1):
     """Return contiguous True runs in a 1D boolean mask as (start, end_inclusive).
@@ -106,7 +108,8 @@ class VerticalBandDetector:
                  smooth_fraction=0.004,
                  min_band_fraction=0.03,
                  min_gap_fraction=0.015,
-                 expected_spacing=None):
+                 expected_spacing=None,
+                 clear=False):
         """Configure vertical line / band detection.
 
         Args:
@@ -149,6 +152,10 @@ class VerticalBandDetector:
             expected_spacing: Optional explicit horizontal-line spacing in
                 pixels. When None it is scaled from the ideal geometry by the
                 image height (same convention as ``LineDetector``).
+            clear: If True, the scan uses the clear material (gray background,
+                fainter ink, lower SNR). All ink thresholds are then derived
+                from the measured background level of each image instead of
+                the fixed white-paper values above.
         """
         self.binary_threshold = binary_threshold
         self.content_binary_threshold = content_binary_threshold
@@ -165,10 +172,12 @@ class VerticalBandDetector:
         self.min_band_fraction = min_band_fraction
         self.min_gap_fraction = min_gap_fraction
         self.expected_spacing = expected_spacing
+        self.clear = clear
 
         # Populated on every detect() call
         self.last_vlines = []       # selected boundary lines (ideally 4)
         self.last_candidates = []   # all vertical-line candidates found
+        self._background_level = None  # measured in clear mode
 
     # ------------------------------------------------------------------
     # Public API
@@ -197,6 +206,18 @@ class VerticalBandDetector:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
             gray = image
+
+        if self.clear:
+            # Clear material: gray background, fainter ink. Re-anchor the
+            # fixed white-paper thresholds to the measured background so
+            # the background itself is never binarized as ink.
+            bg = estimate_background_level(gray)
+            self._background_level = bg
+            self.binary_threshold = int(np.clip(bg - 25, 5, 250))
+            self.content_binary_threshold = int(np.clip(bg - 20, 5, 250))
+            if debug:
+                print(f"VerticalBandDetector: clear mode, background={bg:.0f}, "
+                      f"ink threshold={self.binary_threshold}")
 
         height, width = gray.shape
         spacing = self._expected_line_spacing(gray)
@@ -292,6 +313,12 @@ class VerticalBandDetector:
 
     def _threshold_ladder(self):
         """Ink thresholds to try, from configured to most generous."""
+        if self.clear and self._background_level is not None:
+            # Never step past the background level: on the clear material a
+            # too-generous threshold turns the whole background into ink.
+            bg = self._background_level
+            ladder = sorted({int(np.clip(bg - d, 5, 250)) for d in (25, 18, 12)})
+            return ladder
         ladder = [self.binary_threshold]
         for extra in (200, 230):
             if extra > ladder[-1]:

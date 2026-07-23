@@ -33,6 +33,8 @@ from detector_base import BaseDetector
 from debris_island_detection import DebrisIslandDetector
 from utils.band_line_detector import BandLineDetector
 from utils.band_line_refiner import BandLineRefiner
+from utils.island_line_extractor import IslandLineExtractor
+from utils.material_profile import estimate_background_level
 from utils.vertical_band_detector import VerticalBandDetector, paint_vertical_line_regions
 from utils.image_saver import save_image
 
@@ -44,21 +46,31 @@ class NewPatternDebrisIslandDetector(BaseDetector):
     # ink at the line ends (next to the vertical lines) never leaks through.
     LINE_PAINT_EXTENSION = 20
 
-    def __init__(self, sensitivity='medium', debug=False):
+    # Clear material: debris threshold sits this far below the measured
+    # background level (per sensitivity).
+    CLEAR_DEBRIS_OFFSETS = {'high': 35, 'medium': 45, 'low': 55}
+
+    def __init__(self, sensitivity='medium', debug=False, clear=False):
         """Initialize the dual-band debris detector.
 
         Args:
             sensitivity: One of {'low', 'medium', 'high'}.
             debug: If True, store and optionally save intermediate debug images.
+            clear: If True, adapt to the clear scan material (gray background,
+                fainter ink, lower SNR): horizontal lines are located with the
+                background-adaptive ``IslandLineExtractor`` and the debris
+                threshold is derived from the measured background level.
         """
         super().__init__()
         self.sensitivity = sensitivity
         self.debug = debug
+        self.clear = clear
 
         # Reused per-image helpers (debris thresholding, drawing, thickness)
         self.base = DebrisIslandDetector(sensitivity=sensitivity, debug=debug)
-        self.band_detector = VerticalBandDetector()
+        self.band_detector = VerticalBandDetector(clear=clear)
         self.refiner = BandLineRefiner()
+        self.extractor = IslandLineExtractor(clear=True) if clear else None
 
         self._debug_bands_image = None
         self._debug_lines_removed_image = None
@@ -92,6 +104,12 @@ class NewPatternDebrisIslandDetector(BaseDetector):
             if x1 - x0 < 5:
                 continue
 
+            if self.clear:
+                total_lines += self._paint_lines_clear(
+                    lines_removed, gray_full, x0, x1,
+                    self.base.line_thickness * 2)
+                continue
+
             crop = image[:, x0:x1 + 1]
             gray_crop = gray_full[:, x0:x1 + 1]
 
@@ -121,6 +139,19 @@ class NewPatternDebrisIslandDetector(BaseDetector):
             lines_removed = paint_vertical_line_regions(lines_removed, vlines)
 
         # ---- Debris on the full cleaned image (reused helper) -----------
+        if self.clear:
+            # Anchor the fixed white-paper debris threshold to the measured
+            # background and despeckle so the noisy background of the clear
+            # material never counts as debris.
+            background = estimate_background_level(gray_full)
+            offset = self.CLEAR_DEBRIS_OFFSETS.get(self.sensitivity, 45)
+            self.base.background_threshold = int(np.clip(background - offset, 5, 250))
+            lines_removed = cv2.medianBlur(lines_removed, 3)
+            if self.debug:
+                print(f"NewPatternDebrisIsland: clear mode, background="
+                      f"{background:.0f}, debris threshold="
+                      f"{self.base.background_threshold}")
+
         debris_contours, _ = self.base.detect_debris(lines_removed)
 
         visualization = self.base.create_debris_visualization(
@@ -135,6 +166,32 @@ class NewPatternDebrisIslandDetector(BaseDetector):
 
         defects = self._build_defects(bands, total_lines, debris_contours)
         return visualization, defects
+
+    def _paint_lines_clear(self, lines_removed, gray_full, x0, x1, thickness):
+        """Paint a band's horizontal lines using the clear-mode extractor.
+
+        The legacy coarse detector binarizes at fixed white-paper thresholds,
+        which inverts on the gray clear material, so clear mode locates the
+        line trajectories with the background-adaptive ``IslandLineExtractor``
+        instead. Trajectories are painted with the background level (painting
+        white on a gray background would create bright artifacts).
+
+        Returns:
+            Number of lines painted.
+        """
+        result = self.extractor.extract(gray_full[:, x0:x1 + 1], self.debug)
+        if result is None:
+            return 0
+
+        fill = int(round(estimate_background_level(gray_full)))
+        ext = self.LINE_PAINT_EXTENSION
+        xs = np.arange(-ext, x1 - x0 + 1 + ext, 8)
+        for line in result['lines']:
+            ys = IslandLineExtractor.line_y(result, line, xs)
+            pts = np.stack([xs + x0, np.round(ys)], axis=1)
+            pts = pts.reshape(-1, 1, 2).astype(np.int32)
+            cv2.polylines(lines_removed, [pts], False, fill, thickness)
+        return len(result['lines'])
 
     def _collect_vlines(self, bands):
         """Union of selected boundary lines and per-band vertical lines."""

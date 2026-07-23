@@ -357,17 +357,54 @@ in the central gap, or outside the boundary lines — so these run on the
 ### 3c. New-Pattern Line Defect (`new_pattern_line_defect_detection.py`)
 
 Missing-nozzle detection runs **only inside the two bands** — never on the
-vertical lines or the central gap:
+vertical lines or the central gap. It does **not** use the legacy kernel-ratio
+scan (which produced mass false positives on the stippled print); instead it
+works on column-level ink evidence from `utils/island_line_extractor.py`:
 
-1. Detect bands; per band, coarse-detect then **refine** the horizontal lines
-   (see `BandLineRefiner`).
-2. Walk every refined trajectory across the **full band width** with the
-   reused `LineDefectDetector.scan_line_for_defects` (missing + jagged), so
-   gaps at the very start or end of a line are reported too.
-3. Offset defects by `+x0`; final visualization via the reused
-   `create_combined_visualization`. The `bands_detected` entry now also
-   reports each line's fitted `start`/`end` points, slope, sample count, and
-   whether it was `fitted` or `interpolated`.
+**`utils/island_line_extractor.py` — IslandLineExtractor**
+
+1. **Ink binarization**: Otsu threshold (subsampled), clamped to [120, 200].
+2. **Global slope by shear search**: candidate slopes shear the binary image
+   column-wise; the slope that maximizes the sharpness (sum of squares) of
+   the row ink profile wins. Coarse sweep (−0.005…0.035, step 0.002) then
+   fine refinement (step 0.0002). No calibration assumption.
+3. **Shear** the binary image by the winning slope (exact per-column shifts,
+   grouped by unique shift for speed) — every line becomes a narrow
+   horizontal row band.
+4. **Line rows**: runs of the sheared row profile above 25% of its P99 value;
+   weighted centroids = line rows; median row distance = **measured spacing**.
+   Peak gaps ≈ 2× spacing get synthetic *inserted* rows so **fully missing
+   lines are still evaluated** (they yield one whole-width missing defect).
+5. **Per-line residual fit**: within a ±0.4·spacing window, per-column ink
+   centroids are fit with sigma-clipped least squares — each line gets its
+   own slope correction (per-line calibration drift handled).
+6. **Per-column statistics** inside a tight ±0.3·spacing corridor around the
+   fit: ink presence/count, number of separate ink runs, hollow interior
+   (extent − ink), and centroid deviation from the fit. Everything maps back
+   to original coordinates through the stored per-column shear shift.
+
+**Defect decisions (spacing-relative, resolution independent):**
+
+- **`missing_line` (red)** — the stipple gap length is *measured* from the
+  healthy lines (P90 of intra-line ink-free runs); a 1-D closing of ~3× that
+  length bridges the dotted texture, then any remaining ink-free run longer
+  than `min_gap` (0.35/0.60/1.20 × spacing for high/medium/low sensitivity)
+  is a defect. `missing_pixels` counts the raw ink-free columns in the gap =
+  **estimated number of missing print-head nozzles**; totals are reported
+  per band and per image (`total_missing_pixels`).
+- **`misaligned_line` (yellow)** — either (a) *split*: 2+ separate ink runs
+  per column with a hollow interior ≥ 3 px, or (b) *offset*: ink centroid
+  deviating > max(3 px, 0.6 × thickness) from the fit; both must persist
+  ≥ ~0.5 × spacing. Overlapping segments are merged.
+- **`high_density_region` (orange contour)** — all missing pixels are
+  splatted into a 16×-downsampled accumulator, Gaussian-smoothed over
+  ~2 line spacings, thresholded at 40% of the peak density; blob contours of
+  arbitrary shape are reported with their defect count and missing-pixel sum.
+
+A **`<name>_newpattern_detected_lines.jpg`** debug image is always saved
+(vertical lines magenta, fitted trajectories green/blue alternating,
+inserted fully-missing lines red) so the line-extraction precursor can be
+verified independently of the defect overlay.
 
 ### Robustness vs. legacy on the new pattern
 
@@ -381,18 +418,48 @@ vertical lines or the central gap:
 | Debris/overspray coverage | Band interior only | Full image (gap and margins included) |
 | Line-detection sensitivity | N/A | Kernels scaled to full image width |
 
+### Clear scan material (`--clear`)
+
+The clear material scans have a mid-gray background (~140 instead of white),
+fainter ink, and a lower signal-to-noise ratio. Every fixed white-paper
+threshold is meaningless there, so `--clear` (only valid with
+`--pattern new`) switches the island detectors to background-adaptive
+behavior (`utils/material_profile.py`):
+
+- **Background level** is measured per image as the median of a subsampled
+  view (ink covers only a small area, so the median is robust).
+- **`VerticalBandDetector`**: the ink-threshold ladder becomes
+  `bg−25 → bg−18 → bg−12` (never past the background level — a generous
+  white-paper threshold like 200 would turn the whole gray background into
+  ink), and the content threshold becomes `bg−20`.
+- **`IslandLineExtractor`**: the crop is despeckled with a 3×3 median blur
+  (so noise pixels neither bridge real gaps nor fake split lines) and the
+  Otsu ink threshold is clamped to `[bg−85, bg−15]` instead of `[120, 200]`.
+- **Debris**: the fixed `background_threshold` is replaced by
+  `bg − 35/45/55` (high/medium/low sensitivity); horizontal lines are located
+  with the clear-mode `IslandLineExtractor` (the legacy coarse detector's
+  fixed 127 binarization inverts on gray) and painted with the background
+  level; the cleaned image is median-filtered before thresholding.
+- **Overspray**: same line masking; the effective color threshold becomes
+  `bg − 35/45/60`; a 5×5 median removes speckle before region growing.
+- **Line defects**: decision thresholds are already spacing-relative and are
+  unchanged — defect types and reporting stay identical.
+
 ### End-to-end invocation
 
 ```
 # One command (extract + detect):
 python main_defect_detection.py --image scan.tif --dpi 2400 --pattern new
 
-# Or detection only, on an already-extracted folder:
+# Or detection only, on an already-extracted folder or single image:
 python run_all_detections.py -i extracted_dir --pattern new
+
+# Clear scan material:
+python run_all_detections.py -i clear_island.tif --pattern new --clear
 ```
 
-`--pattern` defaults to `legacy` everywhere, so the old scan pattern keeps
-working unchanged.
+`--pattern` defaults to `legacy` and `--clear` is off by default, so the old
+scan pattern and white material keep working unchanged.
 
 ---
 

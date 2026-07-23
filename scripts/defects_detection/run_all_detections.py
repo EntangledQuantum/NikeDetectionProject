@@ -48,11 +48,19 @@ class ProcessingConfig:
             the default output folder under the input directory.
         sensitivity: Detector sensitivity level: 'low' | 'medium' | 'high'.
         generate_report: If True, produces a PDF report in addition to JSON.
+        pattern: Island pattern selector: 'legacy' | 'new'.
+        only_detectors: Optional subset of detector keys to run. None runs
+            every detector required by the image-type strategy.
+        clear: If True, island detectors adapt to the clear scan material
+            (gray background, fainter ink, lower SNR); thresholds are derived
+            from the measured background level per image.
     """
-    output_base_dir: str = "output"
+    output_base_dir: Optional[str] = None
     sensitivity: str = 'medium'
     generate_report: bool = False
     pattern: str = 'legacy'  # island pattern: 'legacy' (single band) or 'new' (dual band)
+    only_detectors: Optional[List[str]] = None
+    clear: bool = False
 
 
 @dataclass
@@ -316,40 +324,49 @@ class DetectorFactory:
         )
 
     @staticmethod
-    def create_new_pattern_debris_island_detector(sensitivity: str) -> NewPatternDebrisIslandDetector:
+    def create_new_pattern_debris_island_detector(sensitivity: str,
+                                                  clear: bool = False) -> NewPatternDebrisIslandDetector:
         """Create a `NewPatternDebrisIslandDetector` tuned by sensitivity.
 
         Args:
             sensitivity: 'low' | 'medium' | 'high'.
+            clear: Adapt to the clear scan material (gray background).
 
         Returns:
             Configured `NewPatternDebrisIslandDetector` instance.
         """
-        return NewPatternDebrisIslandDetector(sensitivity=sensitivity, debug=False)
+        return NewPatternDebrisIslandDetector(sensitivity=sensitivity, debug=False,
+                                              clear=clear)
 
     @staticmethod
-    def create_new_pattern_overspray_island_detector(sensitivity: str) -> NewPatternOversprayIslandDetector:
+    def create_new_pattern_overspray_island_detector(sensitivity: str,
+                                                     clear: bool = False) -> NewPatternOversprayIslandDetector:
         """Create a `NewPatternOversprayIslandDetector` tuned by sensitivity.
 
         Args:
             sensitivity: 'low' | 'medium' | 'high'.
+            clear: Adapt to the clear scan material (gray background).
 
         Returns:
             Configured `NewPatternOversprayIslandDetector` instance.
         """
-        return NewPatternOversprayIslandDetector(sensitivity=sensitivity, debug=False)
+        return NewPatternOversprayIslandDetector(sensitivity=sensitivity, debug=False,
+                                                 clear=clear)
 
     @staticmethod
-    def create_new_pattern_line_defect_detector(sensitivity: str) -> NewPatternLineDefectDetector:
+    def create_new_pattern_line_defect_detector(sensitivity: str,
+                                                clear: bool = False) -> NewPatternLineDefectDetector:
         """Create a `NewPatternLineDefectDetector` tuned by sensitivity.
 
         Args:
             sensitivity: 'low' | 'medium' | 'high'.
+            clear: Adapt to the clear scan material (gray background).
 
         Returns:
             Configured `NewPatternLineDefectDetector` instance.
         """
-        return NewPatternLineDefectDetector(sensitivity=sensitivity, debug=False)
+        return NewPatternLineDefectDetector(sensitivity=sensitivity, debug=False,
+                                            clear=clear)
 
     @staticmethod
     def create_void_detector(sensitivity: str) -> VoidDetector:
@@ -391,16 +408,25 @@ class DetectionStrategy(ABC):
         pass
     
     @abstractmethod
-    def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
+    def detector_factories(self, sensitivity: str) -> Dict[str, Any]:
+        """Return name -> zero-arg factory callable for each detector."""
+        pass
+
+    def create_detectors(self, sensitivity: str,
+                         only: Optional[List[str]] = None) -> Dict[str, Any]:
         """Instantiate detector objects keyed by their detector names.
 
         Args:
             sensitivity: Global sensitivity level for detector configuration.
+            only: Optional subset of detector keys to construct. When None,
+                every detector in ``detector_factories`` is built.
 
         Returns:
             Mapping from detector key to detector instance.
         """
-        pass
+        factories = self.detector_factories(sensitivity)
+        keys = only if only is not None else list(factories.keys())
+        return {k: factories[k]() for k in keys if k in factories}
 
 
 class StripeDetectionStrategy(DetectionStrategy):
@@ -413,14 +439,14 @@ class StripeDetectionStrategy(DetectionStrategy):
         """Detectors to run for stripe images."""
         return ['stripe_misalignment', 'overspray', 'surface_treatment', 'void', 'debris_stripe']
     
-    def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        """Create detector instances for stripe images."""
+    def detector_factories(self, sensitivity: str) -> Dict[str, Any]:
+        """Lazy factories for stripe detectors."""
         return {
-            #'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
-            'stripe_misalignment': DetectorFactory.create_stripe_misalignment_detector(sensitivity),
-            'overspray': DetectorFactory.create_overspray_detector(sensitivity),
-            'void': DetectorFactory.create_void_detector(sensitivity),
-            'debris_stripe': DetectorFactory.create_debris_stripe_detector(sensitivity)
+            'stripe_misalignment': lambda: DetectorFactory.create_stripe_misalignment_detector(sensitivity),
+            'overspray': lambda: DetectorFactory.create_overspray_detector(sensitivity),
+            'void': lambda: DetectorFactory.create_void_detector(sensitivity),
+            'debris_stripe': lambda: DetectorFactory.create_debris_stripe_detector(sensitivity),
+            'surface_treatment': lambda: DetectorFactory.create_surface_treatment_detector(sensitivity),
         }
 
 
@@ -432,16 +458,14 @@ class IslandDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for island images."""
-        # Run debris_island and overspray_island detectors for island images
         return ['debris_island', 'line_defect', 'overspray_island']
     
-    def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        """Create detector instances for island images."""
-        # Return debris_island and overspray_island detectors for island images
+    def detector_factories(self, sensitivity: str) -> Dict[str, Any]:
+        """Lazy factories for legacy island detectors."""
         return {
-            'debris_island': DetectorFactory.create_debris_island_detector(sensitivity),
-            'overspray_island': DetectorFactory.create_overspray_island_detector(sensitivity),
-            'line_defect': DetectorFactory.create_line_defect_detector(sensitivity)
+            'debris_island': lambda: DetectorFactory.create_debris_island_detector(sensitivity),
+            'overspray_island': lambda: DetectorFactory.create_overspray_island_detector(sensitivity),
+            'line_defect': lambda: DetectorFactory.create_line_defect_detector(sensitivity),
         }
 
 
@@ -453,16 +477,23 @@ class NewPatternIslandDetectionStrategy(DetectionStrategy):
     downstream dispatch and output naming are unchanged.
     """
 
+    def __init__(self, clear: bool = False):
+        """Args:
+            clear: Adapt detectors to the clear scan material (gray
+                background, fainter ink, lower SNR).
+        """
+        self.clear = clear
+
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for new-pattern island images."""
         return ['debris_island', 'line_defect', 'overspray_island']
 
-    def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        """Create dual-band detector instances for new-pattern island images."""
+    def detector_factories(self, sensitivity: str) -> Dict[str, Any]:
+        """Lazy factories for dual-band island detectors."""
         return {
-            'debris_island': DetectorFactory.create_new_pattern_debris_island_detector(sensitivity),
-            'overspray_island': DetectorFactory.create_new_pattern_overspray_island_detector(sensitivity),
-            'line_defect': DetectorFactory.create_new_pattern_line_defect_detector(sensitivity)
+            'debris_island': lambda: DetectorFactory.create_new_pattern_debris_island_detector(sensitivity, self.clear),
+            'overspray_island': lambda: DetectorFactory.create_new_pattern_overspray_island_detector(sensitivity, self.clear),
+            'line_defect': lambda: DetectorFactory.create_new_pattern_line_defect_detector(sensitivity, self.clear),
         }
 
 
@@ -474,13 +505,12 @@ class UnknownDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for unknown image types."""
-        # Only run safe detectors for unknown types
         return ['surface_treatment']
     
-    def create_detectors(self, sensitivity: str) -> Dict[str, Any]:
-        """Create detector instances for unknown image types."""
+    def detector_factories(self, sensitivity: str) -> Dict[str, Any]:
+        """Lazy factories for unknown-image detectors."""
         return {
-            'surface_treatment': DetectorFactory.create_surface_treatment_detector(sensitivity),
+            'surface_treatment': lambda: DetectorFactory.create_surface_treatment_detector(sensitivity),
         }
 
 
@@ -494,7 +524,8 @@ class DetectionStrategyFactory:
     }
     
     @classmethod
-    def create_strategy(cls, image_type: ImageType, pattern: str = 'legacy') -> DetectionStrategy:
+    def create_strategy(cls, image_type: ImageType, pattern: str = 'legacy',
+                        clear: bool = False) -> DetectionStrategy:
         """Create an appropriate detection strategy instance.
 
         Args:
@@ -502,12 +533,14 @@ class DetectionStrategyFactory:
             pattern: Island pattern selector. When 'new' and the image is an
                 island, the dual-band strategy is used instead of the legacy
                 single-band one.
+            clear: Adapt island detectors to the clear scan material (only
+                effective with the new-pattern island strategy).
 
         Returns:
             An instance of a `DetectionStrategy` implementation.
         """
         if image_type == ImageType.ISLAND and pattern == 'new':
-            return NewPatternIslandDetectionStrategy()
+            return NewPatternIslandDetectionStrategy(clear=clear)
         strategy_class = cls._strategies.get(image_type, UnknownDetectionStrategy)
         return strategy_class()
 
@@ -545,8 +578,18 @@ class SingleImageProcessor:
         image_type = ImageTypeClassifier.classify_image(image_path)
         
         # Get detection strategy
-        strategy = DetectionStrategyFactory.create_strategy(image_type, self.config.pattern)
+        strategy = DetectionStrategyFactory.create_strategy(
+            image_type, self.config.pattern, self.config.clear)
         required_detectors = strategy.get_required_detectors()
+
+        # Optional --only filter: keep requested detectors that this strategy supports
+        if self.config.only_detectors:
+            allowed = set(self.config.only_detectors)
+            unknown = allowed - set(required_detectors)
+            if unknown:
+                print(f"  [WARN] Ignoring detectors not available for "
+                      f"{image_type.value}/{self.config.pattern}: {sorted(unknown)}")
+            required_detectors = [d for d in required_detectors if d in allowed]
         
         # Early return if no detectors needed
         if not required_detectors:
@@ -564,8 +607,9 @@ class SingleImageProcessor:
         print(f"\n  Processing: {base_name} (type: {image_type.value})")
         print(f"  Required detectors: {required_detectors}")
         
-        # Create detectors
-        detectors = strategy.create_detectors(self.config.sensitivity)
+        # Create only the detectors we will actually run
+        detectors = strategy.create_detectors(self.config.sensitivity,
+                                              only=required_detectors)
         
         # Always process as full image
         file_size = os.path.getsize(image_path)
@@ -935,6 +979,42 @@ class DefectDetectionPipeline:
         self.processor = SingleImageProcessor(config)
         self.results: List[ImageResult] = []
     
+    def _make_output_dir(self, parent: str) -> str:
+        """Create a timestamped output directory under parent (or config override)."""
+        if self.config.output_base_dir:
+            output_dir = self.config.output_base_dir
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = os.path.join(parent, f"output_{timestamp}")
+        os.makedirs(output_dir, exist_ok=True)
+        return output_dir
+
+    def process_single_image(self, image_path: str) -> None:
+        """Process one island/stripe image (filename drives detector routing).
+
+        Args:
+            image_path: Path to a single image file.
+        """
+        image_path = os.path.abspath(image_path)
+        parent = os.path.dirname(image_path) or '.'
+        output_dir = self._make_output_dir(parent)
+
+        image_type = ImageTypeClassifier.classify_image(image_path)
+        print(f"Found 1 image to process ({image_type.value})")
+
+        result = self.processor.process_image(image_path, output_dir)
+        self.results.append(result)
+
+        image_output_dir = os.path.join(output_dir, result.image_name)
+        ResultsSaver.save_image_result(result, image_output_dir)
+        print(f"  [OK] Completed processing {result.image_name}")
+
+        ResultsSaver.save_summary_report(self.results, output_dir, self.config)
+
+        print(f"\n[OK] Processing complete! Results saved to: {output_dir}")
+        print(f"[INFO] Processed {len(self.results)} images total")
+        self._print_summary_statistics()
+
     def process_folder(self, input_folder: str) -> None:
         """Process all supported images found in a folder.
 
@@ -944,11 +1024,8 @@ class DefectDetectionPipeline:
         Args:
             input_folder: Directory containing images to process.
         """
-        # Create output directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = os.path.join(input_folder, f"output_{timestamp}")
-        os.makedirs(output_dir, exist_ok=True)
-        
+        output_dir = self._make_output_dir(input_folder)
+
         # Get image files
         image_extensions = ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp')
         image_files = [f for f in os.listdir(input_folder)
@@ -1013,39 +1090,91 @@ class DefectDetectionPipeline:
             print(f"  {detector_name.replace('_', ' ').title()}: {count} defects")
 
 
+# Detector keys accepted by --only (must match strategy keys)
+_ALL_DETECTOR_KEYS = [
+    'stripe_misalignment', 'overspray', 'surface_treatment', 'void', 'debris_stripe',
+    'debris_island', 'overspray_island', 'line_defect',
+]
+
+
 def main():
     """CLI entry point for running the defect detection pipeline.
 
-    Parses command-line arguments and executes processing for the provided
-    input folder, generating outputs under a timestamped directory.
+    ``-i`` accepts either a single island/stripe image file or a folder of
+    them. Filename heuristics pick the detector strategy (``island`` /
+    ``stripe`` / unknown); ``--pattern new`` switches island images to the
+    dual-band detectors.
     """
     parser = argparse.ArgumentParser(
-        description='Run defect detection algorithms on images based on filename patterns'
+        description='Run defect detection on a single island/stripe image or a folder',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Single new-pattern island image (filename must contain 'island')
+  python run_all_detections.py -i KeyIsland.tiff --pattern new
+
+  # Only missing-nozzle / misalignment on that island
+  python run_all_detections.py -i KeyIsland.tiff --pattern new --only line_defect
+
+  # Single stripe image (filename must contain 'stripe')
+  python run_all_detections.py -i blueStripe.tiff
+
+  # Whole extracted folder (same routing per file)
+  python run_all_detections.py -i extracted_dir --pattern new
+"""
     )
-    parser.add_argument('--input_folder', '-i', required=True, 
-                       help='Path to folder containing images')
-    parser.add_argument('--output', '-o', 
-                       help='Output base directory (default: creates output folder in input folder)')
+    parser.add_argument('--input', '-i', dest='input_path', default=None,
+                       help='Path to a single image file OR a folder of images')
+    # Alias kept for main_defect_detection.py and older scripts
+    parser.add_argument('--input_folder', dest='input_path_alias', default=None,
+                       help=argparse.SUPPRESS)
+    parser.add_argument('--output', '-o',
+                       help='Output directory (default: output_<timestamp> next to the input)')
     parser.add_argument('--generate_report', action='store_true',
                        help='Generate PDF report with all detections')
     parser.add_argument('--sensitivity', choices=['low', 'medium', 'high'], default='medium',
                        help='Detection sensitivity level (default: medium)')
     parser.add_argument('--pattern', choices=['legacy', 'new'], default='legacy',
                        help="Island pattern: 'legacy' single-band or 'new' dual-band (default: legacy)")
+    parser.add_argument('--clear', action='store_true',
+                       help='Clear scan material (gray background, fainter ink, lower SNR): '
+                            'island thresholds are derived from the measured background '
+                            'level per image. Requires --pattern new.')
+    parser.add_argument('--only', nargs='+', metavar='DETECTOR', choices=_ALL_DETECTOR_KEYS,
+                       help='Run only these detectors (subset of the strategy for this image type)')
     
     args = parser.parse_args()
-    
-    # Validate input folder
-    if not os.path.isdir(args.input_folder):
-        print(f"Error: Input folder '{args.input_folder}' does not exist")
+
+    if args.clear and args.pattern != 'new':
+        parser.error('--clear is only supported with --pattern new')
+
+    input_path = args.input_path or args.input_path_alias
+    if not input_path:
+        parser.error('one of -i/--input or --input_folder is required')
+    if not os.path.exists(input_path):
+        print(f"Error: Input path '{input_path}' does not exist")
         sys.exit(1)
+
+    is_file = os.path.isfile(input_path)
+    is_dir = os.path.isdir(input_path)
+    if not (is_file or is_dir):
+        print(f"Error: Input path '{input_path}' is neither a file nor a folder")
+        sys.exit(1)
+
+    if is_file:
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext not in ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp'):
+            print(f"Error: Unsupported image extension '{ext}'")
+            sys.exit(1)
     
     # Create configuration
     config = ProcessingConfig(
         output_base_dir=args.output,
         sensitivity=args.sensitivity,
         generate_report=args.generate_report,
-        pattern=args.pattern
+        pattern=args.pattern,
+        only_detectors=args.only,
+        clear=args.clear
     )
     
     # Create and run pipeline
@@ -1054,18 +1183,24 @@ def main():
     print("=" * 60)
     print("Defect Detection Pipeline v2.0")
     print("=" * 60)
-    print(f"Input folder: {args.input_folder}")
-    print(f"Island pattern: {args.pattern}")
-    print(f"Detection routing:")
-    print(f"  - Stripe images: Stripe Misalignment, Overspray, Surface Treatment, Void, Debris Stripe")
+    print(f"Input: {input_path} ({'file' if is_file else 'folder'})")
+    print(f"Island pattern: {args.pattern}"
+          f"{' (clear material)' if args.clear else ''}")
+    if args.only:
+        print(f"Only detectors: {args.only}")
+    print(f"Detection routing (by filename):")
+    print(f"  - *stripe*: Stripe Misalignment, Overspray, Surface Treatment, Void, Debris Stripe")
     if args.pattern == 'new':
-        print(f"  - Island images (dual-band): Debris Island, Overspray Island, Line Defect")
+        print(f"  - *island* (dual-band): Debris Island, Overspray Island, Line Defect")
     else:
-        print(f"  - Island images: Debris Island, Overspray Island, Line Defect")
-    print(f"  - Unknown images: Surface Treatment")
+        print(f"  - *island*: Debris Island, Overspray Island, Line Defect")
+    print(f"  - other: Surface Treatment")
     print("=" * 60)
-    
-    pipeline.process_folder(args.input_folder)
+
+    if is_file:
+        pipeline.process_single_image(input_path)
+    else:
+        pipeline.process_folder(input_path)
 
 
 if __name__ == "__main__":
