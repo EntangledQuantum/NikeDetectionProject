@@ -5,15 +5,25 @@ A comprehensive suite of computer vision algorithms for detecting various printi
 ## Overview
 
 This system automatically detects critical printing defects in high-resolution scanned images:
-- **Overspray**: Ink scattered outside intended areas
-- **Surface Treatment Issues**: Poor surface energy causing irregular ink drops and missing ink areas
-- **Debris**: Foreign particles causing dark spots and contamination patterns
-- **Line Defects**: Missing or jagged horizontal lines
-- **Stripe Misalignment**: Vertical stripe positioning errors
+
+**Island regions**
+- **Debris**: Foreign particles causing dark spots and contamination
+- **Overspray**: Ink scattered outside intended line areas
+- **Line Defects**: Missing nozzles (gaps) and misaligned / doubled prints
+
+**Stripe regions**
+- **Stripe Misalignment**: Stitch steps and roll drift between successive print heads
+- **Overspray**: Scattered ink outside the stripe
+- **Surface Treatment Issues**: Irregular ink drops and missing ink areas
+- **Voids**: Compact low-ink / missing-ink patches inside the solid stripe
+- **Debris Stripe**: Dark debris spots inside the colored stripe
 
 ## Features
 
 - **Fully Automated Workflow**: Single command extracts regions and runs all detections
+- **Standalone region testing**: Run detectors on a single island or stripe crop without re-extracting
+- **Legacy + new island patterns**: Single-band (`--pattern legacy`) or dual-band with 4 vertical lines (`--pattern new`)
+- **Clear scan material**: `--clear` adapts island thresholds for gray paper / fainter ink (requires `--pattern new`)
 - **DPI Template Support**: Built-in configurations for 2400 DPI and 4800 DPI images
 - **Exclusion Zones**: Define regions to ignore during detection (stamps, marks, artifacts)
 - **Large Image Optimized**: Memory-efficient processing with windowed scanning
@@ -33,12 +43,47 @@ pip install -r requirements.txt
 ## Quick Start
 
 ```bash
-# Process a 2400 DPI image with default template
+# Legacy layout (default): extract + detect with 2400 DPI template
 python main_defect_detection.py --image path/to/scan.tif --dpi 2400
 
-# Process a 4800 DPI image with high sensitivity and PDF report
+# New dual-band island pattern (4 vertical boundary lines → 2 print bands)
+python main_defect_detection.py --image path/to/scan.tif --dpi 2400 --pattern new
+
+# Clear scan material (gray background, fainter ink) — requires --pattern new
+python main_defect_detection.py --image path/to/scan.tif --dpi 2400 --pattern new --clear
+
+# High sensitivity + PDF report
 python main_defect_detection.py --image path/to/scan.tif --dpi 4800 --sensitivity high --generate_report
 ```
+
+### Quick test of one island or stripe crop
+
+If you already have an extracted region image, skip the full scan and run detectors directly.
+Filenames must contain `island` or `stripe` so the correct detector stack is chosen:
+
+```bash
+cd scripts/defects_detection
+
+# New-pattern island (all island detectors)
+python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new
+
+# Island: missing nozzles / line misalignment only
+python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new --only line_defect
+
+# Clear-material island
+python run_all_detections.py -i "C:\path\ClearIsland.tiff" --pattern new --clear
+
+# Stripe: all stripe detectors
+python run_all_detections.py -i "C:\path\CyanStripe.tiff"
+
+# Stripe: stitch/roll calibration only
+python run_all_detections.py -i "C:\path\CyanStripe.tiff" --only stripe_misalignment
+
+# Stripe: voids only
+python run_all_detections.py -i "C:\path\CyanStripe.tiff" --only void
+```
+
+See [`scripts/defects_detection/RUN_ALL_DETECTIONS_README.md`](scripts/defects_detection/RUN_ALL_DETECTIONS_README.md) for the full standalone CLI.
 
 ## What You Need
 
@@ -134,8 +179,8 @@ List of regions to extract from the full TIFF image. Each region must have:
   - Note: Coordinates can be negative (automatically converted to absolute values)
 
 **Region naming conventions:**
-- Names containing **'stripe'** → Runs stripe detectors (overspray, surface treatment, misalignment)
-- Names containing **'island'** → Runs island detectors (debris, overspray island, line defects)
+- Names containing **'stripe'** → Stripe detectors: misalignment (stitch/roll), overspray, surface treatment, void, debris stripe
+- Names containing **'island'** → Island detectors: debris, overspray island, line defects
 
 #### `exclusion_zones` (Optional)
 List of regions to **ignore during defect detection**. Useful for:
@@ -153,8 +198,9 @@ Each exclusion zone has the same structure as sub-images (name + bounding_box_pi
 - ❌ Other detectors (coming soon)
 
 **Example templates available in `regions_json/` folder:**
-- `template-2400-configs.json` - Standard 2400 DPI layout
-- `template-4800-configs.json` - Standard 4800 DPI layout
+- `template-2400-configs.json` - Standard 2400 DPI layout (legacy)
+- `template-4800-configs.json` - Standard 4800 DPI layout (legacy)
+- `new_pattern_2400.json` - New dual-band layout (3 heads; used with `--pattern new`)
 - `test_Paper_2400 Black pt0.json` - Example custom config
 - `test_Paper_4800_BlackPt215.json` - Example custom config
 
@@ -162,41 +208,53 @@ See `example_exclusion_zones.json` in project root for detailed exclusion zone e
 
 ## Usage
 
-### Command-Line Options
+### Command-Line Options (`main_defect_detection.py`)
 
 ```bash
 python main_defect_detection.py [options]
 ```
 
-**Required Arguments:**
+**Required:**
 - `--image`, `-i`: Path to TIFF image file
-- `--dpi`, `-d`: Image DPI (choices: `2400`, `4800`)
+- `--dpi`, `-d`: Image DPI (`2400` or `4800`)
 
-**Optional Arguments:**
-- `--config`, `-c`: Path to custom JSON configuration (overrides DPI template)
-- `--sensitivity`, `-s`: Detection sensitivity level - `low`, `medium`, `high` (default: `medium`)
+**Optional:**
+- `--config`, `-c`: Custom JSON configuration (overrides the DPI template)
+- `--sensitivity`, `-s`: `low` \| `medium` \| `high` (default: `medium`)
+- `--pattern`: `legacy` (single-band islands, default) \| `new` (dual-band islands with 4 vertical boundary lines)
+- `--clear`: Clear scan material (gray background, fainter ink, lower SNR). Island thresholds are derived from the measured background level per image. **Requires `--pattern new`.**
 - `--generate_report`: Generate PDF report with all detections
 
 ### Usage Examples
 
 ```bash
-# Basic usage with 2400 DPI template
+# Basic — legacy pattern, 2400 DPI template
 python main_defect_detection.py --image scan.tif --dpi 2400
 
-# With short flags
+# Short flags
 python main_defect_detection.py -i scan.tif -d 4800
+
+# New dual-band island pattern
+python main_defect_detection.py -i scan.tif -d 2400 --pattern new
+
+# Clear material + new pattern
+python main_defect_detection.py -i scan.tif -d 2400 --pattern new --clear
 
 # High sensitivity with PDF report
 python main_defect_detection.py -i scan.tif -d 2400 -s high --generate_report
 
-# Custom configuration (overrides DPI template)
+# Custom regions config (overrides DPI template)
 python main_defect_detection.py -i scan.tif -d 2400 -c my_custom_regions.json
+
+# New-pattern config is selected automatically when --pattern new
+# (e.g. regions_json/new_pattern_2400.json for 2400 DPI)
 
 # Full options
 python main_defect_detection.py \
   --image scan.tif \
-  --dpi 4800 \
-  --config custom.json \
+  --dpi 2400 \
+  --pattern new \
+  --clear \
   --sensitivity high \
   --generate_report
 ```
@@ -205,29 +263,49 @@ python main_defect_detection.py \
 
 **Step 1: Region Extraction**
 - Reads your TIFF image
-- Loads DPI template (or custom config if provided)
+- Loads DPI template / new-pattern config / custom config
 - Extracts individual stripe and island regions
-- Saves extracted regions to timestamped folder: `{image_name}_extracted_regions_YYYYMMDD_HHMMSS/`
+- Saves extracted regions to: `{image_name}_extracted_regions_YYYYMMDD_HHMMSS/`
 
 **Step 2: Defect Detection**
-- Automatically runs appropriate detectors on each extracted region
-- Stripe regions → Overspray, Surface Treatment, Stripe Misalignment detectors
-- Island regions → Debris, Overspray Island, Line Defect detectors
-- Saves visualizations and JSON results for each region
-- Generates summary report
+- Routes each extracted region by filename (`island` / `stripe`)
+- Island regions → debris, overspray island, line defect
+  (dual-band detectors when `--pattern new`; adaptive thresholds when `--clear`)
+- Stripe regions → stripe misalignment (stitch/roll), overspray, surface treatment, void, debris stripe
+- Saves visualizations and JSON results per region
+- Writes `defect_report.json` (and optional PDF)
+
+### Island vs Stripe — which detectors run?
+
+| Filename contains | Detectors |
+|---|---|
+| `island` | `debris_island`, `overspray_island`, `line_defect` |
+| `stripe` | `stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
+| neither | `surface_treatment` only |
+
+`--pattern` and `--clear` only affect **island** detectors. Stripe detection is the same for legacy and new layouts (the extractor already uses `num_heads` from the region config, e.g. 3 heads in `new_pattern_2400.json`).
 
 ### Processing Pre-Extracted Images (Skip Extraction)
 
-If you already have extracted stripe or island images and want to run detection directly without re-extracting from the full scan, you can point the detection script directly at your folder:
+Point the standalone runner at a single crop or a folder:
 
 ```bash
-python scripts/defects_detection/run_all_detections.py --input_folder path/to/extracted_images
+cd scripts/defects_detection
+
+# Single island
+python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new
+
+# Single stripe
+python run_all_detections.py -i "C:\path\CyanStripe.tiff" --only stripe_misalignment void
+
+# Whole extracted folder
+python run_all_detections.py -i path/to/extracted_images --pattern new
 ```
 
-**Important Naming Convention Rule:**
-The script knows which regions are stripes and which are islands **based solely on the image filename**:
-- Filenames containing **"stripe"** (e.g., `blackStripe.tiff`) will automatically be classified as stripes and evaluated for Overspray, Surface Treatment, and Stripe Misalignment.
-- Filenames containing **"island"** (e.g., `island-black-blue.tiff`) will automatically be classified as islands and evaluated for Debris, Overspray Island, and Line Defects.
+**Naming rule:** classification is based solely on the filename (`island` / `stripe`).
+
+Full CLI for the standalone runner (including `--only`, `-o`, `--clear`) is documented in
+[`scripts/defects_detection/RUN_ALL_DETECTIONS_README.md`](scripts/defects_detection/RUN_ALL_DETECTIONS_README.md).
 
 ## Output Structure
 
@@ -236,37 +314,23 @@ After running, you'll find:
 ```
 image_directory/
 └── scan_extracted_regions_20250103_143022/
-    ├── blackStripe.tiff                       # Extracted stripe region
-    ├── blueStripe.tiff                        # Extracted stripe region
-    ├── island-black-blue.tiff                 # Extracted island region
-    ├── island-blue-pink.tiff                  # Extracted island region
-    ├── pinkStripe.tiff                        # Extracted stripe region
+    ├── KeyStripe.tiff                         # Extracted stripe region
+    ├── CyanStripe.tiff                        # Extracted stripe region
+    ├── KeyIsland.tiff                         # Extracted island region
+    ├── CyanIsland.tiff                        # Extracted island region
     └── output_20250103_143045/                # Detection results
-        ├── blackStripe/
+        ├── CyanStripe/
         │   ├── stripe_misalignment_visualization.jpg
         │   ├── overspray_visualization.jpg
         │   ├── surface_treatment_visualization.jpg
-        │   └── blackStripe_results.json       # Per-region detection data
-        ├── blueStripe/
-        │   ├── stripe_misalignment_visualization.jpg
-        │   ├── overspray_visualization.jpg
-        │   ├── surface_treatment_visualization.jpg
-        │   └── blueStripe_results.json
-        ├── island-black-blue/
+        │   ├── void_visualization.tiff
+        │   ├── debris_stripe_visualization.jpg
+        │   └── CyanStripe_results.json
+        ├── KeyIsland/
         │   ├── debris_island_visualization.jpg
         │   ├── line_defect_visualization.jpg
         │   ├── overspray_island_visualization.jpg
-        │   └── island-black-blue_results.json
-        ├── island-blue-pink/
-        │   ├── debris_island_visualization.jpg
-        │   ├── line_defect_visualization.jpg
-        │   ├── overspray_island_visualization.jpg
-        │   └── island-blue-pink_results.json
-        ├── pinkStripe/
-        │   ├── stripe_misalignment_visualization.jpg
-        │   ├── overspray_visualization.jpg
-        │   ├── surface_treatment_visualization.jpg
-        │   └── pinkStripe_results.json
+        │   └── KeyIsland_results.json
         ├── defect_report.json                 # Summary JSON report
         └── defect_detection_report.pdf        # Summary PDF (if --generate_report used)
 ```
@@ -283,37 +347,50 @@ Choose the appropriate sensitivity for your use case:
 
 ### For Stripe Images
 
-#### 1. Stripe Misalignment Detection
-- **Purpose**: Identifies vertical stripe positioning errors
-- **Method**: Edge enhancement and row scanning to detect lateral shifts
-- **Output**: Misaligned regions with X-delta measurements
+#### 1. Stripe Misalignment (`stripe_misalignment`)
+- **Purpose**: Head calibration — stitch steps and roll drift between successive print heads
+- **Method**: Per-row left/right edge profiles of the stripe; abrupt steps → stitch; gradual drift across a segment → roll
+- **Output**: `stripe_misalignment` (`kind=stitch`, signed `step_px`) and `roll_error` (`drift_px`, slope)
 
-#### 2. Overspray Detection
-- **Purpose**: Detects scattered ink outside intended print areas
+#### 2. Overspray Detection (`overspray`)
+- **Purpose**: Scattered ink outside intended print areas
 - **Method**: Kernel-based grid scanning with scatter analysis
 - **Output**: Regions showing ink scattered beyond boundaries
 
-#### 3. Surface Treatment Detection
-- **Purpose**: Identifies poor surface energy issues
-- **Method**: Detects irregular ink drops and void areas
+#### 3. Surface Treatment Detection (`surface_treatment`)
+- **Purpose**: Poor surface energy issues
+- **Method**: Irregular ink drops and void areas
 - **Output**: Areas with ink coalescence and missing ink
+
+#### 4. Void Detection (`void`)
+- **Purpose**: Compact low-ink / missing-ink patches inside the solid stripe
+- **Method**: LAB projection toward paper color + hysteresis threshold + morphology
+- **Output**: Bounding boxes with `mean_voidness` / area
+
+#### 5. Debris Stripe (`debris_stripe`)
+- **Purpose**: Dark debris spots inside the colored stripe
+- **Method**: Multi-cue darkness / saturation score with strong/weak hysteresis
+- **Output**: Bounding boxes for dark contaminants
 
 ### For Island Images
 
-#### 4. Debris Island Detection
-- **Purpose**: Finds foreign particles and contamination
-- **Method**: Line removal + thresholding + morphology
+#### 6. Debris Island Detection (`debris_island`)
+- **Purpose**: Foreign particles and contamination
+- **Method**: Line removal (horizontal + vertical when `--pattern new`) → threshold → morphology
 - **Output**: Contaminated regions with debris highlighted
 
-#### 5. Overspray Island Detection
-- **Purpose**: Detects scattered ink in island regions
-- **Method**: Line removal + colored region detection + grouping
+#### 7. Overspray Island Detection (`overspray_island`)
+- **Purpose**: Scattered ink in island regions
+- **Method**: Line removal → colored region detection → grouping
 - **Output**: Grouped overspray regions with metrics
 
-#### 6. Line Defect Detection
-- **Purpose**: Detects missing/jagged horizontal lines
-- **Method**: Kernel-based line tracking across scanlines
-- **Output**: Missing segments (red) and jagged lines (yellow)
+#### 8. Line Defect Detection (`line_defect`)
+- **Purpose**: Missing nozzles (gaps) and misaligned / doubled prints
+- **Method** (`--pattern new`): Detect 4 vertical lines → segregate 2 bands → refine horizontal lines → scan for gaps (red) and splits (yellow); density hotspots for clustered missing nozzles
+- **Method** (`legacy`): Kernel-based line tracking across scanlines
+- **Output**: Missing segments (red), misaligned lines (yellow), optional density regions
+
+With `--clear`, island detectors derive ink/debris/overspray thresholds from the measured background gray level and apply light despeckling for lower SNR.
 
 ## Performance & Optimization
 
@@ -357,77 +434,132 @@ Choose the appropriate sensitivity for your use case:
 
 ## Advanced Usage
 
-### Using Individual Detection Scripts
+### Standalone detection on one island or stripe image
 
-If you already have extracted individual stripe/island images, you can run the detection script directly:
+Prefer this for algorithm iteration — no full-scan extraction needed:
 
 ```bash
-python scripts/defects_detection/run_all_detections.py --input_folder path/to/extracted_images
+cd scripts/defects_detection
+
+# Island — new pattern, all detectors
+python run_all_detections.py -i KeyIsland.tiff --pattern new
+
+# Island — clear material
+python run_all_detections.py -i ClearIsland.tiff --pattern new --clear --only line_defect
+
+# Stripe — stitch/roll + voids
+python run_all_detections.py -i CyanStripe.tiff --only stripe_misalignment void -o ..\..\out_stripe
+
+# Folder of extracted regions
+python run_all_detections.py -i path/to/extracted --pattern new --sensitivity high --generate_report
 ```
 
-**What `run_all_detections.py` does:**
-- Takes a folder of pre-extracted images (already separated into individual stripes/islands)
-- Classifies each image by filename pattern ('stripe' or 'island')
-- Runs appropriate detectors on each image
-- Saves results to `output_YYYYMMDD_HHMMSS/` folder inside input directory
+**CLI summary for `run_all_detections.py`:**
 
-**Options:**
-- `--input_folder`: Path to folder containing images (required)
-- `--sensitivity`: Detection sensitivity (low/medium/high, default: medium)
-- `--generate_report`: Generate PDF report
+| Flag | Meaning |
+|---|---|
+| `-i` / `--input` | Single image **or** folder |
+| `-o` / `--output` | Output directory (default: timestamped next to input) |
+| `--pattern` | `legacy` \| `new` (island only) |
+| `--clear` | Clear material; requires `--pattern new` |
+| `--only` | Subset of detector keys for that image type |
+| `--sensitivity` | `low` \| `medium` \| `high` |
+| `--generate_report` | PDF summary |
 
-**Note:** This is for advanced users who have their own extraction pipeline. Most users should use `main_defect_detection.py`.
+**`--only` keys**
+
+- Island: `debris_island`, `overspray_island`, `line_defect`
+- Stripe: `stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe`
+
+**PowerShell:** separate `cd` and `python` with `;` — do not concatenate them:
+
+```powershell
+cd scripts/defects_detection; python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new --only line_defect
+```
+
+Details: [`scripts/defects_detection/RUN_ALL_DETECTIONS_README.md`](scripts/defects_detection/RUN_ALL_DETECTIONS_README.md).
+Algorithm notes: [`scripts/defects_detection/ALGORITHMS.md`](scripts/defects_detection/ALGORITHMS.md).
 
 ## Module Reference
 
 ### Core Scripts
-- **`main_defect_detection.py`**: Main orchestrator - extracts regions and runs detections automatically
-- **`scripts/defects_detection/run_all_detections.py`**: Detection orchestrator - routes images to detectors based on type
-- **`scripts/utility/tiff_extractor.py`**: Region extraction from large TIFF files (called by main script)
+- **`main_defect_detection.py`**: Full workflow — extract regions then run detections (`--pattern`, `--clear`)
+- **`scripts/defects_detection/run_all_detections.py`**: Standalone runner for one image or a folder (`-i`, `--only`, `--pattern`, `--clear`)
+- **`scripts/utility/tiff_extractor.py`**: Legacy region extraction
+- **`scripts/utility/new_pattern_tiff_extractor.py`**: New-pattern extraction (`num_heads`, dual-band islands)
 
 ### Detection Modules
 - **`detector_base.py`**: Base class with exclusion zone support
-- **`stripe_misalignment_detection.py`**: Vertical stripe alignment detector
+- **`stripe_misalignment_detection.py`**: Stitch / roll calibration on stripe edges
 - **`overspray_detection.py`**: Scattered ink detector (stripe images)
-- **`surface_treatment_detection.py`**: Irregular drops and void detector
-- **`debris_island_detection.py`**: Foreign particle detector (island images)
-- **`overspray_island_detection.py`**: Scattered ink detector (island images)
-- **`line_defect_detection.py`**: Missing/jagged line detector
+- **`surface_treatment_detection.py`**: Irregular drops and voids
+- **`void_detection.py`**: Compact voids inside solid stripes
+- **`debris_stripe_detector.py`**: Dark debris inside colored stripes
+- **`debris_island_detection.py`** / **`new_pattern_debris_island_detection.py`**: Island debris
+- **`overspray_island_detection.py`** / **`new_pattern_overspray_island_detection.py`**: Island overspray
+- **`line_defect_detection.py`** / **`new_pattern_line_defect_detection.py`**: Missing nozzles / misaligned lines
 
 ### Utility Modules
+- **`utils/vertical_band_detector.py`**: 4 vertical lines + dual-band segregation (new pattern)
+- **`utils/band_line_refiner.py`**: Full-width horizontal line trajectories
+- **`utils/island_line_extractor.py`**: Per-line ink / gap / split analysis
+- **`utils/material_profile.py`**: Background level for `--clear` material
 - **`utils/edge_detector.py`**: Enhanced edge detection with noise reduction
 - **`utils/image_saver.py`**: Smart image saving (auto-switches to TIFF for large images)
-- **`utils/line_detector.py`**: Slanted line detection for island images
+- **`utils/line_detector.py`**: Slanted line detection for legacy islands
 
 ## Try It Yourself / Example Use Cases
 
 Assuming you have access to the example TIFF images, you can try the following commands to see how the system detects various defects. (Make sure to replace the `<location to tif file...>` placeholders with the actual file paths on your system before running.)
 
-### 1. Bad/Missing Nozzles (Misprinted Lines in Island Images)
+### 1. Bad/Missing Nozzles (Island — legacy)
 Detects the misprint of individual horizontal lines on island sections.
 - **Example Image:** `test_Paper2400_BlackPt210_Sharpen1_R4_T1.tif`
 - **Command:**
   ```bash
   python .\main_defect_detection.py --image "<location to tif file test_Paper2400_BlackPt210_Sharpen1_R4_T1.tif>" --dpi 2400 --config '.\regions_json\template-2400-configs.json'
   ```
-- **Where to Check:** The results will be generated in an output folder located alongside your input image. Inside that output folder, open the `island-black-blue` subfolder and check the `island-black-blue_line_defect_missing.jpg` image to see the detected missing lines.
+- **Where to Check:** Open the output folder next to the input image → `island-black-blue` → `line_defect_visualization.jpg` (missing lines in red).
 
-### 2. Debris on Island Image
-This defect is detected alongside Example 1. 
-- **Where to Check:** In the same `island-black-blue` folder from the previous step, view `debris_island_visualization.jpg` to see highlighted debris or foreign particles.
+### 2. New-pattern island (dual-band) — standalone crop
+```bash
+cd scripts/defects_detection
+python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new --only line_defect
+```
+- **Where to Check:** `line_defect_visualization.jpg` — red = missing nozzles, yellow = misaligned / doubled prints.
 
-### 3. Overspray on Island Image
-This defect is also detected alongside Example 1.
-- **Where to Check:** In the same `island-black-blue` folder, view `overspray_island_visualization.jpg` to see scattered ink.
+### 3. Clear-material island
+```bash
+cd scripts/defects_detection
+python run_all_detections.py -i "C:\path\ClearIsland.tiff" --pattern new --clear
+```
 
-### 4. Calibration Error (Misaligned Head in Stripe Images)
-Detects vertical stripe misalignment errors.
-- **Example Image:** `test_Paper2400.tif`
-- **Command:**
-  ```bash
-  python .\main_defect_detection.py --image "<location to tif file test_Paper2400.tif>" --dpi 2400 --config '.\regions_json\template-2400-configs.json'
-  ```
-- **Where to Check:** Open the output folder generated for this image and find the `blueStripe` subfolder. Open `stripe_misalignment_visualization.jpg` to see the detector highlighting alignment errors.
+### 4. Debris / Overspray on Island
+Same full-scan run as Example 1, or on a single crop:
+```bash
+python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new --only debris_island overspray_island
+```
+- **Where to Check:** `debris_island_visualization.jpg`, `overspray_island_visualization.jpg`.
+
+### 5. Calibration Error (Stitch / Roll on Stripe)
+```bash
+cd scripts/defects_detection
+python run_all_detections.py -i "C:\path\CyanStripe.tiff" --only stripe_misalignment
+```
+- **Where to Check:** `stripe_misalignment_visualization.jpg` — red stitch lines with signed step (px), orange roll arrows.
+
+Or via the full scan:
+```bash
+python .\main_defect_detection.py --image "<location to tif file test_Paper2400.tif>" --dpi 2400 --config '.\regions_json\template-2400-configs.json'
+```
+Open the `blueStripe` (or `CyanStripe`) folder → `stripe_misalignment_visualization.jpg`.
+
+### 6. Voids inside a Stripe
+```bash
+cd scripts/defects_detection
+python run_all_detections.py -i "C:\path\CyanStripe.tiff" --only void
+```
+- **Where to Check:** `void_visualization.tiff` — black boxes around low-ink patches.
 
 ## License
 

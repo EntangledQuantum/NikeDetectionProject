@@ -467,22 +467,42 @@ scan pattern and white material keep working unchanged.
 
 ### 4. Stripe Misalignment (`stripe_misalignment_detection.py`)
 
-**Goal:** Detect lateral jumps in a vertical stripe edge (printer-head misalignment).
+**Goal:** Detect head-calibration errors from the stripe's edge trajectory:
+**stitch errors** (abrupt lateral step at a head boundary) and **roll errors**
+(gradual lateral drift across a head segment). Works at 1 px resolution and is
+agnostic to the number of print heads (3-head and 4-head patterns behave the
+same; steps are found wherever they occur).
 
 **Pipeline:**
 
-1. **Edge preprocess:** Gaussian blur → median blur → Sobel-X → normalize → threshold (vertical edges).
-2. Scan row-by-row with a tall thin kernel; take the **first** strong vertical edge X in each row.
-3. Compare consecutive row X positions; if `|Δx| > defect_threshold`, flag misalignment.
-4. Visualize defects as red markers (or kernel overlays in debug).
+1. **Binarize** stripe vs paper at the mid-level between the stripe interior
+   and the paper (from the column intensity profile).
+2. **Edge profiles:** per row, trace the left/right boundary of the contiguous
+   ink run connected to the stripe interior (anchored from columns safely
+   inside the stripe, walking outward). Pen marks / debris on the paper next
+   to the stripe cannot hijack the edge. Median-filter the profiles over rows
+   (31-row window) to remove ragged-fringe outliers.
+3. **Stitch detection:** at sampled rows, step = `median(edge below window)` −
+   `median(edge above window)` (300-row windows, guard gap). Local extrema
+   with `|step| ≥ step_threshold` are stitch candidates; non-max suppression
+   within 2 windows. Candidates from the left and right edges are merged:
+   a step seen on **both edges** is a confident stitch; a **single-edge** step
+   must exceed `1.6× step_threshold` (ragged fringes are one-sided).
+4. **Roll detection:** between consecutive stitches, robust-fit (sigma-clipped
+   linefit) the stripe center vs y; report a `roll_error` when the total drift
+   across the segment exceeds `roll_threshold`.
+5. Visualize: green edge trajectories, red stitch lines with signed step size,
+   orange roll arrows with total drift.
 
-| Sensitivity | Kernel (W×H) / step | Line thresh | Defect Δx |
-|---|---|---|---|
-| high | 30×30 / 30 | 0.10 | 5 |
-| medium | 5×60 / 5 | 0.20 | 20 |
-| low | 70×70 / 70 | 0.20 | 20 |
+| Sensitivity | Stitch step (px) | Roll drift (px) |
+|---|---|---|
+| high | 3 | 5 |
+| medium | 5 | 8 |
+| low | 10 | 15 |
 
-**Outputs:** `stripe_misalignment` (`y`, `x`, `x_delta`, `previous_x`).
+**Outputs:** `stripe_misalignment` with `kind='stitch'` (`y`, `x`, `x_delta`,
+`step_px`, `edges`) and `roll_error` (`y0`, `y1`, `drift_px`,
+`slope_px_per_1k_rows`).
 
 ---
 
@@ -518,16 +538,22 @@ scan pattern and white material keep working unchanged.
 2. Shrink inward (`inner_pad`) to ignore ragged edges.
 3. Median LAB of stripe interior = stripe reference; median LAB outside = paper reference.
 4. Per-pixel **voidness** = projection of `(pixel − stripe_ref)` onto `(paper_ref − stripe_ref)`, normalized to `[0, 1]`.
-5. Robust threshold inside stripe: `median + k·MAD·1.4826` (floor 0.12).
+5. **Hysteresis threshold** on the lightly blurred (5×5) voidness map:
+   strong seeds at `median + k·MAD·1.4826` (floor 0.12), grown into the weaker
+   `median + 0.55·k·MAD·1.4826` level; weak components are kept only when they
+   contain a strong seed. Recovers faint void outskirts without admitting
+   isolated faint noise.
 6. Morph close then open; kernel sizes scale with stripe width.
 7. Keep components with area / extent / aspect consistent with voids; reject huge fade-outs.
+   Min area scales with `stripe_width²` (a DPI proxy) — **not** with the crop
+   height, so small voids survive on full-height stripes.
 8. Draw black bounding boxes.
 
-| Sensitivity | MAD multiplier `k` | Min area floor / frac |
+| Sensitivity | MAD multiplier `k` | Min area floor / frac (× stripe_w²) |
 |---|---|---|
-| high | 5.0 | 80 / 5e-5 |
-| medium | 7.0 | 150 / 1e-4 |
-| low | 10.0 | 300 / 3e-4 |
+| high | 5.0 | 80 / 1e-4 |
+| medium | 7.0 | 150 / 2e-4 |
+| low | 10.0 | 300 / 4e-4 |
 
 **Outputs:** `void` (`bbox`, `area`, `centroid`, `mean_voidness`, `threshold`).
 
@@ -583,7 +609,7 @@ Used for **unknown** image types (and listed in stripe strategy docs; currently 
 | Debris Island | Island | Remove lines → dark threshold | Grayscale darkness |
 | Overspray Island | Island | Remove lines → colored blobs + proximity merge | Non-white area + grouping |
 | Line Defect | Island | Walk known lines | Gaps / Y jumps along line |
-| Stripe Misalignment | Stripe | Track vertical edge X down the image | Lateral Δx between rows |
+| Stripe Misalignment | Stripe | Edge-profile trajectory of stripe boundaries | Stitch steps + roll drift |
 | Overspray (scatter) | Stripe | Grid scatter of spray pixels | Spatial spread metric |
 | Void | Stripe | LAB projection toward paper | Voidness score |
 | Debris Stripe | Stripe | Multi-feature dark score in stripe | Darkness + chroma/sat drop |

@@ -20,8 +20,10 @@ Algorithm outline:
      score ~0, paper-colored pixels score ~1.
   5. Restrict scoring to the stripe's interior (shrunk inward by a margin
      to ignore ragged stripe edges).
-  6. Threshold the score using robust statistics (median + k * MAD * 1.4826)
-     with a small floor to handle nearly-uniform stripes.
+  6. Hysteresis-threshold the (lightly blurred) score using robust
+     statistics: strong seeds at median + k * MAD * 1.4826, grown into a
+     weaker level (a fraction of k), keeping only weak components that
+     contain a strong seed. A small floor handles nearly-uniform stripes.
   7. Morphological close to merge void pixels through residual ink spots,
      then open to suppress single-pixel noise. Kernel size scales with the
      stripe width so the detector adapts to DPI/crops.
@@ -93,17 +95,21 @@ class VoidDetector:
         if sensitivity == "high":
             self._mad_k = 5.0
             self._min_area_floor = 80
-            self._min_area_frac = 5e-5
+            self._min_area_frac = 1e-4
         elif sensitivity == "low":
             self._mad_k = 10.0
             self._min_area_floor = 300
-            self._min_area_frac = 3e-4
+            self._min_area_frac = 4e-4
         else:
             self._mad_k = 7.0
             self._min_area_floor = 150
-            self._min_area_frac = 1e-4
+            self._min_area_frac = 2e-4
 
         self._score_floor = 0.12
+        # Hysteresis: weak threshold is this fraction of the strong one
+        # (measured above the stripe median). Weak-mask components are kept
+        # only when they contain at least one strong pixel.
+        self._weak_fraction = 0.55
         self._debug_artifacts: Dict[str, np.ndarray] = {}
 
     def detect(
@@ -258,17 +264,49 @@ class VoidDetector:
     def _threshold_voidness(
         self, voidness: np.ndarray, stripe_inner_mask: np.ndarray
     ) -> Tuple[np.ndarray, float]:
-        """Apply a robust (median + k*MAD) threshold, restricted to inner stripe."""
-        inside = voidness[stripe_inner_mask > 0]
+        """Hysteresis threshold (median + k*MAD), restricted to inner stripe.
+
+        The voidness map is lightly blurred first so per-pixel sensor noise
+        does not inflate the MAD estimate (real voids are blobs and survive
+        the blur). Strong seeds are found at ``median + k*MAD``; the mask is
+        then grown into the weaker ``median + weak_fraction*k*MAD`` level,
+        keeping only weak components that contain a strong seed. This
+        recovers the faint outskirts of genuine voids without admitting
+        isolated faint noise.
+        """
+        smoothed = cv2.blur(voidness, (5, 5))
+        inside = smoothed[stripe_inner_mask > 0]
         if inside.size == 0:
             return np.zeros_like(stripe_inner_mask), self._score_floor
 
         med = float(np.median(inside))
         mad = float(np.median(np.abs(inside - med))) + 1e-6
         sigma_robust = 1.4826 * mad
-        thresh = max(med + self._mad_k * sigma_robust, self._score_floor)
-        binmask = ((voidness > thresh) & (stripe_inner_mask > 0)).astype(np.uint8) * 255
-        return binmask, thresh
+        strong_t = max(med + self._mad_k * sigma_robust, self._score_floor)
+        weak_t = max(med + self._weak_fraction * self._mad_k * sigma_robust,
+                     self._score_floor * 0.7)
+
+        inner = stripe_inner_mask > 0
+        strong = (smoothed > strong_t) & inner
+        weak = ((smoothed > weak_t) & inner).astype(np.uint8)
+
+        # Hysteresis: keep weak components seeded by at least 1 strong pixel
+        n_lab, labels = cv2.connectedComponents(weak, connectivity=8)
+        if n_lab > 1:
+            seeded = np.unique(labels[strong])
+            seeded = seeded[seeded > 0]
+            keep = np.zeros(n_lab, dtype=bool)
+            keep[seeded] = True
+            binmask = (keep[labels]).astype(np.uint8) * 255
+        else:
+            binmask = np.zeros_like(weak)
+
+        if self.debug:
+            print(
+                f"  [void] med={med:.3f} sigma={sigma_robust:.4f} "
+                f"strong_t={strong_t:.3f} weak_t={weak_t:.3f}"
+            )
+        return binmask, weak_t
 
     def _morph_cleanup(self, binmask: np.ndarray, stripe_w: int) -> np.ndarray:
         """Close to fill ink-spot gaps inside voids; open to drop tiny noise."""
@@ -300,7 +338,11 @@ class VoidDetector:
         if self.min_area_override is not None:
             min_area = int(self.min_area_override)
         else:
-            size_based = int(self._min_area_frac * h * stripe_w)
+            # Scale with stripe width squared (a DPI proxy) so the minimum
+            # void size does not depend on how tall the crop is. The old
+            # `frac * h * stripe_w` formula ballooned to thousands of pixels
+            # for full-height stripes and silently dropped small voids.
+            size_based = int(self._min_area_frac * stripe_w * stripe_w)
             min_area = max(self._min_area_floor, size_based)
 
         max_area = int(self.max_area_frac * h * w)
