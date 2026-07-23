@@ -3,18 +3,27 @@ New-Pattern (Dual-Band) Debris Island Detection
 
 Detects dark debris on the changed island pattern, where each image contains
 two horizontal-print bands separated by a gap, each flanked by vertical
-boundary lines:
+boundary lines (4 vertical lines total):
 
     [V prints V]   gap   [V prints V]
 
-Approach (reuses existing island primitives, no edits to existing files):
-  1. Split the image into its print bands with ``VerticalBandDetector``.
-  2. For each band crop, find horizontal lines with ``BandLineDetector``.
-  3. Reuse ``DebrisIslandDetector`` helpers to paint out horizontal lines and
-     threshold the residual dark material; additionally paint out any vertical
-     boundary lines so they are never counted as debris.
-  4. Offset each band's contours back to full-image coordinates and build one
-     composited visualization.
+Debris can happen ANYWHERE in the image - inside the bands, in the central
+gap, or outside the boundary lines - so detection runs on the full image
+after masking out all printed structure:
+
+  1. Robustly detect the 4 vertical boundary lines and the two print bands
+     with ``VerticalBandDetector``.
+  2. Per band, find and refine the horizontal print lines
+     (``BandLineDetector`` + ``BandLineRefiner``: robust per-line fit,
+     extrapolated to the band bounds, tolerant of missing start/end ink).
+  3. Paint every refined horizontal line white on the FULL grayscale image
+     (reusing ``DebrisIslandDetector`` thickness conventions), slightly
+     extended past the band bounds so line ends never leak.
+  4. Paint the vertical boundary lines white using their measured x-extent
+     envelope plus a speckle-halo pad (``paint_vertical_line_regions``), so
+     noisy vertical lines are never counted as debris.
+  5. Run the reused ``DebrisIslandDetector.detect_debris`` threshold +
+     morphology + contour pass over the full cleaned image.
 """
 
 import cv2
@@ -23,12 +32,17 @@ import numpy as np
 from detector_base import BaseDetector
 from debris_island_detection import DebrisIslandDetector
 from utils.band_line_detector import BandLineDetector
-from utils.vertical_band_detector import VerticalBandDetector, paint_vertical_lines_white
+from utils.band_line_refiner import BandLineRefiner
+from utils.vertical_band_detector import VerticalBandDetector, paint_vertical_line_regions
 from utils.image_saver import save_image
 
 
 class NewPatternDebrisIslandDetector(BaseDetector):
-    """Detect debris across the two bands of a new-pattern island image."""
+    """Detect debris anywhere on a new-pattern island image."""
+
+    # Horizontal lines are painted slightly past the band bounds so residual
+    # ink at the line ends (next to the vertical lines) never leaks through.
+    LINE_PAINT_EXTENSION = 20
 
     def __init__(self, sensitivity='medium', debug=False):
         """Initialize the dual-band debris detector.
@@ -41,18 +55,16 @@ class NewPatternDebrisIslandDetector(BaseDetector):
         self.sensitivity = sensitivity
         self.debug = debug
 
-        # Reused per-image helpers (line removal, debris thresholding, drawing)
+        # Reused per-image helpers (debris thresholding, drawing, thickness)
         self.base = DebrisIslandDetector(sensitivity=sensitivity, debug=debug)
         self.band_detector = VerticalBandDetector()
-
-        # Defensive thickness for painting out any vertical line inside a crop
-        self.vline_paint_thickness = max(10, self.base.line_thickness)
+        self.refiner = BandLineRefiner()
 
         self._debug_bands_image = None
         self._debug_lines_removed_image = None
 
     def detect(self, image, image_path=None):
-        """Run dual-band debris detection.
+        """Run full-image debris detection with printed structure masked out.
 
         Args:
             image: Input island image (BGR or grayscale).
@@ -71,55 +83,66 @@ class NewPatternDebrisIslandDetector(BaseDetector):
 
         bands = self.band_detector.detect(image, self.debug)
 
-        all_contours = []
-        total_matched_lines = 0
-        lines_removed_full = gray_full.copy() if self.debug else None
+        # ---- Mask horizontal print lines (per band, refined) ------------
+        lines_removed = gray_full.copy()
+        total_lines = 0
 
         for band in bands:
             x0, x1 = band['x0'], band['x1']
             if x1 - x0 < 5:
                 continue
 
-            crop = image[:, x0:x1]
-            gray_crop = gray_full[:, x0:x1]
+            crop = image[:, x0:x1 + 1]
+            gray_crop = gray_full[:, x0:x1 + 1]
 
-            # Horizontal lines within this band, scaled to the full image width
-            line_detector = BandLineDetector(self.sensitivity, reference_width=reference_width)
+            line_detector = BandLineDetector(self.sensitivity,
+                                             reference_width=reference_width)
             matched_lines, _, _, _, _ = line_detector.detect_lines(crop, self.debug)
-            total_matched_lines += len(matched_lines)
 
-            # Remove horizontal print lines (reused helper)
-            lines_removed = self.base.remove_lines_from_image(gray_crop, matched_lines)
+            _, binary_crop = cv2.threshold(gray_crop, 127, 255,
+                                           cv2.THRESH_BINARY_INV)
+            refined_lines = self.refiner.refine(binary_crop, matched_lines,
+                                                self.debug)
+            total_lines += len(refined_lines)
 
-            # Remove any vertical boundary line that falls inside the crop
-            vlines_local = [vx - x0 for vx in band['vline_xs'] if x0 <= vx < x1]
-            if vlines_local:
-                lines_removed = paint_vertical_lines_white(
-                    lines_removed, vlines_local, self.vline_paint_thickness)
+            ext = self.LINE_PAINT_EXTENSION
+            for line in refined_lines:
+                lx = line['left']['x'] + x0
+                rx = line['right']['x'] + x0
+                slope = line['slope']
+                p_left = (lx - ext, int(round(line['left']['y'] - slope * ext)))
+                p_right = (rx + ext, int(round(line['right']['y'] + slope * ext)))
+                cv2.line(lines_removed, p_left, p_right, 255,
+                         self.base.line_thickness * 2)
 
-            # Detect debris on the cleaned band (reused helper)
-            debris_contours, _ = self.base.detect_debris(lines_removed)
+        # ---- Mask the vertical boundary lines (measured envelopes) ------
+        vlines = self._collect_vlines(bands)
+        if vlines:
+            lines_removed = paint_vertical_line_regions(lines_removed, vlines)
 
-            # Offset contours back to full-image coordinates
-            for contour in debris_contours:
-                shifted = contour.copy()
-                shifted[:, :, 0] += x0
-                all_contours.append(shifted)
+        # ---- Debris on the full cleaned image (reused helper) -----------
+        debris_contours, _ = self.base.detect_debris(lines_removed)
 
-            if self.debug and lines_removed_full is not None:
-                lines_removed_full[:, x0:x1] = lines_removed
-
-        visualization = self.base.create_debris_visualization(image, all_contours, [])
+        visualization = self.base.create_debris_visualization(
+            image, debris_contours, [])
 
         if self.debug:
             self._debug_bands_image = self._create_bands_visualization(image, bands)
-            self._debug_lines_removed_image = lines_removed_full
+            self._debug_lines_removed_image = lines_removed
             print(f"NewPatternDebrisIsland: {len(bands)} band(s), "
-                  f"{total_matched_lines} horizontal lines, "
-                  f"{len(all_contours)} debris regions")
+                  f"{total_lines} horizontal lines, "
+                  f"{len(debris_contours)} debris regions")
 
-        defects = self._build_defects(bands, total_matched_lines, all_contours)
+        defects = self._build_defects(bands, total_lines, debris_contours)
         return visualization, defects
+
+    def _collect_vlines(self, bands):
+        """Union of selected boundary lines and per-band vertical lines."""
+        vlines = {id(v): v for v in self.band_detector.last_vlines}
+        for band in bands:
+            for v in band.get('vlines', []):
+                vlines[id(v)] = v
+        return list(vlines.values())
 
     def _build_defects(self, bands, total_matched_lines, all_contours):
         """Assemble the structured defect output list."""
@@ -158,7 +181,8 @@ class NewPatternDebrisIslandDetector(BaseDetector):
 
         height = vis.shape[0]
         for band in bands:
-            cv2.rectangle(vis, (band['x0'], 0), (band['x1'], height - 1), (0, 255, 0), 3)
+            cv2.rectangle(vis, (band['x0'], 0), (band['x1'], height - 1),
+                          (0, 255, 0), 3)
             cv2.putText(vis, f"Band {band['index']}", (band['x0'] + 5, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             for vx in band['vline_xs']:

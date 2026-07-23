@@ -272,24 +272,41 @@ output naming are identical.
 
 **`utils/vertical_band_detector.py` — VerticalBandDetector**
 
-Auto-detects bands and vertical lines from a column ink-density profile (no
-hard-coded coordinates):
+Robustly detects the **4 vertical boundary lines** first, then derives the two
+bands from them. The vertical lines can be noisy (speckled dot columns), have
+imperfect start/end points, and drift sideways over the image height, so
+detection is morphology-based rather than a raw column-density profile:
 
-1. Grayscale → `THRESH_BINARY_INV` (dark ink → white).
-2. `col_frac[x] = dark_pixels_in_column / height`, smoothed with a small box
-   filter. Print columns are sparse (dashed lines ≈ a few %), vertical lines
-   are near-solid (≈ 1.0), the central gap is ≈ 0.
-3. **Bands** = contiguous runs with `col_frac > content_threshold`, merging
-   small gaps and dropping runs narrower than `min_band_fraction`.
-4. **Vertical lines** = columns within a band run with `col_frac > vline_threshold`,
-   grouped into line objects (center + thickness).
-5. Per band, the **crop** (`x0`, `x1`) is trimmed just inside the outermost
-   vertical lines so the boundary lines are excluded from all processing.
-6. Fallbacks: fewer than two vertical lines → keep the run edges; no runs at all
-   → degrade to a single full-width band (legacy behavior) with a warning.
+1. Grayscale → `THRESH_BINARY_INV` with a **generous ink threshold** (default
+   170) so faint speckles still contribute. If fewer than 4 candidates
+   survive, progressively lighter thresholds (200, 230) are retried.
+2. Small **horizontal CLOSE** (≈ drift width) to connect the sideways spread
+   of a speckled vertical line.
+3. **Vertical CLOSE** with a kernel well **below** the horizontal-line spacing
+   (bridges gaps in a dotted vertical line without ever merging two adjacent
+   horizontal lines). The spacing itself is **measured from the image's row
+   ink profile** (median inter-line distance) — not assumed from calibration.
+4. **Vertical OPEN** with a kernel well **above** the horizontal-line
+   thickness — removes every horizontal-line crossing, keeping only tall
+   vertical structures.
+5. Horizontal dilation + column coverage profile → **candidates** with
+   measured center, x-extent envelope `x0..x1`, y-extent, and coverage.
+   Candidates must cover ≥ `min_coverage` of the height (tolerates imperfect
+   line ends) and not be wider than `max_thickness_fraction` (rejects blobs).
+6. **4-of-N selection**: with more than 4 candidates, every 4-combination is
+   scored by coverage and pattern geometry (two similar-width bands separated
+   by a narrower central gap) and the best one wins.
+7. **Bands** = the region between each selected pair (v1–v2 and v3–v4),
+   trimmed `inner_margin` px inside the measured line envelopes.
+8. Fallbacks: if 4 lines cannot be selected → bands from ink-content runs
+   (with any found vlines still trimming the crops); no content at all →
+   single full-width band (legacy degrade).
 
-Also provides `paint_vertical_lines_white(gray, vline_xs, thickness)` as defense
-so any vertical line surviving inside a crop is painted out before thresholding.
+Also provides `paint_vertical_line_regions(gray, vlines, pad)` which paints
+the **measured x-extent envelope** of each vertical line (plus a speckle-halo
+pad, default 2× thickness) white so noisy vertical lines are never counted as
+debris/overspray. `paint_vertical_lines_white` is kept for center+thickness
+callers.
 
 **`utils/band_line_detector.py` — BandLineDetector(LineDetector)**
 
@@ -299,56 +316,83 @@ using the **full image width** (`reference_width`) rather than the narrow crop
 width, so per-band line detection matches full-image sensitivity. Height-based
 behavior (`Y_DELTA`, slope validation) is inherited unchanged.
 
-### Dual-band flow (all three detectors)
+**`utils/band_line_refiner.py` — BandLineRefiner**
 
-```
-Island image
-    │
-    ├─ VerticalBandDetector → bands [(x0,x1, vline_xs), ...]
-    │
-    └─ For each band:
-          crop = image[:, x0:x1]
-          BandLineDetector.detect_lines(crop)      # horizontal lines, band-local
-          reuse legacy helper on crop              # debris / overspray / line walk
-          offset results by +x0 → full-image coords
-    │
-    └─ Composite one visualization + merged defect list
-```
+Turns the coarse per-band matches into **full-width fitted trajectories** with
+explicit start/end points at the band bounds:
 
-### 3a. New-Pattern Debris Island (`new_pattern_debris_island_detection.py`)
+1. **Sample** the actual ink along each coarse trajectory across the whole
+   band (center-of-mass of ink inside a vertical search window < ½ spacing,
+   so a neighbor line is never grabbed).
+2. **Robust fit** a straight line per trajectory (least squares + iterative
+   sigma-clipping to reject debris/overspray outliers). Every line gets its
+   OWN slope/intercept — constant slope or spacing across lines is **not
+   assumed**, so calibration/printing drift does not break the fit.
+3. **Extrapolate** each fit to the band's inner bounds `x0..x1`. A line whose
+   starting/ending ink is missing (missing nozzles at the edge) still gets a
+   full-width trajectory, so the defect walk can flag the missing edge
+   segment (the legacy walk silently started at the first ink it saw).
+4. Lines with too little ink to fit are **interpolated from the nearest
+   fitted neighbors** above/below; if the coarse detector found nothing at
+   all, trajectories are seeded from the band's row ink profile.
+5. Near-duplicate trajectories (< ½ spacing apart mid-band) are deduplicated.
 
-Per band: `BandLineDetector.detect_lines` → reuse `DebrisIslandDetector.remove_lines_from_image`
-→ `paint_vertical_lines_white` → reuse `detect_debris` → offset contours by `+x0`.
-Final visualization via the reused `create_debris_visualization`.
+### 3a/3b. New-Pattern Debris / Overspray (`new_pattern_debris_island_detection.py`, `new_pattern_overspray_island_detection.py`)
 
-### 3b. New-Pattern Overspray Island (`new_pattern_overspray_island_detection.py`)
+Debris and overspray can occur **anywhere** in the image — inside the bands,
+in the central gap, or outside the boundary lines — so these run on the
+**full image** after masking all printed structure:
 
-Per band: line removal + vertical-line removal → reuse `detect_colored_regions`
-and `group_nearby_regions` (**grouping stays within a band**, so overspray is
-never merged across the central gap) → offset contour, `center`, and `bbox` by
-`+x0`. Final visualization via the reused `create_overspray_visualization`.
+1. Detect bands + vertical lines; per band, refine the horizontal lines.
+2. Paint every refined horizontal line white on the full grayscale image
+   (legacy thickness conventions, ×2 debris / ×3 overspray), extended ~20 px
+   past the band bounds so line ends never leak.
+3. Paint the vertical boundary lines white via `paint_vertical_line_regions`
+   (measured envelope + halo pad).
+4. Reuse the legacy `detect_debris` (threshold → close 3×3 → contours → area
+   filter) or `detect_colored_regions` + `group_nearby_regions` on the full
+   cleaned image. No coordinate offsetting is needed since the mask was built
+   in full-image space.
 
 ### 3c. New-Pattern Line Defect (`new_pattern_line_defect_detection.py`)
 
-Per band: binarize crop, then for each matched line reuse
-`LineDefectDetector.scan_line_for_defects`. Robustness improvements over the
-legacy walk:
+Missing-nozzle detection runs **only inside the two bands** — never on the
+vertical lines or the central gap:
 
-- **Invalid-slope matches are skipped** (legacy walks all matches).
-- **Ghost endpoints are repaired** using the band's median slope so the walk
-  follows a stable trajectory.
-
-Missing/jagged `start_x`/`end_x`/`x`/`location` are offset by `+x0`; final
-visualization via the reused `create_combined_visualization`.
+1. Detect bands; per band, coarse-detect then **refine** the horizontal lines
+   (see `BandLineRefiner`).
+2. Walk every refined trajectory across the **full band width** with the
+   reused `LineDefectDetector.scan_line_for_defects` (missing + jagged), so
+   gaps at the very start or end of a line are reported too.
+3. Offset defects by `+x0`; final visualization via the reused
+   `create_combined_visualization`. The `bands_detected` entry now also
+   reports each line's fitted `start`/`end` points, slope, sample count, and
+   whether it was `fitted` or `interpolated`.
 
 ### Robustness vs. legacy on the new pattern
 
 | Concern | Legacy on two bands | Dual-band detectors |
 |---|---|---|
 | Cross-band line matching | Pairs across the gap → invalid slopes | Independent per-band detection |
-| Vertical boundary lines | Flagged as debris/overspray | Excluded by cropping + painted out |
+| Vertical boundary lines | Flagged as debris/overspray | Detected morphologically (noise/drift tolerant), masked by measured envelope |
+| Missing ink at line start/end | Walk starts at first ink → edge gaps missed | Trajectory extrapolated to band bounds → edge gaps flagged |
+| Slope/spacing drift | Fixed global slope window | Per-line robust fit, no constancy assumption |
+| Fully missing lines | Ghost with guessed spacing | Interpolated from fitted neighbors |
+| Debris/overspray coverage | Band interior only | Full image (gap and margins included) |
 | Line-detection sensitivity | N/A | Kernels scaled to full image width |
-| Overspray grouping | Could merge across gap | Grouped within each band |
+
+### End-to-end invocation
+
+```
+# One command (extract + detect):
+python main_defect_detection.py --image scan.tif --dpi 2400 --pattern new
+
+# Or detection only, on an already-extracted folder:
+python run_all_detections.py -i extracted_dir --pattern new
+```
+
+`--pattern` defaults to `legacy` everywhere, so the old scan pattern keeps
+working unchanged.
 
 ---
 

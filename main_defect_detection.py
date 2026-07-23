@@ -61,13 +61,16 @@ def print_warning(message: str):
     print(f"{Colors.YELLOW}⚠ {message}{Colors.ENDC}")
 
 
-def load_config_for_dpi(dpi: str, custom_config_path: Optional[str] = None) -> Optional[str]:
+def load_config_for_dpi(dpi: str, custom_config_path: Optional[str] = None,
+                        pattern: str = 'legacy') -> Optional[str]:
     """
     Load the appropriate configuration file based on DPI or custom path.
     
     Args:
         dpi: DPI value ('2400' or '4800')
         custom_config_path: Optional path to custom config (overrides DPI template)
+        pattern: 'legacy' (bbox sub_images template) or 'new' (parametric
+            new-pattern template)
         
     Returns:
         str: Path to the configuration file to use, or None if not found
@@ -82,10 +85,16 @@ def load_config_for_dpi(dpi: str, custom_config_path: Optional[str] = None) -> O
             return None
     
     # Otherwise, use DPI template
-    template_map = {
-        '2400': 'regions_json/template-2400-configs.json',
-        '4800': 'regions_json/template-4800-configs.json'
-    }
+    if pattern == 'new':
+        template_map = {
+            '2400': 'regions_json/new_pattern_2400.json',
+            '4800': 'regions_json/new_pattern_4800.json'
+        }
+    else:
+        template_map = {
+            '2400': 'regions_json/template-2400-configs.json',
+            '4800': 'regions_json/template-4800-configs.json'
+        }
     
     template_path = Path(__file__).parent / template_map[dpi]
     
@@ -97,13 +106,14 @@ def load_config_for_dpi(dpi: str, custom_config_path: Optional[str] = None) -> O
         return None
 
 
-def validate_inputs(image_path: str, config_path: str) -> bool:
+def validate_inputs(image_path: str, config_path: str, pattern: str = 'legacy') -> bool:
     """
     Validate that required input files exist and are properly formatted.
     
     Args:
         image_path: Path to the TIFF image file
         config_path: Path to the JSON configuration file
+        pattern: 'legacy' (bbox sub_images schema) or 'new' (parametric schema)
         
     Returns:
         bool: True if validation passes, False otherwise
@@ -133,24 +143,36 @@ def validate_inputs(image_path: str, config_path: str) -> bool:
         with open(config_path, 'r') as f:
             config_data = json.load(f)
         
-        # Validate JSON structure
-        if 'sub_images' not in config_data:
-            print_error("JSON configuration must contain 'sub_images' field")
-            return False
-        
-        if not isinstance(config_data['sub_images'], list):
-            print_error("'sub_images' must be a list")
-            return False
-        
-        if len(config_data['sub_images']) == 0:
-            print_error("'sub_images' list is empty")
-            return False
-        
-        print_success(f"Found {len(config_data['sub_images'])} regions to extract")
-        
-        # Check for exclusion zones (optional)
-        if 'exclusion_zones' in config_data and config_data['exclusion_zones']:
-            print_info(f"Found {len(config_data['exclusion_zones'])} exclusion zones (will be converted to local coordinates)")
+        if pattern == 'new':
+            # New-pattern parametric schema (colors + geometry)
+            missing = [key for key in ('colors', 'color_width', 'head_height')
+                       if key not in config_data]
+            if missing:
+                print_error(f"New-pattern configuration missing fields: {missing}")
+                return False
+            if not config_data['colors']:
+                print_error("'colors' list is empty")
+                return False
+            print_success(f"Found {len(config_data['colors'])} colors to extract")
+        else:
+            # Legacy bbox schema
+            if 'sub_images' not in config_data:
+                print_error("JSON configuration must contain 'sub_images' field")
+                return False
+            
+            if not isinstance(config_data['sub_images'], list):
+                print_error("'sub_images' must be a list")
+                return False
+            
+            if len(config_data['sub_images']) == 0:
+                print_error("'sub_images' list is empty")
+                return False
+            
+            print_success(f"Found {len(config_data['sub_images'])} regions to extract")
+            
+            # Check for exclusion zones (optional)
+            if 'exclusion_zones' in config_data and config_data['exclusion_zones']:
+                print_info(f"Found {len(config_data['exclusion_zones'])} exclusion zones (will be converted to local coordinates)")
         
     except json.JSONDecodeError as e:
         print_error(f"Invalid JSON file: {e}")
@@ -276,8 +298,76 @@ def extract_regions(image_path: str, config_path: str) -> Optional[str]:
         return None
 
 
+def extract_regions_new_pattern(image_path: str, config_path: str) -> Optional[str]:
+    """
+    Extract regions using the parametric new-pattern extractor.
+
+    Runs scripts/utility/new_pattern_tiff_extractor.py with
+    --split-stripe-island so each color yields ColorStripe.tiff and
+    ColorIsland.tiff, ready for the dual-band island detectors.
+
+    Args:
+        image_path: Path to the TIFF image file
+        config_path: Path to the new-pattern JSON configuration file
+
+    Returns:
+        str: Path to the extraction output directory, or None if failed
+    """
+    print_step(1, "EXTRACTING REGIONS FROM TIFF IMAGE (NEW PATTERN)")
+
+    image_name = Path(image_path).stem
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(image_path).parent / f"{image_name}_extracted_regions_{timestamp}"
+
+    extractor_script = Path(__file__).parent / "scripts" / "utility" / "new_pattern_tiff_extractor.py"
+    if not extractor_script.exists():
+        print_error(f"Extractor script not found: {extractor_script}")
+        return None
+
+    print_info(f"Source image: {image_path}")
+    print_info(f"Configuration: {config_path}")
+    print_info(f"Output directory: {output_dir}")
+
+    print_info("Running new-pattern TIFF region extraction...")
+    print(f"{Colors.YELLOW}--- Extraction Logs Start ---{Colors.ENDC}")
+
+    try:
+        subprocess.run(
+            [sys.executable, str(extractor_script),
+             os.path.abspath(image_path), os.path.abspath(config_path),
+             '-o', str(output_dir), '--split-stripe-island'],
+            capture_output=False,
+            text=True,
+            check=True
+        )
+        print(f"{Colors.YELLOW}--- Extraction Logs End ---{Colors.ENDC}\n")
+    except subprocess.CalledProcessError as e:
+        print(f"{Colors.YELLOW}--- Extraction Logs End ---{Colors.ENDC}\n")
+        print_error(f"Extraction failed with exit code {e.returncode}")
+        return None
+    except Exception as e:
+        print(f"{Colors.YELLOW}--- Extraction Logs End ---{Colors.ENDC}\n")
+        print_error(f"Extraction failed: {e}")
+        return None
+
+    # The extractor writes into an 'extracted' subfolder of the output dir
+    extracted_dir = output_dir / "extracted"
+    if not extracted_dir.exists():
+        print_error("Extraction output directory not found")
+        return None
+
+    extracted_files = list(extracted_dir.glob("*.tiff")) + list(extracted_dir.glob("*.tif"))
+    print_success(f"Extraction completed successfully")
+    print_success(f"Extracted regions saved to: {extracted_dir}")
+    print_info(f"Extracted {len(extracted_files)} region files:")
+    for f in extracted_files:
+        print(f"  • {f.name}")
+
+    return str(extracted_dir)
+
+
 def run_defect_detection(extracted_dir: str, sensitivity: str = 'medium', 
-                        generate_report: bool = False) -> bool:
+                        generate_report: bool = False, pattern: str = 'legacy') -> bool:
     """
     Run defect detection on the extracted regions.
     
@@ -285,6 +375,7 @@ def run_defect_detection(extracted_dir: str, sensitivity: str = 'medium',
         extracted_dir: Path to directory containing extracted region images
         sensitivity: Detection sensitivity level ('low', 'medium', 'high')
         generate_report: Whether to generate a PDF report
+        pattern: Island pattern: 'legacy' single-band or 'new' dual-band
         
     Returns:
         bool: True if detection completed successfully, False otherwise
@@ -293,6 +384,7 @@ def run_defect_detection(extracted_dir: str, sensitivity: str = 'medium',
     
     print_info(f"Input folder: {extracted_dir}")
     print_info(f"Sensitivity: {sensitivity}")
+    print_info(f"Island pattern: {pattern}")
     print_info(f"Generate PDF report: {generate_report}")
     
     # Construct the detection script path
@@ -307,7 +399,8 @@ def run_defect_detection(extracted_dir: str, sensitivity: str = 'medium',
         sys.executable,
         str(detection_script),
         '--input_folder', extracted_dir,
-        '--sensitivity', sensitivity
+        '--sensitivity', sensitivity,
+        '--pattern', pattern
     ]
     
     if generate_report:
@@ -366,6 +459,9 @@ Examples:
   # Generate PDF report
   python main_defect_detection.py --image test.tif --dpi 2400 --generate_report
   
+  # New dual-band island pattern (4 vertical boundary lines)
+  python main_defect_detection.py --image test.tif --dpi 2400 --pattern new
+  
   # Full options
   python main_defect_detection.py --image test.tif --dpi 4800 --config custom.json --sensitivity high --generate_report
         """
@@ -403,6 +499,14 @@ Examples:
         help='Generate PDF report with all detections'
     )
     
+    parser.add_argument(
+        '--pattern',
+        choices=['legacy', 'new'],
+        default='legacy',
+        help="Scan pattern: 'legacy' single-band islands (default) or 'new' "
+             "dual-band islands with 4 vertical boundary lines"
+    )
+    
     args = parser.parse_args()
     
     # Print header
@@ -413,20 +517,24 @@ Examples:
     print_info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_info(f"Image: {args.image}")
     print_info(f"DPI: {args.dpi}")
+    print_info(f"Pattern: {args.pattern}")
     
     # Load appropriate configuration (DPI template or custom)
-    config_path = load_config_for_dpi(args.dpi, args.config)
+    config_path = load_config_for_dpi(args.dpi, args.config, args.pattern)
     if not config_path:
         print_error("Failed to load configuration. Exiting.")
         sys.exit(1)
     
     # Validate inputs
-    if not validate_inputs(args.image, config_path):
+    if not validate_inputs(args.image, config_path, args.pattern):
         print_error("Input validation failed. Exiting.")
         sys.exit(1)
     
     # Step 1: Extract regions
-    extracted_dir = extract_regions(args.image, config_path)
+    if args.pattern == 'new':
+        extracted_dir = extract_regions_new_pattern(args.image, config_path)
+    else:
+        extracted_dir = extract_regions(args.image, config_path)
     
     if not extracted_dir:
         print_error("Region extraction failed. Exiting.")
@@ -436,7 +544,8 @@ Examples:
     detection_success = run_defect_detection(
         extracted_dir,
         sensitivity=args.sensitivity,
-        generate_report=args.generate_report
+        generate_report=args.generate_report,
+        pattern=args.pattern
     )
     
     if not detection_success:

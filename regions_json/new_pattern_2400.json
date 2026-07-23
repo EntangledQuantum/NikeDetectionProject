@@ -3,7 +3,8 @@
   "colors": [
     "Key",
     "Cyan",
-    "Magenta"
+    "Magenta",
+    "Yellow"
   ],
   "color_width": 6800,
   "x_offset": 100,

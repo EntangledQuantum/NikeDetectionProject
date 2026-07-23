@@ -3,19 +3,27 @@ New-Pattern (Dual-Band) Overspray Island Detection
 
 Detects colored overspray on the changed island pattern, where each image
 contains two horizontal-print bands separated by a gap, each flanked by
-vertical boundary lines:
+vertical boundary lines (4 vertical lines total):
 
     [V prints V]   gap   [V prints V]
 
-Approach (reuses existing island primitives, no edits to existing files):
-  1. Split the image into its print bands with ``VerticalBandDetector``.
-  2. For each band crop, find horizontal lines with ``BandLineDetector``.
-  3. Reuse ``OversprayIslandDetector`` helpers to paint out horizontal lines,
-     threshold colored regions, and group nearby regions; additionally paint
-     out vertical boundary lines. Grouping stays within a band so overspray is
-     never merged across the central gap.
-  4. Offset each band's regions back to full-image coordinates and build one
-     composited visualization.
+Overspray can happen ANYWHERE in the image - inside the bands, in the
+central gap, or outside the boundary lines - so detection runs on the full
+image after masking out all printed structure:
+
+  1. Robustly detect the 4 vertical boundary lines and the two print bands
+     with ``VerticalBandDetector``.
+  2. Per band, find and refine the horizontal print lines
+     (``BandLineDetector`` + ``BandLineRefiner``: robust per-line fit,
+     extrapolated to the band bounds, tolerant of missing start/end ink).
+  3. Paint every refined horizontal line white on the FULL grayscale image
+     (reusing ``OversprayIslandDetector`` thickness conventions), slightly
+     extended past the band bounds so line ends never leak.
+  4. Paint the vertical boundary lines white using their measured x-extent
+     envelope plus a speckle-halo pad (``paint_vertical_line_regions``), so
+     noisy vertical lines are never counted as overspray.
+  5. Run the reused ``OversprayIslandDetector`` color thresholding +
+     morphology + proximity grouping over the full cleaned image.
 """
 
 import cv2
@@ -24,12 +32,17 @@ import numpy as np
 from detector_base import BaseDetector
 from overspray_island_detection import OversprayIslandDetector
 from utils.band_line_detector import BandLineDetector
-from utils.vertical_band_detector import VerticalBandDetector, paint_vertical_lines_white
+from utils.band_line_refiner import BandLineRefiner
+from utils.vertical_band_detector import VerticalBandDetector, paint_vertical_line_regions
 from utils.image_saver import save_image
 
 
 class NewPatternOversprayIslandDetector(BaseDetector):
-    """Detect overspray across the two bands of a new-pattern island image."""
+    """Detect overspray anywhere on a new-pattern island image."""
+
+    # Horizontal lines are painted slightly past the band bounds so residual
+    # ink at the line ends (next to the vertical lines) never leaks through.
+    LINE_PAINT_EXTENSION = 20
 
     def __init__(self, sensitivity='medium', debug=False):
         """Initialize the dual-band overspray detector.
@@ -42,17 +55,16 @@ class NewPatternOversprayIslandDetector(BaseDetector):
         self.sensitivity = sensitivity
         self.debug = debug
 
-        # Reused per-image helpers (line removal, colored regions, grouping)
+        # Reused per-image helpers (colored regions, grouping, drawing)
         self.base = OversprayIslandDetector(sensitivity=sensitivity, debug=debug)
         self.band_detector = VerticalBandDetector()
-
-        self.vline_paint_thickness = max(10, self.base.line_thickness)
+        self.refiner = BandLineRefiner()
 
         self._debug_bands_image = None
         self._debug_lines_removed_image = None
 
     def detect(self, image, image_path=None):
-        """Run dual-band overspray detection.
+        """Run full-image overspray detection with printed structure masked out.
 
         Args:
             image: Input island image (BGR or grayscale).
@@ -70,65 +82,67 @@ class NewPatternOversprayIslandDetector(BaseDetector):
 
         bands = self.band_detector.detect(image, self.debug)
 
-        all_regions = []
-        total_matched_lines = 0
-        lines_removed_full = gray_full.copy() if self.debug else None
+        # ---- Mask horizontal print lines (per band, refined) ------------
+        lines_removed = gray_full.copy()
+        total_lines = 0
 
         for band in bands:
             x0, x1 = band['x0'], band['x1']
             if x1 - x0 < 5:
                 continue
 
-            crop = image[:, x0:x1]
-            gray_crop = gray_full[:, x0:x1]
+            crop = image[:, x0:x1 + 1]
+            gray_crop = gray_full[:, x0:x1 + 1]
 
-            line_detector = BandLineDetector(self.sensitivity, reference_width=reference_width)
+            line_detector = BandLineDetector(self.sensitivity,
+                                             reference_width=reference_width)
             matched_lines, _, _, _, _ = line_detector.detect_lines(crop, self.debug)
-            total_matched_lines += len(matched_lines)
 
-            lines_removed = self.base.remove_lines_from_image(gray_crop, matched_lines)
+            _, binary_crop = cv2.threshold(gray_crop, 127, 255,
+                                           cv2.THRESH_BINARY_INV)
+            refined_lines = self.refiner.refine(binary_crop, matched_lines,
+                                                self.debug)
+            total_lines += len(refined_lines)
 
-            vlines_local = [vx - x0 for vx in band['vline_xs'] if x0 <= vx < x1]
-            if vlines_local:
-                lines_removed = paint_vertical_lines_white(
-                    lines_removed, vlines_local, self.vline_paint_thickness)
+            ext = self.LINE_PAINT_EXTENSION
+            for line in refined_lines:
+                lx = line['left']['x'] + x0
+                rx = line['right']['x'] + x0
+                slope = line['slope']
+                p_left = (lx - ext, int(round(line['left']['y'] - slope * ext)))
+                p_right = (rx + ext, int(round(line['right']['y'] + slope * ext)))
+                cv2.line(lines_removed, p_left, p_right, 255,
+                         self.base.line_thickness * 3)
 
-            # Colored regions within the band, then group within the band only
-            overspray_regions, _ = self.base.detect_colored_regions(lines_removed)
-            overspray_regions = self.base.group_nearby_regions(overspray_regions)
+        # ---- Mask the vertical boundary lines (measured envelopes) ------
+        vlines = self._collect_vlines(bands)
+        if vlines:
+            lines_removed = paint_vertical_line_regions(lines_removed, vlines)
 
-            for region in overspray_regions:
-                all_regions.append(self._offset_region(region, x0))
+        # ---- Overspray on the full cleaned image (reused helpers) -------
+        overspray_regions, _ = self.base.detect_colored_regions(lines_removed)
+        overspray_regions = self.base.group_nearby_regions(overspray_regions)
 
-            if self.debug and lines_removed_full is not None:
-                lines_removed_full[:, x0:x1] = lines_removed
-
-        visualization = self.base.create_overspray_visualization(image, all_regions, [])
+        visualization = self.base.create_overspray_visualization(
+            image, overspray_regions, [])
 
         if self.debug:
             self._debug_bands_image = self._create_bands_visualization(image, bands)
-            self._debug_lines_removed_image = lines_removed_full
+            self._debug_lines_removed_image = lines_removed
             print(f"NewPatternOversprayIsland: {len(bands)} band(s), "
-                  f"{total_matched_lines} horizontal lines, "
-                  f"{len(all_regions)} overspray regions")
+                  f"{total_lines} horizontal lines, "
+                  f"{len(overspray_regions)} overspray regions")
 
-        defects = self._build_defects(bands, total_matched_lines, all_regions)
+        defects = self._build_defects(bands, total_lines, overspray_regions)
         return visualization, defects
 
-    def _offset_region(self, region, x0):
-        """Shift a region dict (contour, center, bbox) into full-image coords."""
-        shifted = dict(region)
-        contour = region['contour'].copy()
-        contour[:, :, 0] += x0
-        shifted['contour'] = contour
-
-        cx, cy = region['center']
-        shifted['center'] = (cx + x0, cy)
-
-        bx, by, bw, bh = region['bbox']
-        shifted['bbox'] = (bx + x0, by, bw, bh)
-
-        return shifted
+    def _collect_vlines(self, bands):
+        """Union of selected boundary lines and per-band vertical lines."""
+        vlines = {id(v): v for v in self.band_detector.last_vlines}
+        for band in bands:
+            for v in band.get('vlines', []):
+                vlines[id(v)] = v
+        return list(vlines.values())
 
     def _build_defects(self, bands, total_matched_lines, all_regions):
         """Assemble the structured defect output list."""
@@ -170,7 +184,8 @@ class NewPatternOversprayIslandDetector(BaseDetector):
 
         height = vis.shape[0]
         for band in bands:
-            cv2.rectangle(vis, (band['x0'], 0), (band['x1'], height - 1), (0, 255, 0), 3)
+            cv2.rectangle(vis, (band['x0'], 0), (band['x1'], height - 1),
+                          (0, 255, 0), 3)
             cv2.putText(vis, f"Band {band['index']}", (band['x0'] + 5, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
             for vx in band['vline_xs']:
