@@ -8,7 +8,7 @@ Filename drives routing (same rules as the full-image workflow):
 | Filename contains | Image type | Detectors run |
 |---|---|---|
 | `island` | Island | `debris_island`, `overspray_island`, `line_defect` |
-| `stripe` | Stripe | `stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
+| `stripe` | Stripe | `stripe_misalignment`, `edge_roughness`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
 | neither | Unknown | `surface_treatment` only |
 
 ## CLI reference
@@ -31,7 +31,7 @@ python run_all_detections.py -i <file_or_folder> [options]
 
 **Island:** `debris_island` `overspray_island` `line_defect`
 
-**Stripe:** `stripe_misalignment` `overspray` `surface_treatment` `void` `debris_stripe`
+**Stripe:** `stripe_misalignment` `edge_roughness` `overspray` `surface_treatment` `void` `debris_stripe`
 
 ## How to run — Island images
 

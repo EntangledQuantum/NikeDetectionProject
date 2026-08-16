@@ -13,6 +13,7 @@ This system automatically detects critical printing defects in high-resolution s
 
 **Stripe regions**
 - **Stripe Misalignment**: Stitch steps and roll drift between successive print heads
+- **Edge Roughness**: High-frequency jaggedness of the left/right stripe edges (independent of stitch/roll)
 - **Overspray**: Scattered ink outside the stripe
 - **Surface Treatment Issues**: Irregular ink drops and missing ink areas
 - **Voids**: Compact low-ink / missing-ink patches inside the solid stripe
@@ -271,7 +272,7 @@ python main_defect_detection.py \
 - Routes each extracted region by filename (`island` / `stripe`)
 - Island regions → debris, overspray island, line defect
   (dual-band detectors when `--pattern new`; adaptive thresholds when `--clear`)
-- Stripe regions → stripe misalignment (stitch/roll), overspray, surface treatment, void, debris stripe
+- Stripe regions → stripe misalignment (stitch/roll), edge roughness, overspray, surface treatment, void, debris stripe
 - Saves visualizations and JSON results per region
 - Writes `defect_report.json` (and optional PDF)
 
@@ -280,7 +281,7 @@ python main_defect_detection.py \
 | Filename contains | Detectors |
 |---|---|
 | `island` | `debris_island`, `overspray_island`, `line_defect` |
-| `stripe` | `stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
+| `stripe` | `stripe_misalignment`, `edge_roughness`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
 | neither | `surface_treatment` only |
 
 `--pattern` and `--clear` only affect **island** detectors. Stripe detection is the same for legacy and new layouts (the extractor already uses `num_heads` from the region config, e.g. 3 heads in `new_pattern_2400.json`).
@@ -371,6 +372,11 @@ Choose the appropriate sensitivity for your use case:
 - **Purpose**: Dark debris spots inside the colored stripe
 - **Method**: Multi-cue darkness / saturation score with strong/weak hysteresis
 - **Output**: Bounding boxes for dark contaminants
+
+#### 5b. Edge Roughness (`edge_roughness`)
+- **Purpose**: Jagged / saw-tooth roughness on the left and right stripe edges
+- **Method**: Sub-pixel edge trace → remove stitch/roll → MAD + P95 of the high-pass residual, per edge
+- **Output**: Per-edge quantification (`sigma_px`, `mad_px`, `p95_px`) and flagged rough spans (red)
 
 ### For Island Images
 
@@ -469,7 +475,7 @@ python run_all_detections.py -i path/to/extracted --pattern new --sensitivity hi
 **`--only` keys**
 
 - Island: `debris_island`, `overspray_island`, `line_defect`
-- Stripe: `stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe`
+- Stripe: `stripe_misalignment`, `edge_roughness`, `overspray`, `surface_treatment`, `void`, `debris_stripe`
 
 **PowerShell:** separate `cd` and `python` with `;` — do not concatenate them:
 
@@ -491,6 +497,7 @@ Algorithm notes: [`scripts/defects_detection/ALGORITHMS.md`](scripts/defects_det
 ### Detection Modules
 - **`detector_base.py`**: Base class with exclusion zone support
 - **`stripe_misalignment_detection.py`**: Stitch / roll calibration on stripe edges
+- **`stripe_edge_roughness_detection.py`**: Left/right edge jaggedness (stitch/roll removed)
 - **`overspray_detection.py`**: Scattered ink detector (stripe images)
 - **`surface_treatment_detection.py`**: Irregular drops and voids
 - **`void_detection.py`**: Compact voids inside solid stripes

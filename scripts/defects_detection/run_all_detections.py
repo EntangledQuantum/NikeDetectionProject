@@ -22,6 +22,7 @@ from debris_island_detection import DebrisIslandDetector
 from overspray_island_detection import OversprayIslandDetector
 from void_detection import VoidDetector
 from debris_stripe_detector import DebrisStripeDetector
+from stripe_edge_roughness_detection import StripeEdgeRoughnessDetector
 from new_pattern_debris_island_detection import NewPatternDebrisIslandDetector
 from new_pattern_overspray_island_detection import NewPatternOversprayIslandDetector
 from new_pattern_line_defect_detection import NewPatternLineDefectDetector
@@ -398,6 +399,21 @@ class DetectorFactory:
             debug=False
         )
 
+    @staticmethod
+    def create_stripe_edge_roughness_detector(sensitivity: str) -> StripeEdgeRoughnessDetector:
+        """Create a `StripeEdgeRoughnessDetector` tuned by sensitivity.
+
+        Args:
+            sensitivity: 'low' | 'medium' | 'high'.
+
+        Returns:
+            Configured `StripeEdgeRoughnessDetector` instance.
+        """
+        return StripeEdgeRoughnessDetector(
+            sensitivity=sensitivity,
+            debug=False
+        )
+
 
 class DetectionStrategy(ABC):
     """Abstract strategy for selecting detectors based on image type."""
@@ -437,7 +453,8 @@ class StripeDetectionStrategy(DetectionStrategy):
     
     def get_required_detectors(self) -> List[str]:
         """Detectors to run for stripe images."""
-        return ['stripe_misalignment', 'overspray', 'surface_treatment', 'void', 'debris_stripe']
+        return ['stripe_misalignment', 'overspray', 'surface_treatment', 'void',
+                'debris_stripe', 'edge_roughness']
     
     def detector_factories(self, sensitivity: str) -> Dict[str, Any]:
         """Lazy factories for stripe detectors."""
@@ -447,6 +464,7 @@ class StripeDetectionStrategy(DetectionStrategy):
             'void': lambda: DetectorFactory.create_void_detector(sensitivity),
             'debris_stripe': lambda: DetectorFactory.create_debris_stripe_detector(sensitivity),
             'surface_treatment': lambda: DetectorFactory.create_surface_treatment_detector(sensitivity),
+            'edge_roughness': lambda: DetectorFactory.create_stripe_edge_roughness_detector(sensitivity),
         }
 
 
@@ -669,6 +687,12 @@ class SingleImageProcessor:
                     # Stripe debris detection operates only on stripe images.
                     # It uses the original color image to find dark, near-black
                     # debris spots inside the colored stripe region.
+                    original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
+                    result_img, defects = detector.detect(original, image_path)
+
+                    if hasattr(detector, 'save_debug_images'):
+                        detector.save_debug_images(output_dir, base_name)
+                elif detector_name == 'edge_roughness':
                     original, gray = ImagePreprocessor.load_and_convert_to_grayscale(image_path)
                     result_img, defects = detector.detect(original, image_path)
 
@@ -1093,6 +1117,7 @@ class DefectDetectionPipeline:
 # Detector keys accepted by --only (must match strategy keys)
 _ALL_DETECTOR_KEYS = [
     'stripe_misalignment', 'overspray', 'surface_treatment', 'void', 'debris_stripe',
+    'edge_roughness',
     'debris_island', 'overspray_island', 'line_defect',
 ]
 
@@ -1189,7 +1214,7 @@ Examples:
     if args.only:
         print(f"Only detectors: {args.only}")
     print(f"Detection routing (by filename):")
-    print(f"  - *stripe*: Stripe Misalignment, Overspray, Surface Treatment, Void, Debris Stripe")
+    print(f"  - *stripe*: Stripe Misalignment, Edge Roughness, Overspray, Surface Treatment, Void, Debris Stripe")
     if args.pattern == 'new':
         print(f"  - *island* (dual-band): Debris Island, Overspray Island, Line Defect")
     else:

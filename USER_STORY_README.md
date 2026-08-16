@@ -104,7 +104,7 @@ python run_all_detections.py -i /path/extracted_regions --pattern new -o /path/o
 | Filename contains | Detectors |
 |---|---|
 | `island` | `debris_island`, `overspray_island`, `line_defect` |
-| `stripe` | `stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
+| `stripe` | `stripe_misalignment`, `edge_roughness`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
 | neither | `surface_treatment` only |
 
 `--pattern` / `--clear` affect **islands only**. Stripes ignore them.
@@ -207,6 +207,7 @@ python scripts/defects_detection/run_all_detections.py -i <file_or_folder> [opti
 | `surface_treatment` | Stripe / unknown |
 | `void` | Stripe |
 | `debris_stripe` | Stripe |
+| `edge_roughness` | Stripe |
 
 Supported image extensions: `.png`, `.jpg`, `.jpeg`, `.tiff`, `.tif`, `.bmp`.
 
