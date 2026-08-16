@@ -484,7 +484,7 @@ cd scripts/defects_detection; python run_all_detections.py -i "C:\path\KeyIsland
 ```
 
 Details: [`scripts/defects_detection/RUN_ALL_DETECTIONS_README.md`](scripts/defects_detection/RUN_ALL_DETECTIONS_README.md).
-Algorithm notes: [`scripts/defects_detection/ALGORITHMS.md`](scripts/defects_detection/ALGORITHMS.md).
+Algorithm notes: [`Algorithm.md`](Algorithm.md).
 
 ## Module Reference
 

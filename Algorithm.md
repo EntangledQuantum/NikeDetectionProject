@@ -1,8 +1,10 @@
 # Defect Detection Algorithms
 
-This document describes every detection algorithm in the project: what it does, how it works, where it fails, and what still needs to be updated. It covers both the **legacy** single-band island layout and the **new** dual-band scan pattern introduced on the `july_visit` branch.
+This document describes every detection algorithm: what it does, how it works, where it fails, what still needs updating, **what work is shared across detectors**, and **how to speed the pipeline up**. It covers the **legacy** single-band island layout and the **new** dual-band scan pattern on `july_visit`.
 
 Routing is filename-based via `scripts/defects_detection/run_all_detections.py`. Sensitivity presets (`low` / `medium` / `high`) tighten or loosen thresholds.
+
+**Contents:** [scan-pattern change](#1-scan-pattern-change-why-new-algorithms-exist) · [shared infrastructure](#2-shared-infrastructure) · [new-pattern islands](#3-new-pattern-dual-band-island-algorithms) · [legacy islands](#4-legacy-island-algorithms) · [stripes](#5-stripe-region-algorithms) · [extraction](#6-region-extraction-feeds-the-detectors) · [clear material](#7-clear-scan-material---clear) · [robustness](#8-robustness-legacy-vs-dual-band-on-the-new-pattern) · [updates needed](#9-cross-cutting-updates-still-needed) · [**shared work / parallelization / speed-ups**](#10-shared-processing-parallelization-and-speed-ups) · [invoke](#11-how-to-invoke) · [file map](#12-file-map)
 
 | Image type (filename) | Detectors run |
 |---|---|
@@ -619,10 +621,182 @@ Priority-ordered list of work that is **not** done on `july_visit`:
 10. **Physical nozzle reporting** — `missing_pixels` is columns, not calibrated nozzle IDs.
 11. **Automated regression set** — golden island/stripe crops for legacy, new-pattern white, and new-pattern clear, with expected defect counts.
 12. **Vertical-line defect inspection** — currently structural only; breaks in the four boundary lines are invisible.
+13. **Shared front-end + parallel detectors** — see [§10](#10-shared-processing-parallelization-and-speed-ups). Today every detector reloads the image and recomputes geometry that its siblings already have.
 
 ---
 
-## 10. How to invoke
+## 10. Shared processing, parallelization, and speed-ups
+
+`run_all_detections.py` currently runs detectors **one after another** on one image, and each detector **reloads the TIFF and rebuilds its own geometry**. That is the main reason a Cyan stripe (~107 MB, 33k rows) takes many minutes, and why a folder of islands (~555 MB each) is dominated by repeated I/O rather than unique math.
+
+This section is a design note only (no code changes landed with it).
+
+### 10.1 What the pipeline does today (sequential, no sharing)
+
+For every detector key, `_process_full_image` calls `cv2.imread` again, converts BGR→gray (or LAB/HSV) again, then the detector class repeats its own geometry:
+
+| Image type | Detectors (default) | Reloads per image |
+|---|---|---|
+| Stripe | 6 (`stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe`, `edge_roughness`) | 6× decode + 6× gray |
+| Island (legacy or `--pattern new`) | 3 (`debris_island`, `overspray_island`, `line_defect`) | 3× decode + 3× gray |
+
+`ImagePreprocessor.load_and_convert_to_grayscale` is already a shared helper, but it is **called per detector**, not once per image.
+
+### 10.2 Shared preprocessing (do once per image)
+
+These steps are identical (or differ only by a constant) across several classes.
+
+**All detectors**
+
+| Step | Who repeats it | Share as |
+|---|---|---|
+| Decode TIFF / PNG | Every detector via `cv2.imread` | `bgr` array |
+| BGR → gray | Almost every detector | `gray` |
+| File size / stem / output dir | Pipeline already | — |
+
+**Stripe**
+
+| Step | Used by | Notes |
+|---|---|---|
+| Column intensity profile + mid-level binarize | Misalignment, edge roughness | Same `col_mean`, `mid`, `gray < mid` mask |
+| Interior-anchored left/right edge walk | Misalignment (then 31-row median), edge roughness (sub-pixel, no median) | **One raw integer walk**; roughness interpolates, misalignment median-filters |
+| Both-edge stitch Ys | Misalignment reports stitches; roughness splits residual at the same joints | Compute stitch list once |
+| LAB + chroma stripe bounds | Void, debris stripe | `_find_stripe_bounds` is duplicated in spirit |
+| Inner pad of stripe | Void, debris stripe | Same “ignore ragged fringe” idea, slightly different pad fractions |
+| CLAHE on gray | Overspray (scatter), surface treatment | Same contrast boost, different later math |
+
+**Island — legacy**
+
+| Step | Used by | Notes |
+|---|---|---|
+| `LineDetector.detect_lines` (kernel scan, ghosts, slope match) | Debris, overspray, line defect | **Run once**; debris/overspray paint `valid_slope` lines; line defect walks all matches |
+| Exclusion-zone JSON | Same three (via `LineDetector`) | Load once |
+| Binarize @ 127 | Line detector + line defect walk | One binary map |
+
+**Island — `--pattern new`**
+
+| Step | Used by | Notes |
+|---|---|---|
+| `estimate_background_level` (`--clear`) | Band detector, extractor, debris, overspray | One median of subsampled gray |
+| `VerticalBandDetector.detect` → 4 verticals + 2 band crops | Debris, overspray, **and** line defect | **Heaviest shared geometry**; today run 3× |
+| Per-band horizontal trajectories | Debris + overspray (`BandLineDetector` + `BandLineRefiner`); line defect (`IslandLineExtractor`) | Extractor trajectories can **replace** the coarse+refine path for painting (already done in `--clear`) |
+| Paint vertical envelopes white | Debris, overspray | Same `paint_vertical_line_regions` |
+| Paint horizontal lines | Debris (×2 thickness), overspray (×3) | One trajectory set; two paint thicknesses (or paint once at ×3 and use a distance map) |
+
+### 10.3 Intermediate data worth caching (a per-image “context”)
+
+A single `ImageContext` built before any detector would look like this.
+
+```
+ImageContext
+  bgr, gray
+  [clear] background_level
+  ── stripe ──────────────────────────────────────────
+  col_mean, mid, ink_mask
+  bounds: x_left, x_right          # from col_mean or LAB chroma
+  lab, hsv                         # void + debris stripe
+  raw_left[], raw_right[]          # integer edge vs row
+  subpixel_left[], subpixel_right[]
+  stitch_ys[]                      # both-edge steps
+  ── island / new pattern ────────────────────────────
+  bands[{x0,x1,vline_xs,…}]
+  vlines[]
+  per_band: extractor_result       # slope, spacing, lines, ink_cols
+            or refined LineDetector matches
+  lines_removed_gray               # printed structure painted out
+```
+
+**Who consumes what**
+
+| Artifact | Consumers |
+|---|---|
+| `bgr` / `gray` | All |
+| Stripe `bounds` + `lab` | Void, debris stripe (and optionally overspray: mask *outside* the bar) |
+| Raw / subpixel edges + `stitch_ys` | Misalignment, edge roughness |
+| `bands` + `vlines` | All three new-pattern island detectors |
+| Per-band line trajectories / `IslandLineExtractor` | Line defect (required); debris + overspray (paint-out) |
+| `lines_removed_gray` | Debris + overspray (threshold on the same cleaned image; only the color/darkness cut differs) |
+| Legacy `matched_lines` | All three legacy island detectors |
+
+Detectors that **cannot** share a residual mask: stripe overspray (scatter grid on CLAHE+adaptive binary) and surface treatment (local stddev / coalescence) are different signals. They still share `bgr`/`gray` and should not reload the file.
+
+### 10.4 What can run in parallel
+
+OpenCV and NumPy release the GIL in the heavy loops, so **threads** help inside one process for C++/Fortran work; **processes** help for folder batches (avoid GIL + get more RAM isolation).
+
+```
+Folder of images                    one image
+─────────────────                   ─────────────────────────────
+pool.map(process_image)             load once → ImageContext
+  CyanStripe  ──┐                     │
+  KeyStripe   ──┼─ independent        ├─ shared geometry (serial, cheap vs I/O)
+  MagentaStripe─┘                     │
+  CyanIsland  ──┐                     ├─ then parallel:
+  KeyIsland   ──┼─ independent        │     stripe:  [misalign ‖ roughness]  [void ‖ debris]
+  MagentaIsland─┘                     │               [overspray]  [surface]   (weaker sharing)
+                                      │     island:  [debris ‖ overspray] after paint-out
+                                      │               [line_defect] after extractor
+                                      └─ join → JSON + vis
+```
+
+**Safe to parallelize today (after a shared context)**
+
+| Grain | Independent units | Caveat |
+|---|---|---|
+| Folder | Each `*Stripe*` / `*Island*` file | RAM: one 555 MB island decoded ~1.5 GB BGR; cap workers (2–4) |
+| Stripe after context | Misalignment vs roughness vs void vs debris vs overspray vs surface | Misalignment + roughness need the same edges; void + debris need the same LAB bounds |
+| New-pattern island | Left band vs right band inside `IslandLineExtractor` | Same slope search can be shared (global shear) |
+| `IslandLineExtractor` | Per-line residual fit + per-column stats | After shear + row peaks |
+| Stripe overspray grid | Each kernel cell | Only after fixing the 500 px medium kernel |
+| Dual-band debris/overspray | Already one full-image pass; parallelizing them is easy once lines are painted |
+
+**Do not bother parallelizing**
+
+- Tiny vectorized NumPy on a 1-D edge profile (already microseconds).
+- `VerticalBandDetector` 4-of-N combinations (N is small).
+- Visualization `cv2.imwrite` of one JPEG at a time (I/O bound; can overlap with the *next* detector via a writer thread).
+
+**Ordering constraint (must stay serial)**
+
+1. Decode → gray → (optional) background level.
+2. Geometry: stripe bounds/edges **or** island bands/lines.
+3. Then independent defect scoring.
+
+### 10.5 How to speed up — ranked
+
+Highest impact first. None of this is implemented yet.
+
+1. **Load each image once.** Passing `(bgr, gray)` into `detect()` removes 5 extra `cv2.imread` calls on a stripe and 2 on an island. For `KeyIsland.tiff` (~555 MB) that is the largest single win.
+2. **Shared stripe geometry.** One edge walk + one LAB bounds object feeds misalignment, roughness, void, and debris. Roughness already duplicates misalignment’s walk.
+3. **Shared new-pattern island front-end.** Run `VerticalBandDetector` **once**. Run `IslandLineExtractor` **once per band** and reuse trajectories for debris/overspray paint-out (drop the second `BandLineDetector`+`BandLineRefiner` pass on white paper).
+4. **Parallelize the folder**, not the inner pixels. `ProcessPoolExecutor` over the 7 July_26 crops (3 stripe + 4 island) with `--pattern new`. Limit concurrency so islands do not RAM-thrash.
+5. **Fix stripe overspray medium kernel (500×500).** Pairwise scatter on a 500 px window is the pathological case (~10 min on CyanStripe). High uses 20 px; medium should sit near that, not 25× larger. This is also a correctness bug (non-monotonic sensitivity).
+6. **Make surface treatment optional or coarse.** It overlaps void conceptually, runs extra CLAHE + local stddev on the full height, and is slow. Default stripe set could drop it unless `--only surface_treatment`.
+7. **Skip or downsample visualizations.** Writing 33k-row JPEGs/TIFFs is costly; `--no-vis` or downscaled overlays for the PDF, full-res only on request.
+8. **Memory-map TIFFs** (`tifffile.memmap`) so folder workers do not each hold a full decode if they only need a stripe crop — extraction already cropped, so this is secondary.
+9. **Two-band extractor:** shear-search slope on one band (or a height subsample), apply to the other if slopes match.
+10. **CLAHE / adaptive threshold tiles** for overspray and surface treatment: they do not need the full 33k height in one shot; windowed processing already exists in README for >50 MB but is **not** used by these detectors.
+
+### 10.6 Suggested target architecture (not built)
+
+```
+process_image(path):
+  bgr, gray = load_once(path)
+  ctx = build_context(bgr, gray, image_type, pattern, clear)
+      # stripe: bounds, lab, edges, stitch_ys
+      # island new: bands, vlines, extractor per band, lines_removed
+      # island legacy: LineDetector matches, lines_removed
+  results = parallel_map(detectors, ctx)   # threads inside one image
+  save_json_and_vis(results)
+```
+
+Folder batch: `parallel_map(process_image, files)` with a worker cap.
+
+Expected effect if (1)+(2)+(3)+(4)+(5) land: stripe wall-clock dominated by unique scoring instead of six decodes and a 500 px scatter grid; island wall-clock dominated by one band detect + one extractor instead of three copies of each.
+
+---
+
+## 11. How to invoke
 
 ```bash
 # Full scan, new dual-band pattern
@@ -642,7 +816,7 @@ Operator CLI details: `USER_STORY_README.md`. Pipeline overview: `README.md`.
 
 ---
 
-## 11. File map
+## 12. File map
 
 | Role | Path |
 |---|---|

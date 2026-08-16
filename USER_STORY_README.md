@@ -345,4 +345,4 @@ Only need extraction?
 |---|---|
 | `README.md` | System overview, configs, workflows |
 | `scripts/defects_detection/RUN_ALL_DETECTIONS_README.md` | Standalone runner deep-dive |
-| `scripts/defects_detection/ALGORITHMS.md` | How each detector works |
+| `Algorithm.md` | How each detector works, shared work, parallelization, speed-ups |
