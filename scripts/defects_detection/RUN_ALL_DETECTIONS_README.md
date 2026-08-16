@@ -11,6 +11,8 @@ Filename drives routing (same rules as the full-image workflow):
 | `stripe` | Stripe | `stripe_misalignment`, `edge_roughness`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
 | neither | Unknown | `surface_treatment` only |
 
+Folder inputs are scanned **recursively** by default and only filenames containing `stripe` or `island` are processed (full-scan color TIFFs in the same tree are skipped). Use `--no-recursive` or `--include-unknown` to change that. The summary JSON includes **timing**: stripe vs island totals and per-detector wall-clock seconds.
+
 ## CLI reference
 
 ```bash
@@ -25,6 +27,8 @@ python run_all_detections.py -i <file_or_folder> [options]
 | `--pattern` | `legacy` (single-band islands) \| `new` (dual-band islands). Default: `legacy`. Stripe images ignore this. |
 | `--clear` | Clear scan material (gray background, fainter ink, lower SNR). Requires `--pattern new`. Island-only. |
 | `--only` | Run only these detectors (subset of the strategy for this image type) |
+| `--no-recursive` | Folder mode: scan only the top level (default walks subfolders) |
+| `--include-unknown` | Folder mode: also process files that are neither `*stripe*` nor `*island*` |
 | `--generate_report` | Also write a PDF summary report |
 
 ### `--only` detector keys
@@ -98,14 +102,45 @@ python run_all_detections.py -i "C:\path\CyanStripe.tiff" -o "C:\path\out_stripe
 
 ## Folder mode
 
-Point `-i` at an extracted folder; each file is routed by its name:
+Point `-i` at a folder; each file is routed by its name. By default the scan
+is **recursive** and only `*stripe*` / `*island*` filenames are kept (so
+full-scan color TIFFs like `Cyan.tiff` in the same tree are skipped).
 
 ```bash
-python run_all_detections.py -i "C:\path\extracted" --pattern new
-python run_all_detections.py -i "C:\path\extracted" --pattern new --clear
-python run_all_detections.py --input_folder "C:\path\extracted" --sensitivity high --generate_report
+cd scripts/defects_detection
+
+# Recursive folder of mixed stripe + island crops (July visit layout)
+python run_all_detections.py \
+  -i /home/koushik/Nike/Digital_Air/data/July_26 \
+  -o /home/koushik/Nike/Digital_Air/NikeDetectionProject/tmp/july26_all \
+  --pattern new \
+  --sensitivity medium
+
+# Same, with PDF summary that includes timing
+python run_all_detections.py \
+  -i /home/koushik/Nike/Digital_Air/data/July_26 \
+  -o /home/koushik/Nike/Digital_Air/NikeDetectionProject/tmp/july26_all \
+  --pattern new \
+  --generate_report
+
+# Only the extracted_further subfolder, top-level files only
+python run_all_detections.py \
+  -i /home/koushik/Nike/Digital_Air/data/July_26/extracted_further \
+  --pattern new \
+  --no-recursive
 ```
 
+### Timing in the summary
+
+Console and `defect_report.json` include a `timing` block:
+
+- **Batch total** — wall-clock for the whole folder run
+- **By image type** — sum/avg seconds for all stripe images vs all island images
+- **By detector** — sum/avg seconds for each algorithm across the batch
+- **Per image** — image total + each detector’s seconds
+
+Per-image JSON also stores `elapsed_seconds` on the image and on each
+`detections.<name>` entry.
 ## PowerShell note
 
 Use a semicolon between `cd` and `python` (do not glue them together):

@@ -97,6 +97,12 @@ python run_all_detections.py -i /path/CyanStripe.tiff --only void stripe_misalig
 
 # Whole extracted folder
 python run_all_detections.py -i /path/extracted_regions --pattern new -o /path/out
+
+# Recursive parent folder that contains stripe + island crops (skips full-scan color TIFFs)
+python run_all_detections.py \
+  -i /home/koushik/Nike/Digital_Air/data/July_26 \
+  -o /home/koushik/Nike/Digital_Air/NikeDetectionProject/tmp/july26_all \
+  --pattern new
 ```
 
 **Filename routing (required)**
@@ -105,9 +111,9 @@ python run_all_detections.py -i /path/extracted_regions --pattern new -o /path/o
 |---|---|
 | `island` | `debris_island`, `overspray_island`, `line_defect` |
 | `stripe` | `stripe_misalignment`, `edge_roughness`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
-| neither | `surface_treatment` only |
+| neither | skipped in folder mode (unless `--include-unknown`) |
 
-`--pattern` / `--clear` affect **islands only**. Stripes ignore them.
+Folder mode is recursive by default. Timing (stripe vs island totals, and per-detector seconds) is printed at the end and written under `timing` in `defect_report.json`.
 
 ---
 
@@ -191,6 +197,8 @@ python scripts/defects_detection/run_all_detections.py -i <file_or_folder> [opti
 | `--pattern` | No | `legacy` | Island pattern: `legacy` \| `new` |
 | `--clear` | No | off | Clear material; **requires `--pattern new`**; islands only |
 | `--only` | No | all for that image type | One or more detector keys (see below) |
+| `--no-recursive` | No | off | Folder mode: top-level only (default walks subfolders) |
+| `--include-unknown` | No | off | Folder mode: also process non-stripe/non-island names |
 | `--generate_report` | No | off | Also write a PDF summary |
 
 \* One of `-i` / `--input` or `--input_folder` is required.

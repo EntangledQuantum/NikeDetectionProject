@@ -1,4 +1,5 @@
 import os
+import time
 import cv2
 import numpy as np
 import json
@@ -73,11 +74,13 @@ class DetectionResult:
         visualization_path: Path to a saved visualization image, if any.
         defects: Per-defect dictionaries with detector-specific fields.
         error: Optional error message if detection failed.
+        elapsed_seconds: Wall-clock seconds for this detector (detect + save).
     """
     defect_count: int
     visualization_path: Optional[str]
     defects: List[Dict[str, Any]]
     error: Optional[str] = None
+    elapsed_seconds: float = 0.0
 
 
 @dataclass
@@ -93,6 +96,7 @@ class ImageResult:
         detectors_used: List of detector keys that were run.
         detections: Mapping of detector key to `DetectionResult`.
         error: Optional error message if high-level processing failed.
+        elapsed_seconds: Wall-clock seconds for all detectors on this image.
     """
     image_name: str
     image_path: str
@@ -102,6 +106,7 @@ class ImageResult:
     detectors_used: List[str]
     detections: Dict[str, DetectionResult]
     error: Optional[str] = None
+    elapsed_seconds: float = 0.0
 
 
 class ImagePreprocessor:
@@ -652,9 +657,11 @@ class SingleImageProcessor:
         print(f"    Full image (size: {file_size/(1024*1024):.1f}MB), using normal processing...")
         
         detections = {}
+        image_t0 = time.perf_counter()
         
         for detector_name, detector in detectors.items():
             print(f"    Running {detector_name} detection...")
+            det_t0 = time.perf_counter()
             try:
                 # Preprocess based on detector type
                 if detector_name == 'surface_treatment':
@@ -744,22 +751,29 @@ class SingleImageProcessor:
                 
                 # Clean defects for JSON serialization
                 cleaned_defects = self._clean_defect_data(defects)
+                elapsed = time.perf_counter() - det_t0
+                print(f"    {detector_name}: {elapsed:.2f}s, {len(defects)} defect(s)")
                 
                 detections[detector_name] = DetectionResult(
                     defect_count=len(defects),
                     visualization_path=vis_path,
-                    defects=cleaned_defects
+                    defects=cleaned_defects,
+                    elapsed_seconds=round(elapsed, 3),
                 )
                 
             except Exception as e:
-                print(f"    Error in {detector_name} detection: {str(e)}")
+                elapsed = time.perf_counter() - det_t0
+                print(f"    Error in {detector_name} detection ({elapsed:.2f}s): {str(e)}")
                 detections[detector_name] = DetectionResult(
                     defect_count=0,
                     visualization_path=None,
                     defects=[],
-                    error=str(e)
+                    error=str(e),
+                    elapsed_seconds=round(elapsed, 3),
                 )
         
+        image_elapsed = time.perf_counter() - image_t0
+        print(f"    Image total: {image_elapsed:.2f}s")
         return ImageResult(
             image_name=base_name,
             image_path=image_path,
@@ -767,7 +781,8 @@ class SingleImageProcessor:
             processing_time=datetime.now().isoformat(),
             file_size_mb=file_size / (1024 * 1024),
             detectors_used=list(detectors.keys()),
-            detections=detections
+            detections=detections,
+            elapsed_seconds=round(image_elapsed, 3),
         )
     
     def _get_file_size_mb(self, image_path: str) -> float:
@@ -846,25 +861,30 @@ class ResultsSaver:
     
     @staticmethod
     def save_summary_report(results: List[ImageResult], output_dir: str, 
-                          config: ProcessingConfig) -> None:
+                          config: ProcessingConfig,
+                          batch_elapsed_seconds: Optional[float] = None) -> None:
         """Save a summary report (JSON, and optional PDF) for all images.
 
         Args:
             results: List of `ImageResult` objects.
             output_dir: Directory where summary artifacts will be saved.
             config: Pipeline configuration controlling report generation.
+            batch_elapsed_seconds: Optional wall-clock time for the whole batch.
         """
         # Calculate statistics
         stats = ResultsSaver._calculate_statistics(results)
+        timing = ResultsSaver._calculate_timing(results, batch_elapsed_seconds)
         
         # Save JSON summary
         summary_data = {
             'timestamp': datetime.now().isoformat(),
             'total_images': len(results),
             'detection_sensitivity': config.sensitivity,
+            'island_pattern': config.pattern,
             'image_type_distribution': stats['image_type_distribution'],
             'defect_statistics': stats['defect_statistics'],
             'processing_summary': stats['processing_summary'],
+            'timing': timing,
             'detailed_results': [asdict(result) for result in results]
         }
         
@@ -876,7 +896,64 @@ class ResultsSaver:
         
         # Generate PDF report if requested
         if config.generate_report:
-            ResultsSaver._generate_pdf_report(results, stats, output_dir)
+            ResultsSaver._generate_pdf_report(results, stats, output_dir, timing)
+
+    @staticmethod
+    def _calculate_timing(results: List[ImageResult],
+                          batch_elapsed_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """Aggregate wall-clock timing by image type and by detector."""
+        by_image_type: Dict[str, Dict[str, float]] = {}
+        by_detector: Dict[str, Dict[str, float]] = {}
+        per_image: List[Dict[str, Any]] = []
+
+        for result in results:
+            kind = result.image_type.value
+            entry = by_image_type.setdefault(kind, {
+                'total_seconds': 0.0,
+                'image_count': 0,
+            })
+            entry['total_seconds'] += float(result.elapsed_seconds or 0.0)
+            entry['image_count'] += 1
+
+            per_image.append({
+                'image_name': result.image_name,
+                'image_type': kind,
+                'elapsed_seconds': float(result.elapsed_seconds or 0.0),
+                'detectors': {
+                    name: float(det.elapsed_seconds or 0.0)
+                    for name, det in result.detections.items()
+                },
+            })
+
+            for name, det in result.detections.items():
+                d = by_detector.setdefault(name, {
+                    'total_seconds': 0.0,
+                    'call_count': 0,
+                })
+                d['total_seconds'] += float(det.elapsed_seconds or 0.0)
+                d['call_count'] += 1
+
+        for entry in by_image_type.values():
+            n = max(1, int(entry['image_count']))
+            entry['total_seconds'] = round(entry['total_seconds'], 3)
+            entry['average_seconds_per_image'] = round(
+                entry['total_seconds'] / n, 3)
+
+        for entry in by_detector.values():
+            n = max(1, int(entry['call_count']))
+            entry['total_seconds'] = round(entry['total_seconds'], 3)
+            entry['average_seconds'] = round(entry['total_seconds'] / n, 3)
+
+        out: Dict[str, Any] = {
+            'by_image_type': by_image_type,
+            'by_detector': by_detector,
+            'per_image': per_image,
+            'sum_of_image_seconds': round(
+                sum(float(r.elapsed_seconds or 0.0) for r in results), 3),
+        }
+        if batch_elapsed_seconds is not None:
+            out['batch_elapsed_seconds'] = round(float(batch_elapsed_seconds), 3)
+        return out
     
     @staticmethod
     def _calculate_statistics(results: List[ImageResult]) -> Dict[str, Any]:
@@ -909,18 +986,28 @@ class ResultsSaver:
                 processing_summary['successful_images'] += 1
             
             total_file_size += result.file_size_mb
+            processing_summary['total_processing_time'] += float(
+                result.elapsed_seconds or 0.0)
             
             for detector_name, detection in result.detections.items():
                 if detector_name not in defect_statistics:
                     defect_statistics[detector_name] = {
                         'total_defects': 0,
-                        'affected_images': 0
+                        'affected_images': 0,
+                        'total_seconds': 0.0,
                     }
                 
                 defect_statistics[detector_name]['total_defects'] += detection.defect_count
+                defect_statistics[detector_name]['total_seconds'] += float(
+                    detection.elapsed_seconds or 0.0)
                 if detection.defect_count > 0:
                     defect_statistics[detector_name]['affected_images'] += 1
         
+        for det_stats in defect_statistics.values():
+            det_stats['total_seconds'] = round(det_stats['total_seconds'], 3)
+
+        processing_summary['total_processing_time'] = round(
+            processing_summary['total_processing_time'], 3)
         processing_summary['average_file_size_mb'] = total_file_size / len(results) if results else 0
         
         return {
@@ -930,16 +1017,20 @@ class ResultsSaver:
         }
     
     @staticmethod
-    def _generate_pdf_report(results: List[ImageResult], stats: Dict[str, Any], 
-                           output_dir: str) -> None:
+    def _generate_pdf_report(results: List[ImageResult], stats: Dict[str, Any],
+                           output_dir: str,
+                           timing: Optional[Dict[str, Any]] = None) -> None:
         """Generate a human-readable PDF summary report.
 
         Args:
             results: Per-image results to include.
             stats: Precomputed aggregate statistics.
             output_dir: Directory to write the PDF to.
+            timing: Optional wall-clock timing aggregates.
         """
         pdf_path = os.path.join(output_dir, "defect_detection_report.pdf")
+        if timing is None:
+            timing = ResultsSaver._calculate_timing(results)
         
         with PdfPages(pdf_path) as pdf:
             # Summary page
@@ -958,12 +1049,32 @@ class ResultsSaver:
                 summary_text += f"\n{detector_name.replace('_', ' ').title()}:\n"
                 summary_text += f"  Total Defects Found: {detector_stats['total_defects']}\n"
                 summary_text += f"  Images with Defects: {detector_stats['affected_images']}\n"
+                summary_text += f"  Total Time: {detector_stats.get('total_seconds', 0):.2f}s\n"
                 if detector_stats['affected_images'] > 0:
                     avg = detector_stats['total_defects'] / detector_stats['affected_images']
                     summary_text += f"  Average per Affected Image: {avg:.2f}\n"
+
+            summary_text += "\nTiming (wall-clock):\n" + "-" * 40 + "\n"
+            if timing.get('batch_elapsed_seconds') is not None:
+                summary_text += f"  Batch total: {timing['batch_elapsed_seconds']:.2f}s\n"
+            for kind in ('stripe', 'island', 'unknown'):
+                if kind in timing.get('by_image_type', {}):
+                    t = timing['by_image_type'][kind]
+                    summary_text += (
+                        f"  {kind.title()}: {t['total_seconds']:.2f}s "
+                        f"({t['image_count']} image(s), "
+                        f"avg {t['average_seconds_per_image']:.2f}s)\n"
+                    )
+            summary_text += "  Per detector:\n"
+            for name, t in sorted(timing.get('by_detector', {}).items(),
+                                  key=lambda kv: -kv[1]['total_seconds']):
+                summary_text += (
+                    f"    {name}: {t['total_seconds']:.2f}s "
+                    f"({t['call_count']} run(s))\n"
+                )
             
             ax.text(0.1, 0.9, summary_text, transform=ax.transAxes,
-                   fontsize=12, verticalalignment='top', fontfamily='monospace')
+                   fontsize=10, verticalalignment='top', fontfamily='monospace')
             ax.axis('off')
             
             pdf.savefig(fig, bbox_inches='tight')
@@ -1013,6 +1124,52 @@ class DefectDetectionPipeline:
         os.makedirs(output_dir, exist_ok=True)
         return output_dir
 
+    @staticmethod
+    def _collect_image_files(input_folder: str, recursive: bool = True,
+                             stripe_island_only: bool = True) -> List[str]:
+        """Collect image paths under a folder for batch processing.
+
+        Args:
+            input_folder: Root directory to search.
+            recursive: If True, walk subdirectories; else only the top level.
+            stripe_island_only: If True, keep only filenames containing
+                ``stripe`` or ``island`` (skips full-scan color TIFFs that
+                would otherwise route to the unknown/surface-treatment path).
+
+        Returns:
+            Sorted list of absolute image paths.
+        """
+        image_extensions = ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp')
+        found: List[str] = []
+
+        if recursive:
+            for root, _dirs, files in os.walk(input_folder):
+                for name in files:
+                    if name.lower().endswith(image_extensions):
+                        found.append(os.path.join(root, name))
+        else:
+            for name in os.listdir(input_folder):
+                path = os.path.join(input_folder, name)
+                if os.path.isfile(path) and name.lower().endswith(image_extensions):
+                    found.append(path)
+
+        if stripe_island_only:
+            kept = []
+            skipped = []
+            for path in found:
+                kind = ImageTypeClassifier.classify_image(path)
+                if kind in (ImageType.STRIPE, ImageType.ISLAND):
+                    kept.append(path)
+                else:
+                    skipped.append(os.path.basename(path))
+            if skipped:
+                print(f"  Skipping {len(skipped)} non-stripe/island file(s): "
+                      f"{', '.join(skipped[:8])}"
+                      f"{'...' if len(skipped) > 8 else ''}")
+            found = kept
+
+        return sorted(found)
+
     def process_single_image(self, image_path: str) -> None:
         """Process one island/stripe image (filename drives detector routing).
 
@@ -1026,93 +1183,129 @@ class DefectDetectionPipeline:
         image_type = ImageTypeClassifier.classify_image(image_path)
         print(f"Found 1 image to process ({image_type.value})")
 
+        batch_t0 = time.perf_counter()
         result = self.processor.process_image(image_path, output_dir)
+        batch_elapsed = time.perf_counter() - batch_t0
         self.results.append(result)
 
         image_output_dir = os.path.join(output_dir, result.image_name)
         ResultsSaver.save_image_result(result, image_output_dir)
-        print(f"  [OK] Completed processing {result.image_name}")
+        print(f"  [OK] Completed processing {result.image_name} "
+              f"({result.elapsed_seconds:.2f}s)")
 
-        ResultsSaver.save_summary_report(self.results, output_dir, self.config)
+        ResultsSaver.save_summary_report(
+            self.results, output_dir, self.config,
+            batch_elapsed_seconds=batch_elapsed)
 
         print(f"\n[OK] Processing complete! Results saved to: {output_dir}")
-        print(f"[INFO] Processed {len(self.results)} images total")
-        self._print_summary_statistics()
+        print(f"[INFO] Processed {len(self.results)} images total "
+              f"in {batch_elapsed:.2f}s")
+        self._print_summary_statistics(batch_elapsed_seconds=batch_elapsed)
 
-    def process_folder(self, input_folder: str) -> None:
-        """Process all supported images found in a folder.
+    def process_folder(self, input_folder: str, recursive: bool = True,
+                       stripe_island_only: bool = True) -> None:
+        """Process all supported images found in a folder (optionally recursive).
 
-        Produces per-image JSON and visualization artifacts, and a folder-level
-        summary JSON (and optional PDF).
+        Filename heuristics route each file: ``*stripe*`` → stripe detectors,
+        ``*island*`` → island detectors. By default only those names are kept
+        so full-scan color columns in the same tree are skipped.
 
         Args:
             input_folder: Directory containing images to process.
+            recursive: Walk subdirectories when True.
+            stripe_island_only: Skip files that are neither stripe nor island.
         """
+        input_folder = os.path.abspath(input_folder)
         output_dir = self._make_output_dir(input_folder)
 
-        # Get image files
-        image_extensions = ('.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp')
-        image_files = [f for f in os.listdir(input_folder)
-                      if f.lower().endswith(image_extensions)]
-        
+        image_files = self._collect_image_files(
+            input_folder, recursive=recursive,
+            stripe_island_only=stripe_island_only)
+
         if not image_files:
-            print(f"No image files found in {input_folder}")
+            print(f"No matching image files found in {input_folder}")
             return
-        
-        print(f"Found {len(image_files)} images to process")
-        
-        # Process each image
-        for img_file in tqdm(image_files, desc="Processing images"):
-            img_path = os.path.join(input_folder, img_file)
+
+        n_stripe = sum(1 for p in image_files
+                       if ImageTypeClassifier.classify_image(p) == ImageType.STRIPE)
+        n_island = sum(1 for p in image_files
+                       if ImageTypeClassifier.classify_image(p) == ImageType.ISLAND)
+        print(f"Found {len(image_files)} images to process "
+              f"({n_stripe} stripe, {n_island} island"
+              f"{'' if stripe_island_only else ', +others'})"
+              f"{' [recursive]' if recursive else ''})")
+
+        batch_t0 = time.perf_counter()
+        for img_path in tqdm(image_files, desc="Processing images"):
             result = self.processor.process_image(img_path, output_dir)
             self.results.append(result)
-            
-            # Save individual result
+
             image_output_dir = os.path.join(output_dir, result.image_name)
             ResultsSaver.save_image_result(result, image_output_dir)
-            
-            print(f"  [OK] Completed processing {result.image_name}")
-        
-        # Generate summary report
-        ResultsSaver.save_summary_report(self.results, output_dir, self.config)
-        
+
+            print(f"  [OK] Completed processing {result.image_name} "
+                  f"({result.image_type.value}, {result.elapsed_seconds:.2f}s)")
+
+        batch_elapsed = time.perf_counter() - batch_t0
+        ResultsSaver.save_summary_report(
+            self.results, output_dir, self.config,
+            batch_elapsed_seconds=batch_elapsed)
+
         print(f"\n[OK] Processing complete! Results saved to: {output_dir}")
-        print(f"[INFO] Processed {len(self.results)} images total")
-        
-        # Print summary statistics
-        self._print_summary_statistics()
-    
-    def _print_summary_statistics(self) -> None:
-        """Print a concise summary of image counts and total defects to console."""
+        print(f"[INFO] Processed {len(self.results)} images total "
+              f"in {batch_elapsed:.2f}s")
+        self._print_summary_statistics(batch_elapsed_seconds=batch_elapsed)
+
+    def _print_summary_statistics(self,
+                                  batch_elapsed_seconds: Optional[float] = None) -> None:
+        """Print image counts, defects, and timing to the console."""
         if not self.results:
             return
-        
-        # Count by image type
-        type_counts = {}
-        detector_counts = {}
-        
+
+        timing = ResultsSaver._calculate_timing(self.results, batch_elapsed_seconds)
+
+        type_counts: Dict[str, int] = {}
+        detector_counts: Dict[str, int] = {}
         for result in self.results:
-            # Count image types
             img_type = result.image_type.value
             type_counts[img_type] = type_counts.get(img_type, 0) + 1
-            
-            # Count detections
             for detector_name, detection in result.detections.items():
-                if detector_name not in detector_counts:
-                    detector_counts[detector_name] = 0
-                detector_counts[detector_name] += detection.defect_count
-        
+                detector_counts[detector_name] = (
+                    detector_counts.get(detector_name, 0) + detection.defect_count)
+
         print("\nSummary Statistics:")
-        print("-" * 40)
-        
+        print("-" * 50)
+
         print("Image Types Processed:")
         for img_type, count in type_counts.items():
             print(f"  {img_type.title()}: {count} images")
-        
+
         print("\nDefects Found:")
         for detector_name, count in detector_counts.items():
             print(f"  {detector_name.replace('_', ' ').title()}: {count} defects")
 
+        print("\nTiming (wall-clock):")
+        if timing.get('batch_elapsed_seconds') is not None:
+            print(f"  Batch total: {timing['batch_elapsed_seconds']:.2f}s")
+        by_type = timing.get('by_image_type', {})
+        for kind in ('stripe', 'island', 'unknown'):
+            if kind in by_type:
+                t = by_type[kind]
+                print(f"  {kind.title()}: {t['total_seconds']:.2f}s "
+                      f"across {t['image_count']} image(s) "
+                      f"(avg {t['average_seconds_per_image']:.2f}s/image)")
+        print("  Per detector (sum over all images):")
+        for name, t in sorted(timing.get('by_detector', {}).items(),
+                              key=lambda kv: -kv[1]['total_seconds']):
+            print(f"    {name}: {t['total_seconds']:.2f}s "
+                  f"({t['call_count']} run(s), avg {t['average_seconds']:.2f}s)")
+        print("  Per image:")
+        for row in timing.get('per_image', []):
+            print(f"    {row['image_name']} [{row['image_type']}]: "
+                  f"{row['elapsed_seconds']:.2f}s")
+            for det_name, det_sec in sorted(
+                    row.get('detectors', {}).items(), key=lambda kv: -kv[1]):
+                print(f"      - {det_name}: {det_sec:.2f}s")
 
 # Detector keys accepted by --only (must match strategy keys)
 _ALL_DETECTOR_KEYS = [
@@ -1144,8 +1337,8 @@ Examples:
   # Single stripe image (filename must contain 'stripe')
   python run_all_detections.py -i blueStripe.tiff
 
-  # Whole extracted folder (same routing per file)
-  python run_all_detections.py -i extracted_dir --pattern new
+  # Folder of extracted stripe + island crops (recursive; skips non-stripe/island)
+  python run_all_detections.py -i /path/July_26 --pattern new -o /path/out
 """
     )
     parser.add_argument('--input', '-i', dest='input_path', default=None,
@@ -1167,6 +1360,11 @@ Examples:
                             'level per image. Requires --pattern new.')
     parser.add_argument('--only', nargs='+', metavar='DETECTOR', choices=_ALL_DETECTOR_KEYS,
                        help='Run only these detectors (subset of the strategy for this image type)')
+    parser.add_argument('--no-recursive', action='store_true',
+                       help='When input is a folder, only scan the top level (default: recursive)')
+    parser.add_argument('--include-unknown', action='store_true',
+                       help='When input is a folder, also process files that are neither '
+                            '*stripe* nor *island* (default: skip them)')
     
     args = parser.parse_args()
 
@@ -1213,6 +1411,10 @@ Examples:
           f"{' (clear material)' if args.clear else ''}")
     if args.only:
         print(f"Only detectors: {args.only}")
+    if is_dir:
+        print(f"Folder scan: "
+              f"{'top-level only' if args.no_recursive else 'recursive'}; "
+              f"{'all images' if args.include_unknown else 'stripe/island filenames only'}")
     print(f"Detection routing (by filename):")
     print(f"  - *stripe*: Stripe Misalignment, Edge Roughness, Overspray, Surface Treatment, Void, Debris Stripe")
     if args.pattern == 'new':
@@ -1225,7 +1427,11 @@ Examples:
     if is_file:
         pipeline.process_single_image(input_path)
     else:
-        pipeline.process_folder(input_path)
+        pipeline.process_folder(
+            input_path,
+            recursive=not args.no_recursive,
+            stripe_island_only=not args.include_unknown,
+        )
 
 
 if __name__ == "__main__":
