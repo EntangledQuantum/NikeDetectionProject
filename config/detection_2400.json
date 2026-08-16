@@ -1,0 +1,362 @@
+{
+  "dpi": 2400,
+  "defaults": {
+    "pattern": "new",
+    "sensitivity": "medium",
+    "clear": false,
+    "max_image_workers": 2,
+    "max_detector_threads": 4,
+    "write_visualizations": true,
+    "downscale_vis": false,
+    "write_crops": false
+  },
+  "detector_sets": {
+    "stripe": [
+      "stripe_misalignment",
+      "edge_roughness",
+      "void",
+      "debris_stripe",
+      "overspray"
+    ],
+    "island": [
+      "debris_island",
+      "overspray_island",
+      "line_defect"
+    ],
+    "unknown": [
+      "surface_treatment"
+    ]
+  },
+  "geometry": {
+    "colors": ["Key", "Cyan", "Magenta", "Yellow"],
+    "color_width": 6800,
+    "x_offset": 100,
+    "num_heads": 3,
+    "head_height": 11020,
+    "y_offset": 80,
+    "island_front": true,
+    "island_width": 0,
+    "stripe_width": 1030,
+    "buffer": {
+      "horizontal": 50,
+      "vertical": 50,
+      "stripe_island": 50
+    }
+  },
+  "ideal_reference": {
+    "width": 5163,
+    "height": 44228,
+    "y_delta_min": 85,
+    "y_delta_max": 120,
+    "line_spacing": 100,
+    "slope_min": 0.0150,
+    "slope_max": 0.0219
+  },
+  "material": {
+    "clear_debris_offsets": { "high": 35, "medium": 45, "low": 55 },
+    "clear_overspray_offsets": { "high": 35, "medium": 45, "low": 60 },
+    "ink_clamps": { "min": 120, "max": 200 },
+    "clear_ink_offsets": { "min": 15, "max": 85 },
+    "line_paint_extension": 20
+  },
+  "vertical_band": {
+    "binary_threshold": 170,
+    "content_binary_threshold": 127,
+    "min_coverage": 0.25,
+    "inner_margin": 5
+  },
+  "sensitivity": {
+    "high": {
+      "line_detector": {
+        "base_kernel_width": 20,
+        "base_kernel_height": 20,
+        "base_num_vertical_scans": 7,
+        "line_detection_threshold": 0.10,
+        "min_detection_count": 2
+      },
+      "debris_island": {
+        "line_thickness": 5,
+        "background_threshold": 140,
+        "debris_min_area": 5
+      },
+      "overspray_island": {
+        "line_thickness": 5,
+        "background_threshold": 5,
+        "overspray_min_area": 100,
+        "overspray_max_distance": 300
+      },
+      "line_defect_legacy": {
+        "kernel_size": 15,
+        "step_size": 10,
+        "line_threshold": 0.25,
+        "min_gap_size": 50,
+        "jagged_threshold": 10
+      },
+      "line_defect_new": {
+        "min_gap_fraction": 0.35,
+        "split_min_fraction": 0.40,
+        "dev_min_fraction": 0.40,
+        "split_min_hollow": 3,
+        "dev_abs_floor": 3.0,
+        "dev_thickness_factor": 0.6,
+        "density_downsample": 16,
+        "density_rel_threshold": 0.40,
+        "density_min_defects": 8
+      },
+      "stripe_misalignment": {
+        "step_threshold": 3.0,
+        "roll_threshold": 5.0,
+        "median_window": 31,
+        "step_window": 300,
+        "step_guard": 15,
+        "step_stride": 5,
+        "segment_margin": 150
+      },
+      "edge_roughness": {
+        "mad_threshold": 1.30,
+        "p95_threshold": 4.2,
+        "min_span_frac": 0.08,
+        "stitch_step_threshold": 4.0,
+        "stitch_guard_rows": 40,
+        "highpass_window": 81,
+        "local_window": 256,
+        "local_stride": 64
+      },
+      "void": {
+        "mad_k": 5.0,
+        "min_area_floor": 80,
+        "min_area_frac": 0.0001,
+        "max_area_frac": 0.10,
+        "max_dim_ratio_to_stripe_w": 1.0,
+        "inner_pad_frac": 0.05,
+        "inner_pad_min": 20,
+        "score_floor": 0.12,
+        "weak_fraction": 0.55
+      },
+      "debris_stripe": {
+        "score_k": 4.5,
+        "strong_floor": 0.34,
+        "weak_floor": 0.22,
+        "min_area_floor": 4,
+        "min_area_frac": 0.00002,
+        "inner_pad_frac": 0.035,
+        "inner_pad_min": 8,
+        "max_area_frac": 0.20
+      },
+      "overspray": {
+        "kernel_size": 20,
+        "step_size": 15,
+        "scatter_threshold": 0.2,
+        "min_pixels_threshold": 0.03
+      },
+      "surface_treatment": {
+        "contrast_threshold": 70,
+        "void_size_threshold": 200,
+        "coalescence_threshold": 400,
+        "kernel_size": 10
+      }
+    },
+    "medium": {
+      "line_detector": {
+        "base_kernel_width": 10,
+        "base_kernel_height": 10,
+        "base_num_vertical_scans": 50,
+        "line_detection_threshold": 0.3,
+        "min_detection_count": 5
+      },
+      "debris_island": {
+        "line_thickness": 20,
+        "background_threshold": 120,
+        "debris_min_area": 10
+      },
+      "overspray_island": {
+        "line_thickness": 15,
+        "background_threshold": 50,
+        "overspray_min_area": 5000,
+        "overspray_max_distance": 1000
+      },
+      "line_defect_legacy": {
+        "kernel_size": 30,
+        "step_size": 25,
+        "line_threshold": 0.20,
+        "min_gap_size": 100,
+        "jagged_threshold": 5
+      },
+      "line_defect_new": {
+        "min_gap_fraction": 0.60,
+        "split_min_fraction": 0.55,
+        "dev_min_fraction": 0.60,
+        "split_min_hollow": 3,
+        "dev_abs_floor": 3.0,
+        "dev_thickness_factor": 0.6,
+        "density_downsample": 16,
+        "density_rel_threshold": 0.40,
+        "density_min_defects": 8
+      },
+      "stripe_misalignment": {
+        "step_threshold": 5.0,
+        "roll_threshold": 8.0,
+        "median_window": 31,
+        "step_window": 300,
+        "step_guard": 15,
+        "step_stride": 5,
+        "segment_margin": 150
+      },
+      "edge_roughness": {
+        "mad_threshold": 1.70,
+        "p95_threshold": 5.0,
+        "min_span_frac": 0.12,
+        "stitch_step_threshold": 4.0,
+        "stitch_guard_rows": 40,
+        "highpass_window": 81,
+        "local_window": 256,
+        "local_stride": 64
+      },
+      "void": {
+        "mad_k": 7.0,
+        "min_area_floor": 150,
+        "min_area_frac": 0.0002,
+        "max_area_frac": 0.10,
+        "max_dim_ratio_to_stripe_w": 1.0,
+        "inner_pad_frac": 0.05,
+        "inner_pad_min": 20,
+        "score_floor": 0.12,
+        "weak_fraction": 0.55
+      },
+      "debris_stripe": {
+        "score_k": 5.5,
+        "strong_floor": 0.40,
+        "weak_floor": 0.26,
+        "min_area_floor": 8,
+        "min_area_frac": 0.00005,
+        "inner_pad_frac": 0.035,
+        "inner_pad_min": 8,
+        "max_area_frac": 0.20
+      },
+      "overspray": {
+        "kernel_size": 32,
+        "step_size": 24,
+        "scatter_threshold": 0.3,
+        "min_pixels_threshold": 0.05
+      },
+      "surface_treatment": {
+        "contrast_threshold": 50,
+        "void_size_threshold": 150,
+        "coalescence_threshold": 300,
+        "kernel_size": 10
+      }
+    },
+    "low": {
+      "line_detector": {
+        "base_kernel_width": 40,
+        "base_kernel_height": 40,
+        "base_num_vertical_scans": 3,
+        "line_detection_threshold": 0.20,
+        "min_detection_count": 3
+      },
+      "debris_island": {
+        "line_thickness": 5,
+        "background_threshold": 100,
+        "debris_min_area": 50
+      },
+      "overspray_island": {
+        "line_thickness": 5,
+        "background_threshold": 20,
+        "overspray_min_area": 1000,
+        "overspray_max_distance": 800
+      },
+      "line_defect_legacy": {
+        "kernel_size": 50,
+        "step_size": 40,
+        "line_threshold": 0.15,
+        "min_gap_size": 200,
+        "jagged_threshold": 25
+      },
+      "line_defect_new": {
+        "min_gap_fraction": 1.20,
+        "split_min_fraction": 0.90,
+        "dev_min_fraction": 1.00,
+        "split_min_hollow": 3,
+        "dev_abs_floor": 3.0,
+        "dev_thickness_factor": 0.6,
+        "density_downsample": 16,
+        "density_rel_threshold": 0.40,
+        "density_min_defects": 8
+      },
+      "stripe_misalignment": {
+        "step_threshold": 10.0,
+        "roll_threshold": 15.0,
+        "median_window": 31,
+        "step_window": 300,
+        "step_guard": 15,
+        "step_stride": 5,
+        "segment_margin": 150
+      },
+      "edge_roughness": {
+        "mad_threshold": 2.50,
+        "p95_threshold": 7.2,
+        "min_span_frac": 0.18,
+        "stitch_step_threshold": 4.0,
+        "stitch_guard_rows": 40,
+        "highpass_window": 81,
+        "local_window": 256,
+        "local_stride": 64
+      },
+      "void": {
+        "mad_k": 10.0,
+        "min_area_floor": 300,
+        "min_area_frac": 0.0004,
+        "max_area_frac": 0.10,
+        "max_dim_ratio_to_stripe_w": 1.0,
+        "inner_pad_frac": 0.05,
+        "inner_pad_min": 20,
+        "score_floor": 0.12,
+        "weak_fraction": 0.55
+      },
+      "debris_stripe": {
+        "score_k": 7.0,
+        "strong_floor": 0.48,
+        "weak_floor": 0.32,
+        "min_area_floor": 20,
+        "min_area_frac": 0.00012,
+        "inner_pad_frac": 0.035,
+        "inner_pad_min": 8,
+        "max_area_frac": 0.20
+      },
+      "overspray": {
+        "kernel_size": 50,
+        "step_size": 50,
+        "scatter_threshold": 0.5,
+        "min_pixels_threshold": 0.1
+      },
+      "surface_treatment": {
+        "contrast_threshold": 30,
+        "void_size_threshold": 70,
+        "coalescence_threshold": 150,
+        "kernel_size": 10
+      }
+    }
+  },
+  "regions": [
+    {
+      "name": "KeyIsland",
+      "type": "island",
+      "bounding_box_pixels": {
+        "top_x": 0,
+        "top_y": 0,
+        "bottom_x": 5500,
+        "bottom_y": 33306
+      }
+    },
+    {
+      "name": "KeyStripe",
+      "type": "stripe",
+      "bounding_box_pixels": {
+        "top_x": 5500,
+        "top_y": 0,
+        "bottom_x": 6930,
+        "bottom_y": 33306
+      }
+    }
+  ]
+}

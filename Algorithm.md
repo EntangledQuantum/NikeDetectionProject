@@ -629,7 +629,7 @@ Priority-ordered list of work that is **not** done on `july_visit`:
 
 `run_all_detections.py` currently runs detectors **one after another** on one image, and each detector **reloads the TIFF and rebuilds its own geometry**. That is the main reason a Cyan stripe (~107 MB, 33k rows) takes many minutes, and why a folder of islands (~555 MB each) is dominated by repeated I/O rather than unique math.
 
-This section is a design note only (no code changes landed with it).
+This section is implemented in `nike_detection` (load once → `ImageContext` → parallel detectors). The sequential per-detector `cv2.imread` path in `run_all_detections.py` is no longer the runtime pipeline.
 
 ### 10.1 What the pipeline does today (sequential, no sharing)
 
@@ -799,20 +799,24 @@ Expected effect if (1)+(2)+(3)+(4)+(5) land: stripe wall-clock dominated by uniq
 ## 11. How to invoke
 
 ```bash
-# Full scan, new dual-band pattern
-python main_defect_detection.py --image scan.tif --dpi 2400 --pattern new
+# Full scan, new dual-band pattern (in-process extract + detect)
+python -m nike_detection -i scan.tif --extract --pattern new
 
 # Clear / gray paper (islands only)
-python main_defect_detection.py --image scan.tif --dpi 2400 --pattern new --clear
+python -m nike_detection -i scan.tif --extract --pattern new --clear
 
 # Already-extracted island crop
-python scripts/defects_detection/run_all_detections.py -i KeyIsland.tiff --pattern new --only line_defect
+python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
 
-# Stripe crop (pattern flag ignored)
-python scripts/defects_detection/run_all_detections.py -i CyanStripe.tiff --only void stripe_misalignment
+# Stripe crop
+python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment
+
+# Combined stripe+island TIFF (filename contains `full`)
+python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
 ```
 
 Operator CLI details: `USER_STORY_README.md`. Pipeline overview: `README.md`.
+Unified thresholds: `config/detection_2400.json`.
 
 ---
 
@@ -820,15 +824,18 @@ Operator CLI details: `USER_STORY_README.md`. Pipeline overview: `README.md`.
 
 | Role | Path |
 |---|---|
-| Orchestrator | `main_defect_detection.py` |
-| Detector runner | `scripts/defects_detection/run_all_detections.py` |
+| Package CLI | `nike_detection/cli.py` (`python -m nike_detection`) |
+| Unified 2400 config | `config/detection_2400.json` |
+| Orchestrator shim | `main_defect_detection.py` |
+| Detector-runner shim | `scripts/defects_detection/run_all_detections.py` |
+| Shared context / runner | `nike_detection/pipeline/context.py`, `runner.py` |
+| Detector adapters | `nike_detection/detectors/adapters.py` |
+| Stripe algorithms | `nike_detection/detectors/stripe/` |
+| Legacy island algorithms | `nike_detection/detectors/island_legacy/` |
+| Dual-band island algorithms | `nike_detection/detectors/island_new/` |
+| Vertical bands | `nike_detection/geometry/vertical_band_detector.py` |
+| Line extract (new) | `nike_detection/geometry/island_line_extractor.py` |
+| Legacy line scan | `nike_detection/geometry/line_detector.py` |
+| JSON / vis writers | `nike_detection/io/results.py`, `visualization.py` |
 | New-pattern extract | `scripts/utility/new_pattern_tiff_extractor.py` |
 | Legacy extract | `scripts/utility/tiff_extractor.py` |
-| Dual-band debris / overspray / line defect | `scripts/defects_detection/new_pattern_*.py` |
-| Vertical bands | `scripts/defects_detection/utils/vertical_band_detector.py` |
-| Line extract (new) | `scripts/defects_detection/utils/island_line_extractor.py` |
-| Band refine | `scripts/defects_detection/utils/band_line_refiner.py` |
-| Clear background | `scripts/defects_detection/utils/material_profile.py` |
-| Legacy line scan | `scripts/defects_detection/utils/line_detector.py` |
-| Stripe void / debris / stitch / roughness | `void_detection.py`, `debris_stripe_detector.py`, `stripe_misalignment_detection.py`, `stripe_edge_roughness_detection.py` |
-| 2400 new-pattern geometry | `regions_json/new_pattern_2400.json` |

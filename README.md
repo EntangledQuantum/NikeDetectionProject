@@ -22,13 +22,14 @@ This system automatically detects critical printing defects in high-resolution s
 ## Features
 
 - **Fully Automated Workflow**: Single command extracts regions and runs all detections
-- **Standalone region testing**: Run detectors on a single island or stripe crop without re-extracting
+- **Standalone region testing**: Run detectors on a single island, stripe, or `full` crop
 - **Legacy + new island patterns**: Single-band (`--pattern legacy`) or dual-band with 4 vertical lines (`--pattern new`)
 - **Clear scan material**: `--clear` adapts island thresholds for gray paper / fainter ink (requires `--pattern new`)
-- **DPI Template Support**: Built-in configurations for 2400 DPI and 4800 DPI images
-- **Exclusion Zones**: Define regions to ignore during detection (stamps, marks, artifacts)
-- **Large Image Optimized**: Memory-efficient processing with windowed scanning
-- **Comprehensive Reports**: JSON and PDF outputs with visualizations
+- **2400 DPI only**: All pixel thresholds and geometry live in [`config/detection_2400.json`](config/detection_2400.json)
+- **Shared preprocessing**: Each region is decoded once; stripe edges / island bands are built once and shared
+- **Parallel detectors**: Threads inside one image, process workers across a folder
+- **Exclusion Zones**: Loaded once onto the image context and applied to detections
+- **Separated I/O**: Detectors score defects; JSON and visualizations are written afterwards
 
 ## Installation
 
@@ -44,63 +45,61 @@ pip install -r requirements.txt
 ## Quick Start
 
 ```bash
-# Legacy layout (default): extract + detect with 2400 DPI template
-python main_defect_detection.py --image path/to/scan.tif --dpi 2400
-
-# New dual-band island pattern (4 vertical boundary lines → 2 print bands)
-python main_defect_detection.py --image path/to/scan.tif --dpi 2400 --pattern new
+# Preferred: modular package CLI (2400 DPI)
+python -m nike_detection -i path/to/scan.tif --extract --pattern new
 
 # Clear scan material (gray background, fainter ink) — requires --pattern new
-python main_defect_detection.py --image path/to/scan.tif --dpi 2400 --pattern new --clear
+python -m nike_detection -i path/to/scan.tif --extract --pattern new --clear
 
 # High sensitivity + PDF report
-python main_defect_detection.py --image path/to/scan.tif --dpi 4800 --sensitivity high --generate_report
+python -m nike_detection -i path/to/scan.tif --extract --pattern new -s high --generate_report
+
+# Combined stripe+island TIFF (filename contains `full`) with region boxes
+python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
 ```
+
+`main_defect_detection.py` is a thin shim that calls the same `--extract` path.
 
 ### Quick test of one island or stripe crop
 
 If you already have an extracted region image, skip the full scan and run detectors directly.
-Filenames must contain `island` or `stripe` so the correct detector stack is chosen:
+Filenames must contain `island`, `stripe`, or `full` so the correct detector stack is chosen:
 
 ```bash
-cd scripts/defects_detection
-
 # New-pattern island (all island detectors)
-python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new
+python -m nike_detection -i "C:\path\KeyIsland.tiff" --pattern new
 
-# Island: missing nozzles / line misalignment only
-python run_all_detections.py -i "C:\path\KeyIsland.tiff" --pattern new --only line_defect
+# Island: missing nozzles / misalignment only
+python -m nike_detection -i "C:\path\KeyIsland.tiff" --pattern new --only line_defect
 
 # Clear-material island
-python run_all_detections.py -i "C:\path\ClearIsland.tiff" --pattern new --clear
+python -m nike_detection -i "C:\path\ClearIsland.tiff" --pattern new --clear
 
-# Stripe: all stripe detectors
-python run_all_detections.py -i "C:\path\CyanStripe.tiff"
+# Stripe: default stripe set (misalignment, roughness, void, debris, overspray)
+python -m nike_detection -i "C:\path\CyanStripe.tiff"
 
 # Stripe: stitch/roll calibration only
-python run_all_detections.py -i "C:\path\CyanStripe.tiff" --only stripe_misalignment
+python -m nike_detection -i "C:\path\CyanStripe.tiff" --only stripe_misalignment
 
 # Stripe: voids only
-python run_all_detections.py -i "C:\path\CyanStripe.tiff" --only void
+python -m nike_detection -i "C:\path\CyanStripe.tiff" --only void
+
+# Combined TIFF with both patterns (requires --regions or a sibling JSON)
+python -m nike_detection -i "C:\path\Cyan_full.tiff" --pattern new --regions regions.json --only void line_defect
 ```
 
-See [`scripts/defects_detection/RUN_ALL_DETECTIONS_README.md`](scripts/defects_detection/RUN_ALL_DETECTIONS_README.md) for the full standalone CLI.
+`scripts/defects_detection/run_all_detections.py` still works as a shim around this CLI.
+
+All sensitivity tables, detector sets, and 2400 geometry are in [`config/detection_2400.json`](config/detection_2400.json). Surface treatment is opt-in (`--only surface_treatment`).
 
 ## What You Need
 
 ### 1. **TIFF Image File** (Required)
 Your input must be a **TIFF** (`.tif` or `.tiff`) file containing the full scanned print. The system will automatically extract individual regions based on your DPI template or custom configuration.
 
-**Supported DPI:**
-- 2400 DPI
-- 4800 DPI
+**Supported DPI:** 2400 only. 4800 templates are not used by this pipeline.
 
-### 2. **DPI Value** (Required)
-Specify your image resolution using `--dpi` or `-d`:
-- `2400` - Uses the 2400 DPI template configuration
-- `4800` - Uses the 4800 DPI template configuration
-
-This tells the system which built-in template to use for extracting stripe and island regions from your full image.
+Change thresholds by editing [`config/detection_2400.json`](config/detection_2400.json) (`sensitivity.low|medium|high`) rather than detector source files.
 
 ### 3. **Custom Configuration** (Optional)
 If you want to override the DPI templates or define your own regions, provide a custom JSON configuration file using `--config` or `-c`.
@@ -209,34 +208,38 @@ See `example_exclusion_zones.json` in project root for detailed exclusion zone e
 
 ## Usage
 
-### Command-Line Options (`main_defect_detection.py`)
+### Command-Line Options (`python -m nike_detection`)
 
 ```bash
-python main_defect_detection.py [options]
+python -m nike_detection -i <image-or-folder> [options]
 ```
 
 **Required:**
-- `--image`, `-i`: Path to TIFF image file
-- `--dpi`, `-d`: Image DPI (`2400` or `4800`)
+- `--input`, `-i`: Image file, `full` TIFF, or folder of crops
 
 **Optional:**
-- `--config`, `-c`: Custom JSON configuration (overrides the DPI template)
-- `--sensitivity`, `-s`: `low` \| `medium` \| `high` (default: `medium`)
-- `--pattern`: `legacy` (single-band islands, default) \| `new` (dual-band islands with 4 vertical boundary lines)
-- `--clear`: Clear scan material (gray background, fainter ink, lower SNR). Island thresholds are derived from the measured background level per image. **Requires `--pattern new`.**
-- `--generate_report`: Generate PDF report with all detections
+- `--config`: Unified JSON (default: `config/detection_2400.json`)
+- `--sensitivity`, `-s`: `low` \| `medium` \| `high`
+- `--pattern`: `legacy` \| `new` (default from config: `new`)
+- `--clear`: Clear scan material. **Requires `--pattern new`.**
+- `--only`: Subset of detector keys
+- `--regions`: Bounding boxes for a `full` TIFF
+- `--extract`: Extract regions from a press scan first
+- `--no-vis` / `--downscale-vis` / `--debug`
+- `--workers` / `--detector-threads`
+- `--generate_report`: PDF summary
+- `--dpi`: Must be `2400`
 
 ### Usage Examples
 
 ```bash
-# Basic — legacy pattern, 2400 DPI template
-python main_defect_detection.py --image scan.tif --dpi 2400
-
-# Short flags
-python main_defect_detection.py -i scan.tif -d 4800
-
-# New dual-band island pattern
-python main_defect_detection.py -i scan.tif -d 2400 --pattern new
+python -m nike_detection -i scan.tif --extract --pattern new
+python -m nike_detection -i scan.tif --extract --pattern new --clear
+python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
+python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment -s high
+python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
+python -m nike_detection -i extracted_folder --pattern new --workers 2 --no-vis
+```
 
 # Clear material + new pattern
 python main_defect_detection.py -i scan.tif -d 2400 --pattern new --clear
@@ -488,32 +491,22 @@ Algorithm notes: [`Algorithm.md`](Algorithm.md).
 
 ## Module Reference
 
-### Core Scripts
-- **`main_defect_detection.py`**: Full workflow — extract regions then run detections (`--pattern`, `--clear`)
-- **`scripts/defects_detection/run_all_detections.py`**: Standalone runner for one image or a folder (`-i`, `--only`, `--pattern`, `--clear`)
-- **`scripts/utility/tiff_extractor.py`**: Legacy region extraction
-- **`scripts/utility/new_pattern_tiff_extractor.py`**: New-pattern extraction (`num_heads`, dual-band islands)
+### Core
+- **`python -m nike_detection`**: Single CLI — detect crops, `full` TIFFs, or `--extract` a press scan
+- **`config/detection_2400.json`**: All geometry, detector sets, and sensitivity tables
+- **`nike_detection/pipeline/runner.py`**: Load once → shared `ImageContext` → parallel detectors → JSON/vis
+- **`main_defect_detection.py`**: Shim that calls `--extract`
+- **`scripts/defects_detection/run_all_detections.py`**: Shim for already-extracted crops
+- **`scripts/utility/tiff_extractor.py`**: Legacy bbox extraction (used in-process)
+- **`scripts/utility/new_pattern_tiff_extractor.py`**: New-pattern extraction (used in-process)
 
-### Detection Modules
-- **`detector_base.py`**: Base class with exclusion zone support
-- **`stripe_misalignment_detection.py`**: Stitch / roll calibration on stripe edges
-- **`stripe_edge_roughness_detection.py`**: Left/right edge jaggedness (stitch/roll removed)
-- **`overspray_detection.py`**: Scattered ink detector (stripe images)
-- **`surface_treatment_detection.py`**: Irregular drops and voids
-- **`void_detection.py`**: Compact voids inside solid stripes
-- **`debris_stripe_detector.py`**: Dark debris inside colored stripes
-- **`debris_island_detection.py`** / **`new_pattern_debris_island_detection.py`**: Island debris
-- **`overspray_island_detection.py`** / **`new_pattern_overspray_island_detection.py`**: Island overspray
-- **`line_defect_detection.py`** / **`new_pattern_line_defect_detection.py`**: Missing nozzles / misaligned lines
+### Detection
+- **`nike_detection/detectors/stripe/`**: Misalignment, roughness, void, debris, overspray, surface treatment
+- **`nike_detection/detectors/island_legacy/`**: Single-band debris / overspray / line defect
+- **`nike_detection/detectors/island_new/`**: Dual-band debris / overspray / line defect
+- **`nike_detection/geometry/`**: Vertical bands, island line extractor, legacy `LineDetector`
 
-### Utility Modules
-- **`utils/vertical_band_detector.py`**: 4 vertical lines + dual-band segregation (new pattern)
-- **`utils/band_line_refiner.py`**: Full-width horizontal line trajectories
-- **`utils/island_line_extractor.py`**: Per-line ink / gap / split analysis
-- **`utils/material_profile.py`**: Background level for `--clear` material
-- **`utils/edge_detector.py`**: Enhanced edge detection with noise reduction
-- **`utils/image_saver.py`**: Smart image saving (auto-switches to TIFF for large images)
-- **`utils/line_detector.py`**: Slanted line detection for legacy islands
+Algorithm notes: [`Algorithm.md`](Algorithm.md).
 
 ## Try It Yourself / Example Use Cases
 
