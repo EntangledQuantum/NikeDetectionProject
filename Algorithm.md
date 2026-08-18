@@ -1,18 +1,19 @@
 # Defect Detection Algorithms
 
-This document describes every detection algorithm: what it does, how it works, where it fails, what still needs updating, **what work is shared across detectors**, and **how to speed the pipeline up**. It covers the **legacy** single-band island layout and the **new** dual-band scan pattern on `july_visit`.
+This document is the source of truth for **what the code does today**: every detector, the seed-free region extractor, shared preprocessing, and how to run it. Pixel thresholds live in [`config/detection_2400.json`](config/detection_2400.json). The runtime is `python -m nike_detection` (`nike_detection/cli.py`). Older scripts under `scripts/` are shims around that CLI.
 
-Routing is filename-based via `scripts/defects_detection/run_all_detections.py`. Sensitivity presets (`low` / `medium` / `high`) tighten or loosen thresholds.
+The default island layout is **`--pattern new`** (dual-band, four verticals). `--pattern legacy` is the older single-band path. `--clear` adapts island thresholds for gray paper and requires `--pattern new`. Sensitivity presets (`low` / `medium` / `high`) tighten or loosen thresholds.
 
-**Contents:** [scan-pattern change](#1-scan-pattern-change-why-new-algorithms-exist) · [shared infrastructure](#2-shared-infrastructure) · [new-pattern islands](#3-new-pattern-dual-band-island-algorithms) · [legacy islands](#4-legacy-island-algorithms) · [stripes](#5-stripe-region-algorithms) · [extraction](#6-region-extraction-feeds-the-detectors) · [clear material](#7-clear-scan-material---clear) · [robustness](#8-robustness-legacy-vs-dual-band-on-the-new-pattern) · [updates needed](#9-cross-cutting-updates-still-needed) · [**shared work / parallelization / speed-ups**](#10-shared-processing-parallelization-and-speed-ups) · [invoke](#11-how-to-invoke) · [file map](#12-file-map)
+**Contents:** [scan pattern](#1-scan-pattern-change-why-new-algorithms-exist) · [shared infrastructure](#2-shared-infrastructure) · [new-pattern islands](#3-new-pattern-dual-band-island-algorithms) · [legacy islands](#4-legacy-island-algorithms) · [stripes](#5-stripe-region-algorithms) · [region boxes](#6-region-extraction-feeds-the-detectors) · [clear material](#7-clear-scan-material---clear) · [robustness](#8-robustness-legacy-vs-dual-band-on-the-new-pattern) · [still needed](#9-cross-cutting-updates-still-needed) · [pipeline](#10-shared-processing-parallelization-and-speed-ups) · [how to run](#11-how-to-invoke) · [file map](#12-file-map)
 
-| Image type (filename) | Detectors run |
+| Image type (filename token) | What runs |
 |---|---|
-| **Island** (`island` in name) | Debris, Overspray, Line Defect — dual-band variants when `--pattern new` |
-| **Stripe** (`stripe` in name) | Stripe Misalignment, Edge Roughness, Overspray (scatter), Surface Treatment, Void, Debris Stripe |
-| **Unknown** | Surface Treatment only |
+| **`full`** | Measure island + stripe boxes for every colour (no seeds), then run the island and stripe detector sets on those crops |
+| **`island`** | `debris_island`, `overspray_island`, `line_defect` — dual-band implementations when `--pattern new` |
+| **`stripe`** | `stripe_misalignment`, `edge_roughness`, `void`, `debris_stripe`, `overspray` |
+| **Unknown** | `surface_treatment` only (opt-in; not in the default stripe set) |
 
-`--pattern` and `--clear` affect **islands only**. Stripe detectors are the same for both layouts.
+`--pattern` and `--clear` affect **islands only**. Stripe detectors are the same for both layouts. `--regions-only` stops after the boxes are written and does not run detectors.
 
 ---
 
@@ -42,13 +43,13 @@ Applying the legacy stack unchanged fails in three ways:
 2. The four vertical boundary lines are dark/continuous and get flagged as **debris or overspray**.
 3. The print is **stippled** (dotted lines ~10 px thick). The legacy kernel-ratio walk produces mass false positives whenever the trajectory is a few pixels off or a stipple gap is locally sparse.
 
-The dual-band detectors (`--pattern new`) add a band-splitting front end, mask the vertical lines, and replace the kernel walk with column-level ink evidence. Legacy detectors are left unchanged; `--pattern` defaults to `legacy`.
+The dual-band detectors (`--pattern new`) add a band-splitting front end, mask the vertical lines, and replace the kernel walk with column-level ink evidence. Legacy detectors are left unchanged and selected with `--pattern legacy`. Config default is `--pattern new`.
 
 ---
 
 ## 2. Shared infrastructure
 
-### 2.1 `BaseDetector` (`detector_base.py`)
+### 2.1 `BaseDetector` (`nike_detection/detectors/base_legacy.py`)
 
 Common interface for detectors that support exclusion zones:
 
@@ -60,7 +61,7 @@ Common interface for detectors that support exclusion zones:
 
 **Update needed:** wire exclusion zones into the dual-band detectors and at least into stripe misalignment / void (stamps, pen marks, crop artifacts).
 
-### 2.2 `LineDetector` (`utils/line_detector.py`) — legacy island primitive
+### 2.2 `LineDetector` (`nike_detection/geometry/line_detector.py`) — legacy island primitive
 
 Used by legacy Debris Island, Overspray Island, and Line Defect.
 
@@ -87,7 +88,7 @@ Used by legacy Debris Island, Overspray Island, and Line Defect.
 
 **Update needed:** do not extend this primitive to the new pattern. New-pattern line work should keep using `IslandLineExtractor`. If legacy scans still matter, make the binarization threshold image-adaptive.
 
-### 2.3 `material_profile.py` — clear-scan background
+### 2.3 `material_profile.py` (`nike_detection/geometry/material_profile.py`) — clear-scan background
 
 Clear material has a mid-gray background (~140 instead of white), fainter ink, and lower SNR. Fixed white-paper thresholds are meaningless.
 
@@ -117,7 +118,7 @@ New-pattern island image
           missing (red) / hazy (yellow) / stitch (blue) / high-density regions
 ```
 
-### 3.1 Vertical band detector (`utils/vertical_band_detector.py`)
+### 3.1 Vertical band detector (`nike_detection/geometry/vertical_band_detector.py`)
 
 Finds the **4 vertical boundary lines** first, then derives the two bands. Vertical lines can be speckled, have imperfect ends, and drift sideways, so detection is morphological rather than a raw column-density profile.
 
@@ -147,7 +148,7 @@ Also provides `paint_vertical_line_regions(gray, vlines, pad)` which paints the 
 - Add an explicit “band count” config if future patterns are not always two bands.
 - Persist detected band bounds in the per-image JSON so operators can audit crops without re-running.
 
-### 3.2 Band line detector (`utils/band_line_detector.py`)
+### 3.2 Band line detector (`nike_detection/geometry/band_line_detector.py`)
 
 Thin `LineDetector` subclass: runs the legacy kernel scan on a **band crop**, but scales kernel width and number of scan columns from the **full image width** (`reference_width`) so per-band sensitivity matches the full-image detector. Height-based `Y_DELTA` and slope validation are inherited.
 
@@ -155,7 +156,7 @@ Thin `LineDetector` subclass: runs the legacy kernel scan on a **band crop**, bu
 
 **Update needed:** in `--clear` mode this class is already skipped (debris/overspray use `IslandLineExtractor`). Consider using the extractor for white-paper debris/overspray as well, so there is one line-finding path.
 
-### 3.3 Band line refiner (`utils/band_line_refiner.py`)
+### 3.3 Band line refiner (`nike_detection/geometry/band_line_refiner.py`)
 
 Turns coarse left/right matches into **full-width fitted trajectories**:
 
@@ -174,7 +175,7 @@ Used by new-pattern **debris and overspray** (to paint lines out). New-pattern *
 
 **Update needed:** optional quadratic/piecewise fit if roll inside a band is large enough to leave residual ink after painting.
 
-### 3.4 Island line extractor (`utils/island_line_extractor.py`)
+### 3.4 Island line extractor (`nike_detection/geometry/island_line_extractor.py`)
 
 Precursor for new-pattern **line defects** (and for clear-mode debris/overspray line masking). Avoids kernel scanning entirely.
 
@@ -186,6 +187,10 @@ Precursor for new-pattern **line defects** (and for clear-mode debris/overspray 
 4. **Line rows:** runs of the sheared row profile above 25% of its P99; weighted centroids = line rows; median distance = **measured spacing**. Peak gaps ≈ 1.6× spacing get synthetic *inserted* rows so **fully missing lines are still evaluated**.
 5. **Per-line residual fit + local trajectory:** ±0.45·spacing window, per-column ink centroids, sigma-clipped least squares — each line gets its own slope/intercept. A **local centroid path** (interpolated, lightly median-smoothed) is then used as the mask center so stitch zig-zags and roll stay inside the corridor.
 6. **Per-column statistics** inside ±0.3·spacing of that local path: ink presence/count, number of separate ink runs, hollow interior, centroid deviation from the *straight* fit (jaggedness). Mapped back to original coordinates via the stored shear shift. `line_y` follows the local path so debris/overspray paint-out uses the same mask.
+
+   Jaggedness is two numbers per line, used later for stitch (not for missing nozzles):
+   - `jagged_rms` — RMS of (local trajectory − straight fit). A slow bow from roll scores high here.
+   - `jagged_hf` — RMS after subtracting a ~0.25·spacing smoother. Only the zig-zag at a head join survives.
 
 **Limitations**
 
@@ -200,7 +205,7 @@ Precursor for new-pattern **line defects** (and for clear-mode debris/overspray 
 - Special-case **Yellow** (and possibly Magenta) with a chroma-aware binarization instead of grayscale Otsu.
 - Expose measured `slope` / `spacing` in the results JSON (partially done via band summaries) and fail loudly when extraction returns `None` rather than silently skipping a band.
 
-### 3.5 New-pattern debris (`new_pattern_debris_island_detection.py`)
+### 3.5 New-pattern debris (`nike_detection/detectors/island_new/debris.py`)
 
 Debris can occur **anywhere** — inside bands, in the gap, or outside the boundary lines — so this runs on the **full image** after masking printed structure.
 
@@ -226,7 +231,7 @@ Debris can occur **anywhere** — inside bands, in the gap, or outside the bound
 - Optional “in-band only” mode if margin detections are too noisy.
 - Tune paint thickness per color / DPI; 20 px extension is a guess.
 
-### 3.6 New-pattern overspray (`new_pattern_overspray_island_detection.py`)
+### 3.6 New-pattern overspray (`nike_detection/detectors/island_new/overspray.py`)
 
 Same masking front end as debris (paint thickness ×3). Then reuse `detect_colored_regions` + `group_nearby_regions` on the full cleaned image.
 
@@ -245,18 +250,33 @@ Clear mode: color threshold `bg − 35/45/60`; 5×5 median before region growing
 - Hue- or chroma-based overspray vs darkness-based debris, especially on Cyan/Magenta.
 - Recalibrate min-area / max-distance on new-pattern samples; the legacy medium settings were for a different crop size.
 
-### 3.7 New-pattern line defect (`new_pattern_line_defect_detection.py`)
+### 3.7 New-pattern line defect (`nike_detection/detectors/island_new/line_defect.py`)
 
-Missing-nozzle detection runs **only inside the two bands** — never on the verticals or the gap. Does **not** use the legacy kernel-ratio scan.
+Missing-nozzle and stitch scoring run **only inside the two print bands** — never on the verticals or the gap. This is the replacement for the legacy kernel-ratio walk. Config `geometry.num_heads` (3) is what caps how many stitch zones can be reported.
+
+**Why two classes instead of one.** A vertical-head stitch looks like a zig-zag on one or two successive print lines. The straight-line fit fails there, so an older missing-nozzle rule treated the zig-zag as a gap. That is wrong: the jets *did* fire; the two heads just do not line up. The extractor therefore keeps a **local centroid path** as the ink corridor (so printed zig-zag stays inside the mask) and a **straight fit** only as a jaggedness score. Missing nozzles and stitch error are then decided separately.
+
+```
+per band, for every extracted line
+    │
+    ├─ 1-D close of ink_cols  (bridges healthy stipple, never a ~90 px jet)
+    ├─ missing_line (red)     ink-free run ≥ min_gap_fraction × expected_gap
+    │                         skipped on stitch-zone lines and clipped crop edges
+    ├─ stitch_error (blue)    1–2 most jagged lines at each head join
+    │                         (up to num_heads − 1 zones)
+    └─ misaligned_line (yellow)  ink present but split / vertically spread / weak
+```
 
 **Defect decisions (spacing-relative, resolution-independent)**
 
 | Type | Color | Rule |
 |---|---|---|
-| `missing_line` | red | Corridor follows each line's **local** slope/intercept (not a single straight fit), so stitch zig-zag is not mistaken for a gap. Stipple gap length is *measured* from healthy lines. Remaining ink-free runs longer than `min_gap_fraction × expected_gap` are defects. `expected_gap` is **90 px at 2400 DPI**, scaled by `measured_spacing / ideal_spacing` (~100 px). |
-| `misaligned_line` | yellow | Jets fired but **hazy/smudged**: (a) *split* — 2+ ink runs/column with hollow interior, or (b) *hazy* — ink is vertically spread or persistently weak. Must persist ≥ ~0.5 × spacing. Overlapping segments merged. |
-| `stitch_error` | blue | Jagged zig-zag on the 1–2 print lines at a **vertical-head stitch**. Score = RMS of local trajectory vs the straight fit (plus high-frequency residual). Keep up to `num_heads − 1` clusters (3 heads → 2 zones, 4 heads → 3). Zig-zag itself is not scored as missing. |
+| `missing_line` | red | Corridor follows each line's **local** path, so stitch zig-zag is not a gap. Stipple-gap length is *measured* from healthy lines (~3× their 90th percentile, capped at 0.45× expected jet). Remaining ink-free runs longer than `min_gap_fraction × expected_gap` are defects. `expected_gap` is **90 px at 2400 DPI**, scaled by `measured_spacing / 100`. `missing_pixels` is the count of ink-free columns in that run (the nozzle estimate). Fully missing lines are inserted from spacing and scored as a whole-line gap. |
+| `misaligned_line` | yellow | Jets fired but **hazy/smudged**: (a) *split* — 2+ ink runs/column with a hollow interior, or (b) *hazy* — ink is vertically spread or persistently weak. Must persist ≥ ~0.5 × spacing. Overlapping segments merged. Weak-ink is only used when median thickness ≥ 4 px, so a downscaled snippet cannot flood yellow from single-pixel stipple. |
+| `stitch_error` | blue | Jagged zig-zag on the 1–2 print lines at a **vertical-head stitch**. Score = `max(jagged_rms, jagged_hf)`. A line is a candidate if that score is both above `0.05 × spacing` and an outlier vs the band median (MAD + 2.2× median). Adjacent candidates are clustered; keep the strongest `num_heads − 1` clusters, at most two lines each (a second neighbouring line that is hazy/low-ink is pulled in even if it is not the peak). Those lines are **not** scored as missing. |
 | `high_density_region` | orange | All missing pixels splatted into a 16×-downsampled accumulator, Gaussian-smoothed over ~2 spacings, thresholded at 40% of peak density. Blobs report defect count + missing-pixel sum. |
+
+Sensitivity only changes how long a gap / haze must persist (`min_gap_fraction` 0.70 / 0.85 / 1.10 for high / medium / low). Stitch clustering does not change with sensitivity.
 
 A `*_newpattern_detected_lines.jpg` debug image is always saved (verticals magenta, local trajectories green/orange, inserted fully-missing lines red).
 
@@ -282,7 +302,7 @@ A `*_newpattern_detected_lines.jpg` debug image is always saved (verticals magen
 
 ## 4. Legacy island algorithms
 
-Still the default (`--pattern legacy`). Shared `LineDetector` locates slanted print lines.
+Still selected with `--pattern legacy`. Shared `LineDetector` locates slanted print lines. Config default is `--pattern new`.
 
 ```
 Legacy island
@@ -294,7 +314,7 @@ Legacy island
     └─ Line Defect ── binary line map → walk each line → missing / jagged
 ```
 
-### 4.1 Debris Island (`debris_island_detection.py`)
+### 4.1 Debris Island (`nike_detection/detectors/island_legacy/debris.py`)
 
 1. Locate lines via `LineDetector` (exclusion zones from sibling JSON).
 2. Paint `valid_slope` lines white, thickness `line_thickness * 2`. Invalid-slope matches are **left in place**.
@@ -311,7 +331,7 @@ Legacy island
 
 **Updates needed:** do not use this detector on dual-band images (already gated by `--pattern`). If legacy remains in production, make paint thickness monotonic with sensitivity and skip invalid-slope leftovers more carefully (or paint them with a dashed mask).
 
-### 4.2 Overspray Island (`overspray_island_detection.py`)
+### 4.2 Overspray Island (`nike_detection/detectors/island_legacy/overspray.py`)
 
 Same line removal with thickness ×3. Colored mask at `color_threshold = 180 - background_threshold`. Aggressive dilate/close/erode, then greedy centroid grouping within `overspray_max_distance`.
 
@@ -325,7 +345,7 @@ Same line removal with thickness ×3. Colored mask at `color_threshold = 180 - b
 
 **Updates needed:** rebuild the sensitivity ladder so high ⊃ medium ⊃ low; add hue/chroma; cap merge distance by island width.
 
-### 4.3 Line Defect (`line_defect_detection.py`)
+### 4.3 Line Defect (`nike_detection/detectors/island_legacy/line_defect.py`)
 
 Does **not** remove lines. Walks each matched trajectory:
 
@@ -353,9 +373,9 @@ Does **not** remove lines. Walks each matched trajectory:
 
 ## 5. Stripe region algorithms
 
-Stripe detectors are **layout-agnostic**: they derive geometry from the crop itself. The new extractor’s `--split-stripe-island` plus `num_heads` in `new_pattern_2400.json` (3 heads) is what changed for stripes, not the defect math. Misalignment was rewritten on this branch to work at 1 px resolution for both 3-head and 4-head patterns.
+Stripe detectors are **layout-agnostic**: they derive geometry from the crop itself. On a `full` scan the seed-free extractor (§6.1) supplies the stripe boxes; `--extract` still uses `geometry.num_heads` (3) and `head_height` from config. Misalignment works at 1 px resolution for both 3-head and 4-head patterns.
 
-### 5.1 Stripe misalignment (`stripe_misalignment_detection.py`)
+### 5.1 Stripe misalignment (`nike_detection/detectors/stripe/misalignment.py`)
 
 Head-calibration errors from the stripe’s edge trajectory:
 
@@ -389,7 +409,7 @@ Head-calibration errors from the stripe’s edge trajectory:
 - Convert reported `step_px` to mm in the JSON.
 - Optional known head-boundary priors from `num_heads` + `head_height` to suppress mid-head false stitches, without requiring them (the detector is intentionally head-count agnostic).
 
-### 5.1b Stripe Edge Roughness (`stripe_edge_roughness_detection.py`)
+### 5.1b Stripe Edge Roughness (`nike_detection/detectors/stripe/roughness.py`)
 
 **Goal:** Flag and quantify high-frequency jaggedness (saw-tooth / scalloped fringe) on the left and right stripe edges. A rough left edge with a smooth right edge is the intended case; both edges are scored independently.
 
@@ -426,7 +446,7 @@ Visualization: green edge traces, **red** overpaint on flagged spans, per-edge s
 
 **Updates needed:** DPI-scale the MAD/P95 thresholds (or report mm).
 
-### 5.2 Overspray — scatter grid (`overspray_detection.py`)
+### 5.2 Overspray — scatter grid (`nike_detection/detectors/stripe/overspray.py`)
 
 Scattered spray (not solid ink) via spatial scatter of white pixels.
 
@@ -450,7 +470,7 @@ Scattered spray (not solid ink) via spatial scatter of white pixels.
 
 **Updates needed:** rebuild the medium preset (something between 20 and 50, with overlap); optionally mask to a band *outside* the solid stripe; add DPI-aware kernel size.
 
-### 5.3 Void (`void_detection.py`)
+### 5.3 Void (`nike_detection/detectors/stripe/void.py`)
 
 Compact missing-ink patches inside a **solid-color** vertical stripe (color drifted toward paper).
 
@@ -480,7 +500,7 @@ Compact missing-ink patches inside a **solid-color** vertical stripe (color drif
 
 **Updates needed:** validate on new-pattern Cyan/Magenta/Key/Yellow stripes; add a clear-material path (paper/stripe refs from `material_profile`); optional edge-aware pad that still scores the last few pixels with a different threshold.
 
-### 5.4 Debris Stripe (`debris_stripe_detector.py`)
+### 5.4 Debris Stripe (`nike_detection/detectors/stripe/debris.py`)
 
 Dark, near-black spots inside colored stripes (color-agnostic).
 
@@ -510,7 +530,7 @@ Dark, near-black spots inside colored stripes (color-agnostic).
 
 **Updates needed:** Key-specific weights (drop sat/chroma, raise black-hat); clear-material luminance stats; exclusion zones for handwritten marks.
 
-### 5.5 Surface treatment (`surface_treatment_detection.py`)
+### 5.5 Surface treatment (`nike_detection/detectors/stripe/surface_treatment.py`)
 
 Poor surface energy: irregular coalesced drops and missing-ink areas. Used for **unknown** filenames and currently also listed in the stripe strategy.
 
@@ -535,76 +555,73 @@ Poor surface energy: irregular coalesced drops and missing-ink areas. Used for *
 
 ## 6. Region extraction (feeds the detectors)
 
-Detectors never see the full press scan. Extraction quality is part of the algorithm.
+On a `full` scan the pipeline **measures** island and stripe boxes from the print, then crops those boxes in memory and runs the detector sets. There is no seed coordinate and no requirement that Key start at a known pixel. `--extract` is a separate, older path that writes TIFF crops from a parametric template; use it only when you want files on disk, not when you want accurate boxes.
 
-### 6.1 Legacy (`scripts/utility/tiff_extractor.py`)
+### 6.1 Seed-free full-scan boxes (`nike_detection/geometry/full_region_detector.py`)
 
-Hard-coded bounding boxes in JSON (`template-2400-configs.json` / `template-4800-configs.json`). Optional `exclusion_zones` written as sibling JSON per crop.
-
-**Limitation:** boxes are layout-specific; a shifted scan or a new pattern requires a new JSON.
-
-### 6.2 New pattern (`scripts/utility/new_pattern_tiff_extractor.py`)
-
-Parametric geometry from `regions_json/new_pattern_2400.json`:
-
-- Colors: Key, Cyan, Magenta, Yellow
-- `color_width`, `x_offset`, `num_heads=3`, `head_height`, `y_offset`
-- `island_front=true` → `[island][stripe]` inside each color column
-- `--split-stripe-island` writes `ColorStripe.tiff` and `ColorIsland.tiff`
-
-`main_defect_detection.py --pattern new` always splits stripe/island so dual-band island detectors receive `*Island.tiff`.
-
-**Limitations**
-
-- Coordinates are still a **template**, not content-detected. A shifted or rotated scan will crop the wrong place.
-- `island_width: 0` in the 2400 config: horizontal gap between color columns is not modeled; buffers (`horizontal` / `stripe_island` = 50) have to absorb it.
-- **No `new_pattern_4800.json`**, though the orchestrator looks for it when `--dpi 4800 --pattern new`.
-- Yellow/Key naming must contain `island` / `stripe` after the split or routing fails.
-
-**Updates needed**
-
-- Add a 4800 DPI new-pattern config (scale widths/heights ×2 from 2400, then verify on a real scan).
-- Content-based column finding (chroma peaks) as a check against the template, with a warning on mismatch.
-- Measure and set a real `island_width` instead of relying on buffers.
-
-### 6.3 Full-scan region boxes (`nike_detection/geometry/full_region_detector.py`)
-
-When the input filename contains `full` (or `--regions-only` is used), the island and stripe rectangles are measured from the print. **There are no seed boxes**: the whole scan is searched.
+When the input filename contains `full` (or `--regions-only` is used), the island and stripe rectangles of **every colour on the sheet** are measured from the print. **There are no seed boxes and no positional priors**: the search starts at (0, 0), and a sheet holding one colour and a sheet holding four are handled by the same code.
 
 The nominal layout lives in `config/detection_2400.json` → `region_reference` and is only used to disambiguate candidates, validate the result, and predict an edge whose print is missing:
 
 ```
-|<------- island 5100 ------->|<- gap 580 ->|<- stripe 1050 ->|
-| V  dashed jet lines  V | V ... V |        |#################|
+   colour k                                      colour k+1
+|<---- island 5100 ---->|<-gap 580->|<-stripe->|<-250->|<---- island ...
+| V dashed jet lines V | V ... V |  |##########|
 ```
 
-both regions 33000 px tall, sharing one y range.
+Both regions of one colour are 33000 px tall and share a y range. Colours are named left to right from `geometry.colors` (Key, Cyan, Magenta, Yellow); successive colours may sit up to `color_y_tolerance` (±200 px) higher or lower, so **each colour gets its own y range**.
 
-**Step 1 — coarse ink map.** The scan is area-downsampled (÷8 at 2400 DPI) and converted to ink density, `0` = paper, `1` = the darkest ink on the scan. Paper level and contrast are measured per scan (p95 / p2), so a light color and a dense one behave the same.
+**Step 0 — ink is the darkest channel, not luminance.** Yellow is nearly invisible in grayscale (≈226 against 250 paper) but its blue channel is as dark as any other ink. Taking `min(B, G, R)` per pixel puts black, cyan, magenta and yellow on the same footing, which is what allows one global threshold to work across a four-colour sheet.
 
-**Step 2 — the solid bar.** Column density near `1.0` over the full height happens nowhere else, so the stripe is found first and anchors the layout. A run only qualifies as the bar if its *mean* density is high, which is what rules out two island verticals whose low-ink gutter sits between them.
+**Step 1 — coarse ink map.** The scan is area-downsampled (÷8 at 2400 DPI, driven by `stripe_width` so the algorithm is not tied to a DPI) and converted to ink density, `0` = paper, `1` = the darkest ink on the sheet. Paper level and contrast are measured per scan (p95 / p2). The downsample runs a band of rows at a time, so a memory-mapped multi-gigabyte sheet is profiled without ever being held in RAM.
 
-**Step 3 — the four vertical lines.** On real scans these are faint, speckled and drift sideways over 33000 rows, so their raw column density is no better than the dashed horizontal print. Instead the coarse ink map is binarized and **opened along y** with a kernel far taller than a horizontal line (320 px) and far shorter than a region: the horizontal print disappears entirely, and what is left is per-column *vertical structure*. The island's x span is the envelope of the outermost pair whose separation matches the reference island width. Detection retries at 0.30 / 0.15 / 0.08 coverage before giving up.
+**Step 2 — the solid bars.** Column density near `1.0` over the full height happens nowhere else, so *every* stripe is found first, and each one anchors one colour's block. A run only qualifies as a bar if its *mean* density is high, which is what rules out two island verticals whose low-ink gutter sits between them.
 
-**Step 4 — completing the layout.** Any edge not measured confidently is predicted from one that was: `stripe left − gap` = island right, `island right − island width` = island left. An edge measured from a vertical line is never overridden, so the head labels printed inside the gap cannot drag the island box across it.
+**Step 3 — the vertical lines.** On real scans these are faint, speckled and drift sideways over 33000 rows, so their raw column density is no better than the dashed horizontal print. Instead the coarse ink map is binarized and **opened along y** with a kernel far taller than a horizontal line (~height/100) and far shorter than a region: the horizontal print disappears entirely, and what is left is per-column *vertical structure*. Candidates are collected at a permissive floor so a faint colour is not lost beside a strong one, but each line's extent is taken at half of its own peak, which keeps the envelope tight.
 
-**Step 5 — shared y.** Both regions are printed in one pass, so they get one y range: the union of the island's horizontal-line cluster and the bar's row edges, taken only when the two agree to within 2% of the reference height (otherwise the bar wins, since overspray above the island can fake a first line). Clusters are validated against the 33000 px reference.
+**Step 4 — assembling the colour blocks.** For each bar, the island is the vertical pair whose separation matches `island_width` *and* whose inner edge sits `gap` from that bar. Both constraints are needed on a multi-colour sheet: one colour's inner line and the next colour's outer line are also roughly an island apart, so matching on width alone would straddle two colours. Then, for robustness against defects:
 
-**Step 6 — full-resolution snap.** Every boundary chosen coarsely is re-measured at full resolution in a ±250 px (x) / ±400 px (y) window. The threshold sits 40% of the way from the window's paper level to its strongest ink, which keeps a half-printed vertical line above the print it borders and keeps stray specks below both. Finally `geometry.buffer` (50 px) is applied.
+- a colour whose **bar never printed** is recovered from any vertical pair not already claimed, and its stripe is predicted from its island;
+- a colour that **printed nothing at all** is inserted from the lattice pitch of its neighbours, so the remaining colours keep their correct names;
+- any edge not measured is predicted from one that was, and the per-edge `sources` record which.
 
-Measured widths, the gap, the height, the per-edge `sources`, and any `warnings` are written to `{Color}_full_regions.json` so a bad scan is visible without opening an image.
+**Step 5 — y extent, per colour.** A colour's island and stripe are printed in one pass, so they share one y range: the union of the island's horizontal-line cluster and the bar's row edges, taken only when the two agree to within 2% of the reference height (otherwise the bar wins, since overspray above the island can fake a first line). A colour recovered from the lattice borrows the median y of the colours that did print.
+
+**Step 6 — full-resolution snap.** Every coarse boundary is re-measured at full resolution in a ±(gap/2) px (x) / ±(height/80) px (y) window, clipped so it cannot reach across `color_gap` into a neighbouring colour. The threshold sits 40% of the way from the window's paper level to its strongest ink, which keeps a half-printed vertical line above the print it borders and stray specks below both. The top and bottom are read from four strips — the two outer vertical lines on their own narrow bands, the island as a whole, and the stripe — and combined by discarding any strip that disagrees with the majority by more than `height/200`; that is what stops a single ink drip below a region from stretching the box by 400 px. Finally `geometry.buffer` (50 px) is applied.
+
+Measured widths, gaps, heights, per-edge `sources` and any `warnings` are written per colour to `{stem}_full_regions.json`, so a bad scan is visible without opening an image.
 
 `--regions-only` skips detectors and writes, per scan:
 
 | File | Contents |
 |---|---|
-| `{Color}_full_regions.json` | boxes, measurements vs reference, per-edge source, warnings |
-| `{Color}_full_regions.jpg` | whole-scan overlay: island green, stripe blue, verticals magenta |
-| `{Color}_full_regions_corners.jpg` | full-resolution crops of each region's top-left and bottom-right corner |
+| `{prefix}_full_regions.json` | boxes and measurements vs reference for every colour, per-edge source, warnings |
+| `{prefix}_full_regions.jpg` | whole-scan overlay: island green, stripe blue, verticals magenta |
+| `{prefix}_full_regions_corners.jpg` | full-resolution crops of every region's top-left and bottom-right corner |
+
+`{prefix}` is the ink colour when the filename names one, otherwise the file stem.
 
 `--regions` (or a sibling `<image>.json`) still overrides detection with operator-supplied boxes.
 
-**Accuracy.** On synthetic 6900×33400 scans every edge lands within 1 px, unchanged when the outer vertical is missing over 4000 px, the first horizontal line is missing at the left, and overspray specks surround the print. With an outer vertical that never printed at all, that edge falls back to the first printed column (16 px inside) and a warning is raised.
+**Very large sheets.** A 2400 DPI four-colour scan is ~56000 × 40000 px (6.7 GB), past OpenCV's decode limit. Files above 1.5 GB are memory-mapped with `tifffile` instead, and every pass — the coarse profile, the edge snaps, the overlay, the corner crops, and the per-region crops handed to the detectors — reads only the rows it needs.
+
+**Accuracy.** On a synthetic four-colour sheet every one of the 24 edges lands exactly, including a colour whose stripe never printed, a colour with a blank top-left corner, a colour with voids through its second band, and a near-invisible yellow. With a colour that printed nothing at all, its boxes come from the neighbours' pitch to within 1 px in x and are flagged. On the real 6.7 GB KCMY scan the four blocks measure island 5027–5065 px, stripe 1023–1036 px, gap 559–588 px, colour gap 258–272 px and height 32842–32926 px against nominals of 5100 / 1050 / 580 / 250 / 33000.
+
+### 6.2 Optional template extract (`--extract`)
+
+Writes `ColorStripe.tiff` / `ColorIsland.tiff` to disk from `config.geometry` via `scripts/utility/new_pattern_tiff_extractor.py`. Invoked by `python -m nike_detection -i scan.tif --extract` or the `main_defect_detection.py` shim.
+
+- Colors: Key, Cyan, Magenta, Yellow (`geometry.colors`)
+- `color_width`, `x_offset`, `num_heads=3`, `head_height`, `y_offset`
+- `island_front=true` → `[island][stripe]` inside each colour column
+
+This is a **template**, not content-detected. A shifted or rotated scan will crop the wrong place. Prefer §6.1 on any filename containing `full`. `geometry.island_width` is still `0` in the 2400 config (the template uses buffers); the seed-free detector uses `region_reference.island_width` (5100) instead.
+
+### 6.3 Legacy bbox extract (`scripts/utility/tiff_extractor.py`)
+
+Hard-coded bounding boxes in `regions_json/template-2400-configs.json`. Used only with `--extract --pattern legacy --extract-config …`. Optional `exclusion_zones` are written as sibling JSON per crop.
+
+**Limitation:** boxes are layout-specific; a shifted scan or a new pattern requires a new JSON.
 
 ---
 
@@ -649,216 +666,229 @@ Requires `--pattern new`. Adapts **island** detectors only.
 
 ## 9. Cross-cutting updates still needed
 
-Priority-ordered list of work that is **not** done on `july_visit`:
+Work that is **not** done:
 
-1. **4800 DPI new-pattern config** (`regions_json/new_pattern_4800.json`) and a real 4800 validation scan.
+1. **4800 DPI** — no 4800 config; all thresholds are 2400-pixel.
 2. **Stripe detectors on clear material** — void, debris stripe, and misalignment still assume white paper.
-3. **Yellow (and light Magenta) binarization** — grayscale Otsu / LAB chroma are weak; chroma-aware ink masks are needed in the extractor, void, and band detector.
+3. **Yellow (and light Magenta) in the island extractor / void** — the *region* detector already uses min-channel ink; line extraction and void still binarize grayscale.
 4. **Exclusion zones on new-pattern islands and on stripes.**
-5. **Fix non-monotonic sensitivity ladders** — stripe overspray medium kernel 500; legacy overspray min-area; legacy jagged threshold.
+5. **Non-monotonic sensitivity ladders** — stripe overspray medium kernel; legacy overspray min-area; legacy jagged threshold.
 6. **Unify line finding** — use `IslandLineExtractor` for new-pattern debris/overspray on white paper too, not only `--clear`.
-7. **DPI-scaled stripe misalignment thresholds** (pixels → mm) so 2400 and 4800 share physical meaning.
-8. **Surface treatment vs void** — overlapping stripe detectors; decide default set.
-9. **Template vs content extraction** — warn when parametric crops do not match ink columns.
-10. **Physical nozzle reporting** — `missing_pixels` is columns, not calibrated nozzle IDs.
-11. **Automated regression set** — golden island/stripe crops for legacy, new-pattern white, and new-pattern clear, with expected defect counts.
-12. **Vertical-line defect inspection** — currently structural only; breaks in the four boundary lines are invisible.
-13. **Shared front-end + parallel detectors** — see [§10](#10-shared-processing-parallelization-and-speed-ups). Today every detector reloads the image and recomputes geometry that its siblings already have.
+7. **DPI-scaled stripe misalignment thresholds** (pixels → mm).
+8. **Physical nozzle reporting** — `missing_pixels` is columns, not calibrated nozzle IDs.
+9. **Automated regression set** — golden island/stripe crops for legacy, new-pattern white, and new-pattern clear.
+10. **Vertical-line defect inspection** — currently structural only; breaks in the four boundary lines are invisible.
+
+Done since this list was first written: seed-free multi-colour region boxes (§6.1), shared `ImageContext` + parallel detectors (§10), memmap of multi-GB TIFFs, island stitch_error as its own class, surface treatment dropped from the default stripe set (still available via `--only surface_treatment`).
 
 ---
 
 ## 10. Shared processing, parallelization, and speed-ups
 
-`run_all_detections.py` currently runs detectors **one after another** on one image, and each detector **reloads the TIFF and rebuilds its own geometry**. That is the main reason a Cyan stripe (~107 MB, 33k rows) takes many minutes, and why a folder of islands (~555 MB each) is dominated by repeated I/O rather than unique math.
-
-This section is implemented in `nike_detection` (load once → `ImageContext` → parallel detectors). The sequential per-detector `cv2.imread` path in `run_all_detections.py` is no longer the runtime pipeline.
-
-### 10.1 What the pipeline does today (sequential, no sharing)
-
-For every detector key, `_process_full_image` calls `cv2.imread` again, converts BGR→gray (or LAB/HSV) again, then the detector class repeats its own geometry:
-
-| Image type | Detectors (default) | Reloads per image |
-|---|---|---|
-| Stripe | 6 (`stripe_misalignment`, `overspray`, `surface_treatment`, `void`, `debris_stripe`, `edge_roughness`) | 6× decode + 6× gray |
-| Island (legacy or `--pattern new`) | 3 (`debris_island`, `overspray_island`, `line_defect`) | 3× decode + 3× gray |
-
-`ImagePreprocessor.load_and_convert_to_grayscale` is already a shared helper, but it is **called per detector**, not once per image.
-
-### 10.2 Shared preprocessing (do once per image)
-
-These steps are identical (or differ only by a constant) across several classes.
-
-**All detectors**
-
-| Step | Who repeats it | Share as |
-|---|---|---|
-| Decode TIFF / PNG | Every detector via `cv2.imread` | `bgr` array |
-| BGR → gray | Almost every detector | `gray` |
-| File size / stem / output dir | Pipeline already | — |
-
-**Stripe**
-
-| Step | Used by | Notes |
-|---|---|---|
-| Column intensity profile + mid-level binarize | Misalignment, edge roughness | Same `col_mean`, `mid`, `gray < mid` mask |
-| Interior-anchored left/right edge walk | Misalignment (then 31-row median), edge roughness (sub-pixel, no median) | **One raw integer walk**; roughness interpolates, misalignment median-filters |
-| Both-edge stitch Ys | Misalignment reports stitches; roughness splits residual at the same joints | Compute stitch list once |
-| LAB + chroma stripe bounds | Void, debris stripe | `_find_stripe_bounds` is duplicated in spirit |
-| Inner pad of stripe | Void, debris stripe | Same “ignore ragged fringe” idea, slightly different pad fractions |
-| CLAHE on gray | Overspray (scatter), surface treatment | Same contrast boost, different later math |
-
-**Island — legacy**
-
-| Step | Used by | Notes |
-|---|---|---|
-| `LineDetector.detect_lines` (kernel scan, ghosts, slope match) | Debris, overspray, line defect | **Run once**; debris/overspray paint `valid_slope` lines; line defect walks all matches |
-| Exclusion-zone JSON | Same three (via `LineDetector`) | Load once |
-| Binarize @ 127 | Line detector + line defect walk | One binary map |
-
-**Island — `--pattern new`**
-
-| Step | Used by | Notes |
-|---|---|---|
-| `estimate_background_level` (`--clear`) | Band detector, extractor, debris, overspray | One median of subsampled gray |
-| `VerticalBandDetector.detect` → 4 verticals + 2 band crops | Debris, overspray, **and** line defect | **Heaviest shared geometry**; today run 3× |
-| Per-band horizontal trajectories | Debris + overspray (`BandLineDetector` + `BandLineRefiner`); line defect (`IslandLineExtractor`) | Extractor trajectories can **replace** the coarse+refine path for painting (already done in `--clear`) |
-| Paint vertical envelopes white | Debris, overspray | Same `paint_vertical_line_regions` |
-| Paint horizontal lines | Debris (×2 thickness), overspray (×3) | One trajectory set; two paint thicknesses (or paint once at ×3 and use a distance map) |
-
-### 10.3 Intermediate data worth caching (a per-image “context”)
-
-A single `ImageContext` built before any detector would look like this.
+The runtime is `nike_detection/pipeline/runner.py`. `--workers` is a process pool across **regions of a full scan** (or across images in a folder). `--detector-threads` is a thread pool inside each region after shared geometry is built. Worker count is capped by CPU and an 8 GB RAM budget so eight island crops cannot oversubscribe the machine.
 
 ```
-ImageContext
-  bgr, gray
-  [clear] background_level
-  ── stripe ──────────────────────────────────────────
-  col_mean, mid, ink_mask
-  bounds: x_left, x_right          # from col_mean or LAB chroma
-  lab, hsv                         # void + debris stripe
-  raw_left[], raw_right[]          # integer edge vs row
-  subpixel_left[], subpixel_right[]
-  stitch_ys[]                      # both-edge steps
-  ── island / new pattern ────────────────────────────
-  bands[{x0,x1,vline_xs,…}]
-  vlines[]
-  per_band: extractor_result       # slope, spacing, lines, ink_cols
-            or refined LineDetector matches
-  lines_removed_gray               # printed structure painted out
+folder / full scan
+    │
+    ├─ collect files (skip previous result folders and *_full_regions / *_visualization artifacts)
+    ├─ if full sheet:
+    │     open_scan (memmap if > 1.5 GB) → detect_full_regions
+    │     process pool: one worker per colour region
+    │
+    └─ per region (process worker):
+          memmap + crop
+          ImageContext(bgr, gray)
+          lazy layers: bands / extractor / paint-out  or  stripe edges / LAB
+          thread pool: detectors
+          write JSON + vis
 ```
 
-**Who consumes what**
+**Shared layers today**
 
-| Artifact | Consumers |
-|---|---|
-| `bgr` / `gray` | All |
-| Stripe `bounds` + `lab` | Void, debris stripe (and optionally overspray: mask *outside* the bar) |
-| Raw / subpixel edges + `stitch_ys` | Misalignment, edge roughness |
-| `bands` + `vlines` | All three new-pattern island detectors |
-| Per-band line trajectories / `IslandLineExtractor` | Line defect (required); debris + overspray (paint-out) |
-| `lines_removed_gray` | Debris + overspray (threshold on the same cleaned image; only the color/darkness cut differs) |
-| Legacy `matched_lines` | All three legacy island detectors |
-
-Detectors that **cannot** share a residual mask: stripe overspray (scatter grid on CLAHE+adaptive binary) and surface treatment (local stddev / coalescence) are different signals. They still share `bgr`/`gray` and should not reload the file.
-
-### 10.4 What can run in parallel
-
-OpenCV and NumPy release the GIL in the heavy loops, so **threads** help inside one process for C++/Fortran work; **processes** help for folder batches (avoid GIL + get more RAM isolation).
-
-```
-Folder of images                    one image
-─────────────────                   ─────────────────────────────
-pool.map(process_image)             load once → ImageContext
-  CyanStripe  ──┐                     │
-  KeyStripe   ──┼─ independent        ├─ shared geometry (serial, cheap vs I/O)
-  MagentaStripe─┘                     │
-  CyanIsland  ──┐                     ├─ then parallel:
-  KeyIsland   ──┼─ independent        │     stripe:  [misalign ‖ roughness]  [void ‖ debris]
-  MagentaIsland─┘                     │               [overspray]  [surface]   (weaker sharing)
-                                      │     island:  [debris ‖ overspray] after paint-out
-                                      │               [line_defect] after extractor
-                                      └─ join → JSON + vis
-```
-
-**Safe to parallelize today (after a shared context)**
-
-| Grain | Independent units | Caveat |
+| Layer | Built by | Consumed by |
 |---|---|---|
-| Folder | Each `*Stripe*` / `*Island*` file | RAM: one 555 MB island decoded ~1.5 GB BGR; cap workers (2–4) |
-| Stripe after context | Misalignment vs roughness vs void vs debris vs overspray vs surface | Misalignment + roughness need the same edges; void + debris need the same LAB bounds |
-| New-pattern island | Left band vs right band inside `IslandLineExtractor` | Same slope search can be shared (global shear) |
-| `IslandLineExtractor` | Per-line residual fit + per-column stats | After shear + row peaks |
-| Stripe overspray grid | Each kernel cell | Only after fixing the 500 px medium kernel |
-| Dual-band debris/overspray | Already one full-image pass; parallelizing them is easy once lines are painted |
+| `bgr` / `gray` | load once | all |
+| `background_level` | `--clear` | new-pattern island |
+| `bands` + `vlines` | `VerticalBandDetector` once | debris, overspray, line_defect |
+| `extractor_per_band` | `IslandLineExtractor` once per band | line_defect (required); debris/overspray paint-out in `--clear` |
+| `lines_removed_gray` | paint verticals + horizontals once | debris, overspray |
+| `matched_lines` | `LineDetector` once | legacy island trio |
+| stripe edges + stitch Ys | one interior-anchored walk | misalignment, edge_roughness |
+| LAB + stripe bounds | once | void, debris_stripe |
+| CLAHE | once | overspray, surface_treatment |
 
-**Do not bother parallelizing**
+**Still worth doing**
 
-- Tiny vectorized NumPy on a 1-D edge profile (already microseconds).
-- `VerticalBandDetector` 4-of-N combinations (N is small).
-- Visualization `cv2.imwrite` of one JPEG at a time (I/O bound; can overlap with the *next* detector via a writer thread).
-
-**Ordering constraint (must stay serial)**
-
-1. Decode → gray → (optional) background level.
-2. Geometry: stripe bounds/edges **or** island bands/lines.
-3. Then independent defect scoring.
-
-### 10.5 How to speed up — ranked
-
-Highest impact first. None of this is implemented yet.
-
-1. **Load each image once.** Passing `(bgr, gray)` into `detect()` removes 5 extra `cv2.imread` calls on a stripe and 2 on an island. For `KeyIsland.tiff` (~555 MB) that is the largest single win.
-2. **Shared stripe geometry.** One edge walk + one LAB bounds object feeds misalignment, roughness, void, and debris. Roughness already duplicates misalignment’s walk.
-3. **Shared new-pattern island front-end.** Run `VerticalBandDetector` **once**. Run `IslandLineExtractor` **once per band** and reuse trajectories for debris/overspray paint-out (drop the second `BandLineDetector`+`BandLineRefiner` pass on white paper).
-4. **Parallelize the folder**, not the inner pixels. `ProcessPoolExecutor` over the 7 July_26 crops (3 stripe + 4 island) with `--pattern new`. Limit concurrency so islands do not RAM-thrash.
-5. **Fix stripe overspray medium kernel (500×500).** Pairwise scatter on a 500 px window is the pathological case (~10 min on CyanStripe). High uses 20 px; medium should sit near that, not 25× larger. This is also a correctness bug (non-monotonic sensitivity).
-6. **Make surface treatment optional or coarse.** It overlaps void conceptually, runs extra CLAHE + local stddev on the full height, and is slow. Default stripe set could drop it unless `--only surface_treatment`.
-7. **Skip or downsample visualizations.** Writing 33k-row JPEGs/TIFFs is costly; `--no-vis` or downscaled overlays for the PDF, full-res only on request.
-8. **Memory-map TIFFs** (`tifffile.memmap`) so folder workers do not each hold a full decode if they only need a stripe crop — extraction already cropped, so this is secondary.
-9. **Two-band extractor:** shear-search slope on one band (or a height subsample), apply to the other if slopes match.
-10. **CLAHE / adaptive threshold tiles** for overspray and surface treatment: they do not need the full 33k height in one shot; windowed processing already exists in README for >50 MB but is **not** used by these detectors.
-
-### 10.6 Suggested target architecture (not built)
-
-```
-process_image(path):
-  bgr, gray = load_once(path)
-  ctx = build_context(bgr, gray, image_type, pattern, clear)
-      # stripe: bounds, lab, edges, stitch_ys
-      # island new: bands, vlines, extractor per band, lines_removed
-      # island legacy: LineDetector matches, lines_removed
-  results = parallel_map(detectors, ctx)   # threads inside one image
-  save_json_and_vis(results)
-```
-
-Folder batch: `parallel_map(process_image, files)` with a worker cap.
-
-Expected effect if (1)+(2)+(3)+(4)+(5) land: stripe wall-clock dominated by unique scoring instead of six decodes and a 500 px scatter grid; island wall-clock dominated by one band detect + one extractor instead of three copies of each.
+- Reuse `IslandLineExtractor` trajectories for white-paper debris/overspray paint-out (today those still run `BandLineDetector` + `BandLineRefiner`).
+- Fix the stripe overspray medium kernel if it is still far larger than high.
+- `--no-vis` / `--downscale-vis` already exist; default writes full-res overlays.
 
 ---
 
 ## 11. How to invoke
 
+Install once from the repo root:
+
 ```bash
-# Full scan, new dual-band pattern (in-process extract + detect)
-python -m nike_detection -i scan.tif --extract --pattern new
-
-# Clear / gray paper (islands only)
-python -m nike_detection -i scan.tif --extract --pattern new --clear
-
-# Already-extracted island crop
-python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
-
-# Stripe crop
-python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment
-
-# Combined stripe+island TIFF (filename contains `full`)
-python -m nike_detection -i Cyan_full.tiff --pattern new
+pip install -r requirements.txt
 ```
 
-Operator CLI details: `USER_STORY_README.md`. Pipeline overview: `README.md`.
-Unified thresholds: `config/detection_2400.json`.
+All commands below are from the repo root. Thresholds, detector sets, geometry, and `region_reference` live in `config/detection_2400.json`. Override the file with `--config path/to.json`. Set a detector to `true` or `false` under `detector_sets.island` / `detector_sets.stripe` to include or skip it; detection algorithms themselves are unchanged.
+
+### 11.1 One CLI, three inputs
+
+| Input | How it is classified | What happens |
+|---|---|---|
+| File whose name contains `full` | `ImageType.FULL` | Measure boxes (§6.1), then run **enabled** island + stripe detectors on each crop |
+| File whose name contains `island` | island | Island detector set |
+| File whose name contains `stripe` | stripe | Stripe detector set |
+| Folder | walk `*.tif`/`*.tiff`/`*.png`/`*.jpg` | Same classification per file; skips `output_*` folders and pipeline artifacts |
+| `--extract` on a press scan | writes crops, then detects | Template extract (§6.2), **not** the seed-free boxes |
+
+### 11.2 Flags
+
+| Flag | Meaning |
+|---|---|
+| `-i` / `--input` | Image, `full` TIFF, or folder (**required**) |
+| `-o` / `--output` | Optional override. Default: `{image_name}_MM_DD_YY_HH_MM_SS` **next to the input TIFF** |
+| `--config` | Unified JSON (default `config/detection_2400.json`) |
+| `-s` / `--sensitivity` | `low` \| `medium` \| `high` (default from config: `medium`) |
+| `--pattern` | `legacy` \| `new` (default from config: `new`) |
+| `--clear` | Gray paper / fainter ink. **Requires `--pattern new`.** Islands only. |
+| `--only KEY …` | Subset of detector keys (see table below) |
+| `--regions-only` | Measure boxes, write overlay + corners, skip detectors |
+| `--regions FILE.json` | Operator boxes for a `full` TIFF (overrides automatic detection) |
+| `--extract` | Template-extract crops from a press scan, then detect |
+| `--extract-config` | Legacy bbox JSON used with `--extract --pattern legacy` |
+| `--write-crops` | Also write the measured region TIFFs when processing `full` |
+| `--region-folders` | Also write per-region subfolders with visualizations (off by default) |
+| `--no-full-overlay` | Skip `{prefix}_full_defects.jpg` |
+| `--no-vis` / `--downscale-vis` / `--debug` | Skip overlays, smaller overlays, extra debug images |
+| `--workers N` | Parallel **processes** across regions of a full scan, or across images in a folder. Capped by CPU and an 8 GB RAM budget (default 2) |
+| `--detector-threads N` | Threads per region after shared geometry. Reduced automatically when many region processes are running (default 4) |
+| `--generate_report` | PDF summary |
+| `--include-unknown` | Also process files that are not stripe/island/full |
+| `--no-recursive` | Folder input: only the top level |
+| `-v` / `--verbose` | DEBUG logs |
+
+Detector keys for `--only`. Enable/disable the default set in `config/detection_2400.json` → `detector_sets` (`true` / `false`):
+
+| Island | Stripe |
+|---|---|
+| **on:** `line_defect` | **on:** `stripe_misalignment` `edge_roughness` `void` |
+| off: `debris_island` `overspray_island` | off: `debris_stripe` `overspray` `surface_treatment` |
+
+### 11.3 Region boxes (no detectors)
+
+Use this first on a new scan so you can inspect the overlay and corner montage before spending time on detectors.
+
+```bash
+# One colour per TIFF (filename should contain key / cyan / magenta / yellow)
+python -m nike_detection -i data/20260617_P1_WhitePaper_KCM-updated-folder \
+    --config config/detection_2400.json --regions-only
+
+# Four colours on one sheet (KCMY). --workers 1 keeps the 6.7 GB memmap in one process.
+python -m nike_detection -i data/rotated-KCMY-QualTest8Exp-BlkPt100-13.53.22.tif \
+    --config config/detection_2400.json --regions-only --workers 1
+```
+
+Writes `{prefix}_full_regions.json`, `{prefix}_full_regions.jpg`, `{prefix}_full_regions_corners.jpg`. `{prefix}` is the ink colour when the filename names one, otherwise the file stem.
+
+Operator override (skip automatic detection):
+
+```bash
+python -m nike_detection -i Cyan_full.tiff --pattern new --regions my_boxes.json
+```
+
+### 11.4 Detect on a `full` scan
+
+```bash
+# Measure boxes, then run the default island + stripe sets
+python -m nike_detection -i Cyan_full.tiff --pattern new
+
+# Same, keep the region TIFFs on disk
+python -m nike_detection -i Cyan_full.tiff --pattern new --write-crops
+
+# Only missing nozzles / stitch / haze on the island crops
+python -m nike_detection -i Cyan_full.tiff --pattern new --only line_defect
+
+# Four-colour sheet: 8 regions in parallel, results next to the TIFF
+python -m nike_detection -i data/rotated-KCMY-QualTest8Exp-BlkPt100-13.53.22.tif \
+    --pattern new --workers 8
+```
+
+### 11.5 Already-extracted island or stripe crop
+
+Filenames must contain `island` or `stripe`.
+
+```bash
+# All island detectors (new dual-band)
+python -m nike_detection -i KeyIsland.tiff --pattern new
+
+# Missing nozzles + stitch error only
+python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
+
+# Clear-material island
+python -m nike_detection -i ClearIsland.tiff --pattern new --clear
+
+# All default stripe detectors
+python -m nike_detection -i CyanStripe.tiff
+
+# Stitch/roll only, high sensitivity
+python -m nike_detection -i CyanStripe.tiff --only stripe_misalignment -s high
+
+# Voids + misalignment
+python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment
+
+# Surface treatment (not in the default stripe set)
+python -m nike_detection -i CyanStripe.tiff --only surface_treatment
+```
+
+### 11.6 Folder of crops
+
+```bash
+python -m nike_detection -i extracted_folder --pattern new --workers 2 --no-vis
+python -m nike_detection -i extracted_folder --pattern new --only line_defect -s high --debug
+```
+
+### 11.7 Template extract then detect (legacy path)
+
+Produces `ColorStripe.tiff` / `ColorIsland.tiff` from `geometry.*` seeds, then runs detectors on those files. Do **not** use this when you want the seed-free boxes of §6.1.
+
+```bash
+python -m nike_detection -i scan.tif --extract --pattern new
+python -m nike_detection -i scan.tif --extract --pattern new --clear
+python -m nike_detection -i scan.tif --extract --pattern new -s high --generate_report
+```
+
+### 11.8 Shims (same CLI underneath)
+
+```bash
+# Always adds --extract
+python main_defect_detection.py -i scan.tif -d 2400 --pattern new --clear
+
+# Already-extracted crop or folder (no --extract)
+python scripts/defects_detection/run_all_detections.py -i KeyIsland.tiff --pattern new --only line_defect
+```
+
+Prefer `python -m nike_detection`. The copies under `scripts/defects_detection/*.py` are the old standalone detectors; they are not the runtime.
+
+### 11.9 Output
+
+Each run writes a folder **next to the input TIFF**:
+
+`{image_name}_MM_DD_YY_HH_MM_SS/`
+
+Example: `data/rotated-KCMY-QualTest8Exp-BlkPt100-13.53.22.tif` → `data/rotated-KCMY-QualTest8Exp-BlkPt100-13.53.22_08_18_26_13_16_00/`. Pass `-o` only if you want a different location.
+
+| File | Contents |
+|---|---|
+| `{prefix}_full_regions.jpg` / `.json` / `_corners.jpg` | Segmented island/stripe boxes (on `full` input) |
+| `{prefix}_full_defects.jpg` | Same scan with every finding annotated (on unless `--no-full-overlay`) |
+| `defect_summary.txt` | Readable per-region metrics (missing nozzles, stitch/calibration, roughness, voids) |
+| `defect_summary.csv` | Same metrics, one row per metric |
+| `defect_report.json` | Full per-region detections and timings |
+| `<Region>/…` | Per-region visualizations (only if `--region-folders` or `write_region_folders: true`) |
 
 ---
 
@@ -867,18 +897,19 @@ Unified thresholds: `config/detection_2400.json`.
 | Role | Path |
 |---|---|
 | Package CLI | `nike_detection/cli.py` (`python -m nike_detection`) |
-| Unified 2400 config | `config/detection_2400.json` |
-| Orchestrator shim | `main_defect_detection.py` |
-| Detector-runner shim | `scripts/defects_detection/run_all_detections.py` |
-| Shared context / runner | `nike_detection/pipeline/context.py`, `runner.py` |
+| Unified 2400 config | `config/detection_2400.json` (`region_reference`, `geometry`, sensitivity, detector sets) |
+| Extract-then-detect shim | `main_defect_detection.py` |
+| Crop-folder shim | `scripts/defects_detection/run_all_detections.py` |
+| Shared context / runner | `nike_detection/pipeline/context.py`, `runner.py`, `registry.py` |
 | Detector adapters | `nike_detection/detectors/adapters.py` |
 | Stripe algorithms | `nike_detection/detectors/stripe/` |
 | Legacy island algorithms | `nike_detection/detectors/island_legacy/` |
-| Dual-band island algorithms | `nike_detection/detectors/island_new/` |
-| Full-scan island/stripe boxes | `nike_detection/geometry/full_region_detector.py` |
+| Dual-band island algorithms | `nike_detection/detectors/island_new/` (`line_defect.py` = missing nozzles + stitch) |
+| Seed-free island/stripe boxes | `nike_detection/geometry/full_region_detector.py` |
 | Vertical bands | `nike_detection/geometry/vertical_band_detector.py` |
 | Line extract (new) | `nike_detection/geometry/island_line_extractor.py` |
 | Legacy line scan | `nike_detection/geometry/line_detector.py` |
-| JSON / vis writers | `nike_detection/io/results.py`, `visualization.py` |
-| New-pattern extract | `scripts/utility/new_pattern_tiff_extractor.py` |
-| Legacy extract | `scripts/utility/tiff_extractor.py` |
+| Large-scan I/O | `nike_detection/io/image_loader.py` (`open_scan` / memmap) |
+| JSON / vis / summary writers | `nike_detection/io/results.py`, `visualization.py`, `defect_summary.py` |
+| Template extract | `scripts/utility/new_pattern_tiff_extractor.py` |
+| Legacy bbox extract | `scripts/utility/tiff_extractor.py` |

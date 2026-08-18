@@ -8,24 +8,27 @@
     "max_detector_threads": 4,
     "write_visualizations": true,
     "downscale_vis": false,
-    "write_crops": false
+    "write_crops": false,
+    "write_region_folders": false,
+    "write_full_defect_overlay": true
   },
   "detector_sets": {
-    "stripe": [
-      "stripe_misalignment",
-      "edge_roughness",
-      "void",
-      "debris_stripe",
-      "overspray"
-    ],
-    "island": [
-      "debris_island",
-      "overspray_island",
-      "line_defect"
-    ],
-    "unknown": [
-      "surface_treatment"
-    ]
+    "stripe": {
+      "stripe_misalignment": true,
+      "edge_roughness": true,
+      "void": true,
+      "debris_stripe": false,
+      "overspray": false,
+      "surface_treatment": false
+    },
+    "island": {
+      "line_defect": true,
+      "debris_island": false,
+      "overspray_island": false
+    },
+    "unknown": {
+      "surface_treatment": false
+    }
   },
   "geometry": {
     "colors": ["Key", "Cyan", "Magenta", "Yellow"],
@@ -360,6 +363,8 @@
     "island_stripe_gap": 580,
     "stripe_width": 1050,
     "height": 33000,
+    "color_gap": 250,
+    "color_y_tolerance": 200,
     "tolerance": 0.12
   }
 }

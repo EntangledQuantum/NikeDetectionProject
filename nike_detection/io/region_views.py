@@ -6,9 +6,11 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
+import cv2
 import numpy as np
 
 from nike_detection.config.schema import BoundingBox, RegionSpec
+from nike_detection.io.image_loader import Scan
 
 logger = logging.getLogger(__name__)
 
@@ -51,33 +53,31 @@ def clip_to_image(
     return cx1, cy1, cx2, cy2
 
 
-def slice_view(
-    bgr: np.ndarray,
-    gray: np.ndarray,
-    spec: RegionSpec,
-) -> Optional[RegionView]:
-    height, width = gray.shape[:2]
+def slice_view(scan: Scan, spec: RegionSpec) -> Optional[RegionView]:
+    height, width = scan.shape[:2]
     x1, y1, x2, y2 = spec.bounding_box_pixels.as_int_xyxy()
     clipped = clip_to_image(x1, y1, x2, y2, width, height, spec.name)
     if clipped is None:
         return None
     x1, y1, x2, y2 = clipped
+    # Materialized per region rather than for the sheet: the crops together
+    # are a fraction of a full scan, and on a memory-mapped one this is the
+    # only point where pixels are actually read.
+    bgr = scan.crop_bgr(x1, y1, x2, y2)
     return RegionView(
         name=spec.name,
         region_type=spec.type,
-        bgr=bgr[y1:y2, x1:x2],
-        gray=gray[y1:y2, x1:x2],
+        bgr=bgr,
+        gray=cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY),
         origin_xy=(x1, y1),
         bbox=(x1, y1, x2, y2),
     )
 
 
-def slice_views(
-    bgr: np.ndarray, gray: np.ndarray, specs: List[RegionSpec]
-) -> List[RegionView]:
+def slice_views(scan: Scan, specs: List[RegionSpec]) -> List[RegionView]:
     views: List[RegionView] = []
     for spec in specs:
-        view = slice_view(bgr, gray, spec)
+        view = slice_view(scan, spec)
         if view is not None:
             views.append(view)
     return views

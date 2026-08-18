@@ -68,14 +68,21 @@ class ImageResult:
 
 
 def classify_image(path: str) -> ImageType:
-    """Filename routing: ``full`` wins over stripe/island."""
+    """Filename routing: stripe/island tokens win; then a full press sheet.
+
+    A four-colour scan is often named after the job (``KCMY``, ``KCM``, …)
+    rather than ``full``. Those names still have to take the memory-mapped
+    region-extractor path — OpenCV cannot decode a 6.7 GB sheet.
+    """
     name = path.replace("\\", "/").split("/")[-1].lower()
-    if "full" in name:
-        return ImageType.FULL
     if "stripe" in name:
         return ImageType.STRIPE
     if "island" in name:
         return ImageType.ISLAND
+    if "full" in name:
+        return ImageType.FULL
+    if any(token in name for token in ("kcmy", "cmyk", "kcm", "cmy")):
+        return ImageType.FULL
     return ImageType.UNKNOWN
 
 

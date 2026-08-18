@@ -34,6 +34,64 @@ class ConfigError(ValueError):
     """Raised when the operator config is missing or invalid."""
 
 
+# Catalog order is what `keys_for_type` emits when a detector is enabled.
+_DETECTOR_CATALOG = {
+    "stripe": [
+        "stripe_misalignment",
+        "edge_roughness",
+        "void",
+        "debris_stripe",
+        "overspray",
+        "surface_treatment",
+    ],
+    "island": [
+        "line_defect",
+        "debris_island",
+        "overspray_island",
+    ],
+    "unknown": [
+        "surface_treatment",
+    ],
+}
+
+
+def _is_enabled_flag(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _enabled_detector_keys(raw: Any, kind: str) -> List[str]:
+    """Accept `{key: true/false}` (preferred) or a list of enabled keys."""
+    catalog = _DETECTOR_CATALOG.get(kind, [])
+    if raw is None:
+        raise ConfigError(f"detector_sets.{kind} is required")
+    if isinstance(raw, dict):
+        enabled: List[str] = []
+        seen = set()
+        for key in catalog:
+            if key in raw and _is_enabled_flag(raw[key]):
+                enabled.append(key)
+                seen.add(key)
+        for key, value in raw.items():
+            if key.startswith("_") or key in seen:
+                continue
+            if _is_enabled_flag(value):
+                if key not in catalog:
+                    logger.warning(
+                        "Unknown detector key %r in detector_sets.%s", key, kind
+                    )
+                enabled.append(str(key))
+                seen.add(key)
+        return enabled
+    if isinstance(raw, list):
+        return [str(key) for key in raw if not str(key).startswith("_")]
+    raise ConfigError(
+        f"detector_sets.{kind} must be an object of true/false flags "
+        "or a list of detector keys"
+    )
+
+
 def _require(data: Dict[str, Any], key: str, ctx: str = "") -> Any:
     if key not in data:
         where = f" in {ctx}" if ctx else ""
@@ -110,6 +168,10 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         write_visualizations=bool(raw_defaults.get("write_visualizations", True)),
         downscale_vis=bool(raw_defaults.get("downscale_vis", False)),
         write_crops=bool(raw_defaults.get("write_crops", False)),
+        write_region_folders=bool(raw_defaults.get("write_region_folders", False)),
+        write_full_defect_overlay=bool(
+            raw_defaults.get("write_full_defect_overlay", True)
+        ),
     )
     if defaults.pattern not in PATTERN_VALUES:
         raise ConfigError(f"defaults.pattern must be one of {PATTERN_VALUES}")
@@ -118,9 +180,11 @@ def load_config(path: Optional[str] = None) -> AppConfig:
 
     raw_sets = _require(data, "detector_sets")
     detector_sets = DetectorSets(
-        stripe=list(_require(raw_sets, "stripe", "detector_sets")),
-        island=list(_require(raw_sets, "island", "detector_sets")),
-        unknown=list(raw_sets.get("unknown", ["surface_treatment"])),
+        stripe=_enabled_detector_keys(raw_sets.get("stripe"), "stripe"),
+        island=_enabled_detector_keys(raw_sets.get("island"), "island"),
+        unknown=_enabled_detector_keys(
+            raw_sets.get("unknown", ["surface_treatment"]), "unknown"
+        ),
     )
 
     raw_geo = _require(data, "geometry")
@@ -146,9 +210,14 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         ),
         stripe_width=int(raw_region_ref.get("stripe_width", defaults_region.stripe_width)),
         height=int(raw_region_ref.get("height", defaults_region.height)),
+        color_gap=int(raw_region_ref.get("color_gap", defaults_region.color_gap)),
+        color_y_tolerance=int(
+            raw_region_ref.get("color_y_tolerance", defaults_region.color_y_tolerance)
+        ),
         tolerance=float(raw_region_ref.get("tolerance", defaults_region.tolerance)),
     )
-    for field_name in ("island_width", "island_stripe_gap", "stripe_width", "height"):
+    for field_name in ("island_width", "island_stripe_gap", "stripe_width", "height",
+                       "color_gap"):
         if getattr(region_reference, field_name) <= 0:
             raise ConfigError(f"region_reference.{field_name} must be positive")
 

@@ -9,7 +9,7 @@ This system automatically detects critical printing defects in high-resolution s
 **Island regions**
 - **Debris**: Foreign particles causing dark spots and contamination
 - **Overspray**: Ink scattered outside intended line areas
-- **Line Defects**: Missing nozzles (gaps) and misaligned / doubled prints
+- **Line Defects**: Missing nozzles (gaps), hazy/smudged print, and stitch error (jagged zig-zag where successive heads join)
 
 **Stripe regions**
 - **Stripe Misalignment**: Stitch steps and roll drift between successive print heads
@@ -21,7 +21,8 @@ This system automatically detects critical printing defects in high-resolution s
 
 ## Features
 
-- **Fully Automated Workflow**: Single command extracts regions and runs all detections
+- **Toggle detectors in config**: `detector_sets` in `config/detection_2400.json` (`true` / `false` per detector)
+- **Full-scan defect overlay + summary**: annotated `{prefix}_full_defects.jpg` plus `defect_summary.txt` / `.csv` at the result-folder root
 - **Standalone region testing**: Run detectors on a single island, stripe, or `full` crop
 - **Legacy + new island patterns**: Single-band (`--pattern legacy`) or dual-band with 4 vertical lines (`--pattern new`)
 - **Clear scan material**: `--clear` adapts island thresholds for gray paper / fainter ink (requires `--pattern new`)
@@ -45,53 +46,29 @@ pip install -r requirements.txt
 ## Quick Start
 
 ```bash
-# Preferred: modular package CLI (2400 DPI)
-python -m nike_detection -i path/to/scan.tif --extract --pattern new
+# Preferred: python -m nike_detection  (2400 DPI, --pattern new by default)
 
-# Clear scan material (gray background, fainter ink) — requires --pattern new
-python -m nike_detection -i path/to/scan.tif --extract --pattern new --clear
+# 1) Inspect island/stripe boxes on a full scan (no detectors)
+python -m nike_detection -i Cyan_full.tiff --regions-only
+python -m nike_detection -i scan_KCMY.tif --regions-only --workers 1
 
-# High sensitivity + PDF report
-python -m nike_detection -i path/to/scan.tif --extract --pattern new -s high --generate_report
-
-# Combined stripe+island TIFF (filename contains `full`)
-# Island/stripe boxes are auto-detected from JSON seeds in detection_2400.json
+# 2) Measure boxes, then run enabled detectors (see detector_sets in config)
 python -m nike_detection -i Cyan_full.tiff --pattern new
+
+# 3) Already-extracted crop
+python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
+python -m nike_detection -i CyanStripe.tiff --only stripe_misalignment -s high
+
+# 4) Clear / gray paper (islands only)
+python -m nike_detection -i ClearIsland.tiff --pattern new --clear
+
+# 5) Template extract then detect (legacy path — not the seed-free boxes)
+python -m nike_detection -i path/to/scan.tif --extract --pattern new
 ```
 
-`main_defect_detection.py` is a thin shim that calls the same `--extract` path.
+Full flag table, detector keys, and every script shim: [Algorithm.md §11](Algorithm.md#11-how-to-invoke). Algorithms: [Algorithm.md](Algorithm.md). Thresholds: [`config/detection_2400.json`](config/detection_2400.json).
 
-### Quick test of one island or stripe crop
-
-If you already have an extracted region image, skip the full scan and run detectors directly.
-Filenames must contain `island`, `stripe`, or `full` so the correct detector stack is chosen:
-
-```bash
-# New-pattern island (all island detectors)
-python -m nike_detection -i "C:\path\KeyIsland.tiff" --pattern new
-
-# Island: missing nozzles / misalignment only
-python -m nike_detection -i "C:\path\KeyIsland.tiff" --pattern new --only line_defect
-
-# Clear-material island
-python -m nike_detection -i "C:\path\ClearIsland.tiff" --pattern new --clear
-
-# Stripe: default stripe set (misalignment, roughness, void, debris, overspray)
-python -m nike_detection -i "C:\path\CyanStripe.tiff"
-
-# Stripe: stitch/roll calibration only
-python -m nike_detection -i "C:\path\CyanStripe.tiff" --only stripe_misalignment
-
-# Stripe: voids only
-python -m nike_detection -i "C:\path\CyanStripe.tiff" --only void
-
-# Combined TIFF with both patterns (boxes auto-detected from config seeds)
-python -m nike_detection -i "C:\path\Cyan_full.tiff" --pattern new --only void line_defect
-```
-
-`scripts/defects_detection/run_all_detections.py` still works as a shim around this CLI.
-
-All sensitivity tables, detector sets, and 2400 geometry are in [`config/detection_2400.json`](config/detection_2400.json). Surface treatment is opt-in (`--only surface_treatment`).
+`main_defect_detection.py` always adds `--extract`. `scripts/defects_detection/run_all_detections.py` is a shim for already-extracted crops.
 
 ## What You Need
 
@@ -244,61 +221,61 @@ python -m nike_detection -i extracted_folder --pattern new --workers 2 --no-vis
 
 # Check the island/stripe boxes on a folder of full scans before detecting
 python -m nike_detection -i full_scans_folder --pattern new --regions-only
+
+# Measure every colour's boxes on one multi-colour sheet (KCMY, 6.7 GB)
+python -m nike_detection -i scan_KCMY.tif --config config/detection_2400.json \
+    --regions-only --workers 1
 ```
 
-On a `full` scan the island and stripe boxes are measured from the print itself — no seed
-coordinates. The nominal layout (island 5100 px, gap 580 px, stripe 1050 px, height 33000 px
-at 2400 DPI) lives in `config/detection_2400.json` → `region_reference` and is used only to
-disambiguate, validate, and fill in an edge that failed to print. See
-[Algorithm.md §6.3](Algorithm.md).
+On a `full` scan the island and stripe boxes of every colour are measured from the print
+itself — no seed coordinates and no positional priors, so a sheet holding one colour and a
+sheet holding Key, Cyan, Magenta and Yellow are handled the same way. Colours are named left
+to right from `geometry.colors`, and each gets its own y range since successive colours can
+sit ±200 px higher or lower. The nominal layout (island 5100 px, gap 580 px, stripe 1050 px,
+height 33000 px, 250 px between colours, at 2400 DPI) lives in
+`config/detection_2400.json` → `region_reference` and is used only to disambiguate, validate,
+and fill in an edge that failed to print. Sheets over 1.5 GB are memory-mapped rather than
+decoded, so a full 56000 × 40000 KCMY scan runs in about a minute without exhausting RAM.
+See [Algorithm.md §6](Algorithm.md#6-region-extraction-feeds-the-detectors).
 
-# Clear material + new pattern
+```bash
+# Clear material + new pattern (always --extract)
 python main_defect_detection.py -i scan.tif -d 2400 --pattern new --clear
 
 # High sensitivity with PDF report
 python main_defect_detection.py -i scan.tif -d 2400 -s high --generate_report
-
-# Custom regions config (overrides DPI template)
-python main_defect_detection.py -i scan.tif -d 2400 -c my_custom_regions.json
-
-# New-pattern config is selected automatically when --pattern new
-# (e.g. regions_json/new_pattern_2400.json for 2400 DPI)
-
-# Full options
-python main_defect_detection.py \
-  --image scan.tif \
-  --dpi 2400 \
-  --pattern new \
-  --clear \
-  --sensitivity high \
-  --generate_report
 ```
 
 ### What Happens When You Run It
 
-**Step 1: Region Extraction**
-- Reads your TIFF image
-- Loads DPI template / new-pattern config / custom config
-- Extracts individual stripe and island regions
-- Saves extracted regions to: `{image_name}_extracted_regions_YYYYMMDD_HHMMSS/`
+**`full` TIFF (filename contains `full`), no `--extract`**
+- Memory-maps the sheet if it is larger than 1.5 GB
+- Measures island + stripe boxes for every colour from the print (no seeds)
+- Writes `{prefix}_full_regions.json` / `.jpg` / `_corners.jpg`
+- Unless `--regions-only`, crops each box in memory and runs the **enabled** island and stripe detectors
+- Writes `{prefix}_full_defects.jpg` (all findings on the full scan) plus `defect_summary.txt` / `.csv` at the result-folder root
+- Per-region subfolders are off unless `write_region_folders` or `--region-folders`
 
-**Step 2: Defect Detection**
-- Routes each extracted region by filename (`island` / `stripe`)
-- Island regions → debris, overspray island, line defect
-  (dual-band detectors when `--pattern new`; adaptive thresholds when `--clear`)
-- Stripe regions → stripe misalignment (stitch/roll), edge roughness, overspray, surface treatment, void, debris stripe
-- Saves visualizations and JSON results per region
-- Writes `defect_report.json` (and optional PDF)
+**`--extract`**
+- Template-crops from `config.geometry` into `{stem}_extracted_regions_<timestamp>/extracted/`
+- Then runs detectors on those files (this is **not** the seed-free path)
+
+**Island or stripe crop**
+- Filename token selects the detector set; shared `ImageContext` runs geometry once
+- Writes `defect_report.json` plus `defect_summary.txt` / `.csv` at the result-folder root (optional PDF)
 
 ### Island vs Stripe — which detectors run?
 
-| Filename contains | Detectors |
-|---|---|
-| `island` | `debris_island`, `overspray_island`, `line_defect` |
-| `stripe` | `stripe_misalignment`, `edge_roughness`, `overspray`, `surface_treatment`, `void`, `debris_stripe` |
-| neither | `surface_treatment` only |
+Flip detectors on or off in `config/detection_2400.json` → `detector_sets` (`true` / `false`). Current defaults:
 
-`--pattern` and `--clear` only affect **island** detectors. Stripe detection is the same for legacy and new layouts (the extractor already uses `num_heads` from the region config, e.g. 3 heads in `new_pattern_2400.json`).
+| Filename contains | Detectors (config default) |
+|---|---|
+| `full` | Measure boxes, then both sets below |
+| `island` | `line_defect` (missing nozzles + stitch / calibration) |
+| `stripe` | `stripe_misalignment`, `edge_roughness`, `void` |
+| neither | none (`surface_treatment` is off) |
+
+`--pattern` and `--clear` only affect **island** detectors. Surface treatment is opt-in. Stripe detection is the same for legacy and new layouts.
 
 ### Processing Pre-Extracted Images (Skip Extraction)
 
@@ -327,28 +304,15 @@ Full CLI for the standalone runner (including `--only`, `-o`, `--clear`) is docu
 After running, you'll find:
 
 ```
-image_directory/
-└── scan_extracted_regions_20250103_143022/
-    ├── KeyStripe.tiff                         # Extracted stripe region
-    ├── CyanStripe.tiff                        # Extracted stripe region
-    ├── KeyIsland.tiff                         # Extracted island region
-    ├── CyanIsland.tiff                        # Extracted island region
-    └── output_20250103_143045/                # Detection results
-        ├── CyanStripe/
-        │   ├── stripe_misalignment_visualization.jpg
-        │   ├── overspray_visualization.jpg
-        │   ├── surface_treatment_visualization.jpg
-        │   ├── void_visualization.tiff
-        │   ├── debris_stripe_visualization.jpg
-        │   └── CyanStripe_results.json
-        ├── KeyIsland/
-        │   ├── debris_island_visualization.jpg
-        │   ├── line_defect_visualization.jpg
-        │   ├── overspray_island_visualization.jpg
-        │   └── KeyIsland_results.json
-        ├── defect_report.json                 # Summary JSON report
-        └── defect_detection_report.pdf        # Summary PDF (if --generate_report used)
+{image_name}_MM_DD_YY_HH_MM_SS/          # Detection results (next to the TIFF)
+    ├── {prefix}_full_regions.jpg            # Segmented island/stripe boxes
+    ├── {prefix}_full_defects.jpg            # Same scan with defects annotated
+    ├── defect_summary.txt                   # Readable per-region metrics
+    ├── defect_summary.csv
+    └── defect_report.json                   # Full detector payload
 ```
+
+Per-region subfolders (`CyanStripe/line_defect_visualization.jpg`, …) are **off** unless you set `write_region_folders: true` or pass `--region-folders`.
 
 ## Sensitivity Levels
 

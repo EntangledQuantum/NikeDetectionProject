@@ -74,6 +74,8 @@ class Defaults:
     write_visualizations: bool = True
     downscale_vis: bool = False
     write_crops: bool = False
+    write_region_folders: bool = False
+    write_full_defect_overlay: bool = True
 
 
 @dataclass
@@ -101,20 +103,32 @@ class GeometryConfig:
 class RegionReference:
     """Nominal full-scan layout at 2400 DPI, left to right.
 
-    ``[ island_width ][ island_stripe_gap ][ stripe_width ]``, both regions
-    ``height`` tall. Used to disambiguate and validate detected edges, and
-    to predict an edge whose print is missing. Never used as a search seed.
+    One colour is ``[ island_width ][ island_stripe_gap ][ stripe_width ]``,
+    both regions ``height`` tall. A multi-colour scan repeats that block once
+    per entry of ``geometry.colors``, separated by ``color_gap``, with each
+    colour free to sit up to ``color_y_tolerance`` higher or lower.
+
+    Used to disambiguate and validate detected edges and to predict an edge
+    whose print is missing. Never used as a search seed.
     """
 
     island_width: int = 5100
     island_stripe_gap: int = 580
     stripe_width: int = 1050
     height: int = 33000
+    color_gap: int = 250
+    color_y_tolerance: int = 200
     tolerance: float = 0.12
 
     @property
     def color_span(self) -> int:
+        """Island through stripe for one colour."""
         return self.island_width + self.island_stripe_gap + self.stripe_width
+
+    @property
+    def color_pitch(self) -> int:
+        """One colour's island start to the next colour's island start."""
+        return self.color_span + self.color_gap
 
 
 @dataclass
@@ -192,6 +206,8 @@ class RunSettings:
     regions_path: Optional[str]
     recursive: bool
     include_unknown: bool
+    write_region_folders: bool = False
+    write_full_defect_overlay: bool = True
     extract_config_path: Optional[str] = None
     regions_only: bool = False
 

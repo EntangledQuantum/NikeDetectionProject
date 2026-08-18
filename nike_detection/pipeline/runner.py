@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing as mp
 import os
 import re
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -23,10 +25,15 @@ from nike_detection.geometry.full_region_detector import (
     draw_corner_montage,
     draw_region_overlay,
 )
-from nike_detection.io.image_loader import load_bgr_gray
-from nike_detection.io.region_views import RegionView, slice_views
+from nike_detection.io.defect_summary import write_defect_summary
+from nike_detection.io.image_loader import MEMMAP_MIN_BYTES, Scan, load_bgr_gray, open_scan
+from nike_detection.io.region_views import slice_view
 from nike_detection.io.results import save_image_result, save_summary_report
-from nike_detection.io.visualization import save_debug, save_visualization
+from nike_detection.io.visualization import (
+    draw_full_defect_overlay,
+    save_debug,
+    save_visualization,
+)
 from nike_detection.pipeline.context import ImageContext
 from nike_detection.pipeline.preprocess_island import GeometryError
 from nike_detection.pipeline.registry import (
@@ -48,24 +55,76 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp")
 BYTES_PER_BGR_PIXEL = 3
 MAX_RAM_BUDGET = 8 * 1024 ** 3
 RUN_OUTPUT_DIR_RE = re.compile(r"^output_\d{8}_\d{6}$", re.IGNORECASE)
+NAMED_RUN_DIR_RE = re.compile(r"_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$")
 GENERATED_NAME_TOKENS = ("_full_regions", "_visualization", "_corners")
+_WINDOWS_BAD_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _cpu_count() -> int:
+    return max(1, int(os.cpu_count() or 1))
+
+
+def cap_workers(
+    requested: int,
+    n_jobs: int,
+    sample_shapes: Optional[Sequence[Tuple[int, int]]] = None,
+) -> int:
+    """Clamp process workers to jobs, CPU, and an 8 GB working-set budget."""
+    requested = max(1, int(requested))
+    n_jobs = max(1, int(n_jobs))
+    n = min(requested, n_jobs, _cpu_count())
+    if sample_shapes:
+        worst = 0
+        for height, width in sample_shapes:
+            worst = max(worst, int(height) * int(width) * BYTES_PER_BGR_PIXEL * 2)
+        if worst > 0:
+            fit = max(1, int(MAX_RAM_BUDGET // worst))
+            if fit < n:
+                logger.warning(
+                    "Capping workers from %s to %s (estimated %.1f GB per job)",
+                    n, fit, worst / (1024 ** 3),
+                )
+            n = min(n, fit)
+    return max(1, n)
 
 
 def cap_image_workers(requested: int, sample_shape: Optional[Tuple[int, ...]] = None) -> int:
-    requested = max(1, int(requested))
-    if sample_shape is None:
-        return requested
-    h, w = int(sample_shape[0]), int(sample_shape[1])
-    per_image = h * w * BYTES_PER_BGR_PIXEL * 2  # bgr + gray-ish working set
-    if per_image <= 0:
-        return requested
-    fit = max(1, int(MAX_RAM_BUDGET // per_image))
-    if fit < requested:
-        logger.warning(
-            "Capping image workers from %s to %s (estimated %0.1f GB per image)",
-            requested, fit, per_image / (1024 ** 3),
-        )
-    return min(requested, fit)
+    shapes = None
+    if sample_shape is not None and len(sample_shape) >= 2:
+        shapes = [(int(sample_shape[0]), int(sample_shape[1]))]
+    return cap_workers(requested, requested, shapes)
+
+
+def _safe_stem(stem: str) -> str:
+    cleaned = _WINDOWS_BAD_CHARS.sub("_", stem).strip(" ._")
+    return cleaned or "image"
+
+
+def run_output_stamp(when: Optional[datetime] = None) -> str:
+    """``MM_DD_YY_HH_MM_SS`` used in result folder names."""
+    return (when or datetime.now()).strftime("%m_%d_%y_%H_%M_%S")
+
+
+def output_dir_for_image(
+    image_path: str,
+    settings: RunSettings,
+    stamp: str,
+    *,
+    nest_under_override: bool = False,
+) -> str:
+    """Results live next to the TIFF as ``{stem}_{MM}_{DD}_{YY}_{HH}_{MM}_{SS}``.
+
+    ``--output`` overrides that location. When one ``-o`` is shared across
+    several inputs, each image is nested as ``{output}/{stem}_{stamp}``.
+    """
+    stem = _safe_stem(Path(image_path).stem)
+    named = f"{stem}_{stamp}"
+    if settings.output_dir:
+        if nest_under_override:
+            return os.path.join(os.path.abspath(settings.output_dir), named)
+        return os.path.abspath(settings.output_dir)
+    parent = os.path.dirname(os.path.abspath(image_path)) or "."
+    return os.path.join(parent, named)
 
 
 def manual_regions(settings: RunSettings, image_path: str) -> Optional[List[RegionSpec]]:
@@ -93,8 +152,10 @@ def manual_regions(settings: RunSettings, image_path: str) -> Optional[List[Regi
 
 
 def _is_run_output_dir(name: str) -> bool:
-    """True for a directory this pipeline itself created (``output_<stamp>``)."""
-    return bool(RUN_OUTPUT_DIR_RE.match(name)) or name.lower().endswith("_crops")
+    """True for a directory this pipeline itself created."""
+    if bool(RUN_OUTPUT_DIR_RE.match(name)) or name.lower().endswith("_crops"):
+        return True
+    return bool(NAMED_RUN_DIR_RE.search(name))
 
 
 def _is_generated_artifact(name: str) -> bool:
@@ -143,14 +204,127 @@ def collect_image_files(
     return sorted(kept)
 
 
-def _make_output_dir(settings: RunSettings, parent: str) -> str:
-    if settings.output_dir:
-        out = settings.output_dir
-    else:
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = os.path.join(parent, f"output_{stamp}")
-    os.makedirs(out, exist_ok=True)
-    return out
+def _spec_shape(spec: RegionSpec) -> Tuple[int, int]:
+    x0, y0, x1, y1 = spec.bounding_box_pixels.as_int_xyxy()
+    return max(1, y1 - y0), max(1, x1 - x0)
+
+
+def _detector_threads_for_pool(settings: RunSettings, region_workers: int) -> int:
+    """Leave cores for sibling region processes."""
+    per = max(1, _cpu_count() // max(1, region_workers))
+    return max(1, min(int(settings.max_detector_threads), per))
+
+
+def _init_worker() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+
+
+def _run_one_full_region(
+    image_path: str,
+    spec: RegionSpec,
+    output_root: str,
+    settings: RunSettings,
+    load_seconds: float,
+    file_size_mb: float,
+    stem: str,
+    crop_dir: Optional[str],
+) -> ImageResult:
+    """Crop one colour region from a (possibly memory-mapped) sheet and detect."""
+    scan = open_scan(image_path)
+    try:
+        view = slice_view(scan, spec)
+    finally:
+        del scan
+    if view is None:
+        return ImageResult(
+            image_name=spec.name,
+            image_path=image_path,
+            image_type=ImageType.ISLAND if spec.type == "island" else ImageType.STRIPE,
+            processing_time=datetime.now().isoformat(),
+            file_size_mb=file_size_mb,
+            detectors_used=[],
+            detections={},
+            error=f"Region '{spec.name}' has no overlap with the scan",
+            parent_image=stem,
+        )
+    if crop_dir is not None:
+        os.makedirs(crop_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(crop_dir, f"{view.name}.tiff"), view.bgr)
+    region_type = ImageType.STRIPE if view.region_type == "stripe" else ImageType.ISLAND
+    ctx = ImageContext(
+        bgr=view.bgr,
+        gray=view.gray,
+        path=image_path,
+        name=view.name,
+        image_type=region_type,
+        settings=settings,
+        origin_xy=view.origin_xy,
+        parent_image=stem,
+    )
+    result = process_region(ctx, output_root, settings)
+    result.load_seconds = round(load_seconds, 3)
+    result.file_size_mb = file_size_mb
+    result.elapsed_seconds = round(
+        (result.elapsed_seconds or 0) + load_seconds + (result.write_seconds or 0), 3
+    )
+    return result
+
+
+def _full_region_job(job: Tuple[Any, ...]) -> ImageResult:
+    (
+        image_path, spec, output_root, settings, load_seconds,
+        file_size_mb, stem, crop_dir, detector_threads,
+    ) = job
+    local = replace(settings, max_detector_threads=int(detector_threads))
+    try:
+        return _run_one_full_region(
+            image_path, spec, output_root, local,
+            load_seconds, file_size_mb, stem, crop_dir,
+        )
+    except Exception as exc:
+        logger.exception("Region %s failed on %s", spec.name, image_path)
+        return ImageResult(
+            image_name=spec.name,
+            image_path=image_path,
+            image_type=ImageType.ISLAND if spec.type == "island" else ImageType.STRIPE,
+            processing_time=datetime.now().isoformat(),
+            file_size_mb=file_size_mb,
+            detectors_used=[],
+            detections={},
+            error=str(exc),
+            parent_image=stem,
+        )
+
+
+def _map_jobs(fn, jobs: Sequence[Any], workers: int) -> List[Any]:
+    """Run ``fn`` over jobs, preserving order.
+
+    Uses processes from the parent, and threads if we are already inside a
+    worker process (Windows spawn workers are daemonic and cannot nest pools).
+    """
+    if not jobs:
+        return []
+    if workers <= 1 or len(jobs) == 1:
+        return [fn(job) for job in jobs]
+    ordered: List[Any] = [None] * len(jobs)
+    use_threads = bool(mp.current_process().daemon)
+    executor_cls = ThreadPoolExecutor if use_threads else ProcessPoolExecutor
+    kwargs = {"max_workers": workers}
+    if not use_threads:
+        kwargs["initializer"] = _init_worker
+    logger.info(
+        "Dispatching %s job(s) on %s %s",
+        len(jobs), workers, "threads" if use_threads else "processes",
+    )
+    with executor_cls(**kwargs) as pool:
+        future_index = {pool.submit(fn, job): index for index, job in enumerate(jobs)}
+        for fut in as_completed(future_index):
+            ordered[future_index[fut]] = fut.result()
+    return ordered
 
 
 def _run_detectors(
@@ -209,8 +383,10 @@ def process_region(
     output_root: str,
     settings: RunSettings,
 ) -> ImageResult:
+    write_folders = bool(settings.write_region_folders)
     image_output = os.path.join(output_root, ctx.name)
-    os.makedirs(image_output, exist_ok=True)
+    if write_folders:
+        os.makedirs(image_output, exist_ok=True)
 
     default_keys = keys_for_type(ctx.image_type, settings)
     try:
@@ -276,20 +452,45 @@ def process_region(
     detections, detect_seconds, rendered = _run_detectors(ctx, detectors, settings)
 
     write_t0 = time.perf_counter()
-    for name, detector, defects in rendered:
-        vis_path = save_visualization(
-            ctx, detector, defects, image_output, name,
-            write=settings.write_visualizations,
-            downscale_vis=settings.downscale_vis,
+    if write_folders:
+        for name, detector, defects in rendered:
+            vis_path = save_visualization(
+                ctx, detector, defects, image_output, name,
+                write=settings.write_visualizations,
+                downscale_vis=settings.downscale_vis,
+            )
+            detections[name].visualization_path = vis_path
+            save_debug(detector, image_output, ctx.name, settings.debug)
+            logger.info(
+                "%s / %s: %.2fs, %s defect(s)",
+                ctx.name, name, detections[name].elapsed_seconds,
+                detections[name].defect_count,
+            )
+        result = ImageResult(
+            image_name=ctx.name,
+            image_path=ctx.path,
+            image_type=ctx.image_type,
+            processing_time=datetime.now().isoformat(),
+            file_size_mb=0.0,
+            detectors_used=list(detectors.keys()),
+            detections=detections,
+            elapsed_seconds=round(context_seconds + detect_seconds, 3),
+            context_seconds=round(context_seconds, 3),
+            detect_seconds=round(detect_seconds, 3),
+            write_seconds=round(time.perf_counter() - write_t0, 3),
+            origin_xy=ctx.origin_xy,
+            parent_image=ctx.parent_image,
         )
-        detections[name].visualization_path = vis_path
-        save_debug(detector, image_output, ctx.name, settings.debug)
+        save_image_result(result, image_output)
+        return result
+
+    for name, detector, defects in rendered:
         logger.info(
             "%s / %s: %.2fs, %s defect(s)",
-            ctx.name, name, detections[name].elapsed_seconds, detections[name].defect_count,
+            ctx.name, name, detections[name].elapsed_seconds,
+            detections[name].defect_count,
         )
-
-    result = ImageResult(
+    return ImageResult(
         image_name=ctx.name,
         image_path=ctx.path,
         image_type=ctx.image_type,
@@ -304,8 +505,6 @@ def process_region(
         origin_xy=ctx.origin_xy,
         parent_image=ctx.parent_image,
     )
-    save_image_result(result, image_output)
-    return result
 
 
 def process_image_path(
@@ -315,17 +514,33 @@ def process_image_path(
 ) -> List[ImageResult]:
     image_path = os.path.abspath(image_path)
     kind = classify_image(image_path)
-    if settings.regions_only and kind == ImageType.UNKNOWN:
+    file_size = os.path.getsize(image_path)
+    # --regions-only already promoted unknown TIFFs to a full sheet. Detection
+    # on a 4-colour scan must do the same: the file is too large for OpenCV
+    # and the name often has no "full" token.
+    if kind == ImageType.UNKNOWN and (
+        settings.regions_only
+        or settings.regions_path
+        or file_size >= MEMMAP_MIN_BYTES
+    ):
         kind = ImageType.FULL
+        logger.info(
+            "Treating %s as a full scan (%s)",
+            os.path.basename(image_path),
+            "regions override" if settings.regions_path or settings.regions_only
+            else f"{file_size / 1e9:.1f} GB",
+        )
     logger.info("Processing %s (%s)", os.path.basename(image_path), kind.value)
 
     load_t0 = time.perf_counter()
-    bgr, gray = load_bgr_gray(image_path)
-    load_seconds = time.perf_counter() - load_t0
-    file_size_mb = os.path.getsize(image_path) / (1024 * 1024)
+    file_size_mb = file_size / (1024 * 1024)
     stem = Path(image_path).stem
 
     if kind == ImageType.FULL:
+        # A full sheet is opened as a Scan and cropped per region, so a
+        # multi-gigabyte scan never has to be decoded whole.
+        scan = open_scan(image_path)
+        load_seconds = time.perf_counter() - load_t0
         override = manual_regions(settings, image_path)
         if override is not None:
             specs = override
@@ -335,9 +550,10 @@ def process_image_path(
             }
         else:
             specs, region_debug = detect_full_regions(
-                gray, settings.config, image_path=image_path,
+                scan, settings.config, image_path=image_path,
             )
-        _write_region_artifacts(bgr, specs, region_debug, output_root, stem)
+        _write_region_artifacts(scan, specs, region_debug, output_root, stem)
+        del scan
         if settings.regions_only:
             prefix = region_debug.get("prefix") or stem
             return [ImageResult(
@@ -351,37 +567,37 @@ def process_image_path(
                 load_seconds=round(load_seconds, 3),
                 elapsed_seconds=round(load_seconds, 3),
             )]
-        views = slice_views(bgr, gray, specs)
+        crop_dir = None
         if settings.write_crops:
             crop_dir = os.path.join(output_root, f"{stem}_crops")
             os.makedirs(crop_dir, exist_ok=True)
-            import cv2
-            for view in views:
-                cv2.imwrite(os.path.join(crop_dir, f"{view.name}.tiff"), view.bgr)
-        results: List[ImageResult] = []
-        for view in views:
-            region_type = ImageType.STRIPE if view.region_type == "stripe" else ImageType.ISLAND
-            ctx = ImageContext(
-                bgr=view.bgr,
-                gray=view.gray,
-                path=image_path,
-                name=view.name,
-                image_type=region_type,
-                settings=settings,
-                origin_xy=view.origin_xy,
-                parent_image=stem,
+        shapes = [_spec_shape(spec) for spec in specs]
+        region_workers = cap_workers(settings.max_image_workers, len(specs), shapes)
+        det_threads = _detector_threads_for_pool(settings, region_workers)
+        logger.info(
+            "Detecting %s region(s) on %s with up to %s parallel workers, "
+            "%s detector thread(s) each",
+            len(specs), os.path.basename(image_path), region_workers, det_threads,
+        )
+        jobs = [
+            (
+                image_path, spec, output_root, settings, load_seconds,
+                file_size_mb, stem, crop_dir, det_threads,
             )
-            result = process_region(ctx, output_root, settings)
-            result.load_seconds = round(load_seconds, 3)
-            result.file_size_mb = file_size_mb
-            result.elapsed_seconds = round(
-                (result.elapsed_seconds or 0) + load_seconds + (result.write_seconds or 0), 3
-            )
-            results.append(result)
+            for spec in specs
+        ]
+        results = _map_jobs(_full_region_job, jobs, region_workers)
+        results = [item for item in results if item is not None]
         if not results:
             raise ValueError(f"No valid region views produced for {image_path}")
+        logger.info("Finished %s region(s) on %s", len(results), os.path.basename(image_path))
+        _write_full_defect_overlay(
+            image_path, results, specs, region_debug, output_root, stem, settings,
+        )
         return results
 
+    bgr, gray = load_bgr_gray(image_path)
+    load_seconds = time.perf_counter() - load_t0
     ctx = ImageContext(
         bgr=bgr,
         gray=gray,
@@ -400,7 +616,7 @@ def process_image_path(
 
 
 def _write_region_artifacts(
-    bgr: np.ndarray,
+    scan: Scan,
     specs: List[RegionSpec],
     debug: Dict[str, Any],
     output_root: str,
@@ -410,11 +626,9 @@ def _write_region_artifacts(
     prefix = str(debug.get("prefix") or Path(stem).stem)
     payload = {
         "image_stem": stem,
-        "measured": debug.get("measured"),
         "reference": debug.get("reference"),
-        "sources": debug.get("sources"),
         "warnings": debug.get("warnings") or [],
-        "vertical_lines": debug.get("vertical_lines"),
+        "colors": debug.get("colors"),
         "regions": [
             {
                 "name": spec.name,
@@ -434,10 +648,10 @@ def _write_region_artifacts(
         json.dump(payload, handle, indent=2)
     overlay_path = os.path.join(output_root, f"{prefix}_full_regions.jpg")
     cv2.imwrite(
-        overlay_path, draw_region_overlay(bgr, specs, debug=debug),
+        overlay_path, draw_region_overlay(scan, specs, debug=debug),
         [cv2.IMWRITE_JPEG_QUALITY, 90],
     )
-    corners = draw_corner_montage(bgr, specs)
+    corners = draw_corner_montage(scan, specs)
     if corners is not None:
         cv2.imwrite(
             os.path.join(output_root, f"{prefix}_full_regions_corners.jpg"),
@@ -446,9 +660,54 @@ def _write_region_artifacts(
     logger.info("Wrote region boxes to %s and %s", json_path, overlay_path)
 
 
-def _process_image_job(args: Tuple[str, str, RunSettings]) -> List[ImageResult]:
+def _write_full_defect_overlay(
+    image_path: str,
+    results: List[ImageResult],
+    specs: List[RegionSpec],
+    debug: Dict[str, Any],
+    output_root: str,
+    stem: str,
+    settings: RunSettings,
+) -> None:
+    if not settings.write_full_defect_overlay or not settings.write_visualizations:
+        return
+    if settings.regions_only:
+        return
+    os.makedirs(output_root, exist_ok=True)
+    prefix = str(debug.get("prefix") or Path(stem).stem)
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    scan = open_scan(image_path)
+    try:
+        overlay = draw_full_defect_overlay(
+            scan, results, specs=specs, stamp=stamp,
+        )
+    finally:
+        del scan
+    overlay_path = os.path.join(output_root, f"{prefix}_full_defects.jpg")
+    cv2.imwrite(overlay_path, overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    logger.info("Wrote full-scan defect overlay to %s", overlay_path)
+
+
+def _process_image_job(args: Tuple[str, str, RunSettings]) -> Tuple[str, List[ImageResult]]:
     image_path, output_root, settings = args
-    return process_image_path(image_path, output_root, settings)
+    results = process_image_path(image_path, output_root, settings)
+    return output_root, results
+
+
+def _save_image_summary(
+    results: List[ImageResult],
+    output_root: str,
+    settings: RunSettings,
+    batch_elapsed: Optional[float] = None,
+) -> None:
+    os.makedirs(output_root, exist_ok=True)
+    save_summary_report(
+        results, output_root, settings.sensitivity, settings.pattern,
+        generate_pdf=settings.generate_report,
+        batch_elapsed=batch_elapsed,
+    )
+    if not settings.regions_only:
+        write_defect_summary(results, output_root, settings)
 
 
 def run_paths(
@@ -458,27 +717,41 @@ def run_paths(
 ) -> Tuple[List[ImageResult], str]:
     if not paths:
         raise ValueError("No input images to process")
-    parent = output_parent or os.path.dirname(os.path.abspath(paths[0])) or "."
-    output_root = _make_output_dir(settings, parent)
+    stamp = run_output_stamp()
+    nest = bool(settings.output_dir) and len(paths) > 1
     batch_t0 = time.perf_counter()
-    results: List[ImageResult] = []
+    all_results: List[ImageResult] = []
+    output_roots: List[str] = []
 
-    workers = cap_image_workers(settings.max_image_workers)
-    if len(paths) == 1 or workers == 1:
+    def dest(path: str) -> str:
+        out = output_dir_for_image(path, settings, stamp, nest_under_override=nest)
+        os.makedirs(out, exist_ok=True)
+        return out
+
+    image_workers = cap_workers(settings.max_image_workers, len(paths))
+    if len(paths) == 1 or image_workers == 1:
         for path in paths:
-            results.extend(process_image_path(path, output_root, settings))
+            out = dest(path)
+            part = process_image_path(path, out, settings)
+            _save_image_summary(part, out, settings)
+            all_results.extend(part)
+            output_roots.append(out)
     else:
-        jobs = [(path, output_root, settings) for path in paths]
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_process_image_job, job) for job in jobs]
-            for fut in as_completed(futures):
-                results.extend(fut.result())
+        logger.info("Processing %s images with %s process worker(s)", len(paths), image_workers)
+        jobs = [(path, dest(path), settings) for path in paths]
+        mapped = _map_jobs(_process_image_job, jobs, image_workers)
+        for out, part in mapped:
+            _save_image_summary(part, out, settings)
+            all_results.extend(part)
+            output_roots.append(out)
 
     batch_elapsed = time.perf_counter() - batch_t0
-    save_summary_report(
-        results, output_root, settings.sensitivity, settings.pattern,
-        generate_pdf=settings.generate_report,
-        batch_elapsed=batch_elapsed,
+    output_root = output_roots[0]
+    if len(output_roots) == 1:
+        _save_image_summary(all_results, output_root, settings, batch_elapsed=batch_elapsed)
+    logger.info(
+        "Processed %s region(s) in %.2fs -> %s",
+        len(all_results), batch_elapsed,
+        output_root if len(output_roots) == 1 else f"{len(output_roots)} folders",
     )
-    logger.info("Processed %s region(s) in %.2fs -> %s", len(results), batch_elapsed, output_root)
-    return results, output_root
+    return all_results, output_root

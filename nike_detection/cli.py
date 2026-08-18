@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 import sys
+from multiprocessing import freeze_support
 from pathlib import Path
 from typing import List, Optional
 
@@ -37,7 +38,8 @@ Examples:
     )
     parser.add_argument("-i", "--input", dest="input_path", required=True,
                         help="Image file, 'full' TIFF, or folder of crops")
-    parser.add_argument("-o", "--output", help="Output directory")
+    parser.add_argument("-o", "--output",
+                        help="Output folder (default: {image_name}_MM_DD_YY_HH_MM_SS next to the TIFF)")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH),
                         help="Unified detection_2400.json (all thresholds live here)")
     parser.add_argument("-s", "--sensitivity", choices=list(SENSITIVITY_LEVELS),
@@ -61,11 +63,15 @@ Examples:
                         help="Downscale overlays (faster writes)")
     parser.add_argument("--debug", action="store_true", help="Save detector debug artifacts")
     parser.add_argument("--workers", type=int, default=None,
-                        help="Max process workers across images")
+                        help="Parallel processes: regions of a full scan, or images in a folder")
     parser.add_argument("--detector-threads", type=int, default=None,
-                        help="Max threads per image after shared geometry")
+                        help="Threads per region after shared geometry (capped by CPU / workers)")
     parser.add_argument("--write-crops", action="store_true",
                         help="When processing a 'full' TIFF, also write region crops")
+    parser.add_argument("--region-folders", action="store_true",
+                        help="Also write per-region subfolders with visualizations (off by default)")
+    parser.add_argument("--no-full-overlay", action="store_true",
+                        help="Skip the full-scan annotated defect image at the result-folder root")
     parser.add_argument("--no-recursive", action="store_true",
                         help="Folder input: only the top level")
     parser.add_argument("--include-unknown", action="store_true",
@@ -101,6 +107,12 @@ def _settings_from_args(args, config) -> RunSettings:
         max_image_workers=args.workers or defaults.max_image_workers,
         max_detector_threads=args.detector_threads or defaults.max_detector_threads,
         write_crops=bool(args.write_crops or defaults.write_crops),
+        write_region_folders=bool(args.region_folders or defaults.write_region_folders),
+        write_full_defect_overlay=(
+            defaults.write_full_defect_overlay
+            and not args.no_full_overlay
+            and not args.no_vis
+        ),
         regions_path=args.regions,
         recursive=not args.no_recursive,
         include_unknown=bool(args.include_unknown or args.regions_only),
@@ -178,4 +190,5 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
+    freeze_support()
     sys.exit(main())
