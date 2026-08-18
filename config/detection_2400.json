@@ -93,7 +93,7 @@
         "jagged_threshold": 10
       },
       "line_defect_new": {
-        "min_gap_fraction": 0.35,
+        "min_gap_fraction": 0.70,
         "split_min_fraction": 0.40,
         "dev_min_fraction": 0.40,
         "split_min_hollow": 3,
@@ -101,7 +101,13 @@
         "dev_thickness_factor": 0.6,
         "density_downsample": 16,
         "density_rel_threshold": 0.40,
-        "density_min_defects": 8
+        "density_min_defects": 8,
+        "expected_gap_px": 90.0,
+        "hazy_thickness_factor": 1.7,
+        "hazy_weak_factor": 0.55,
+        "stitch_rms_fraction": 0.05,
+        "stitch_score_ratio": 2.2,
+        "stitch_max_lines_per_zone": 2
       },
       "stripe_misalignment": {
         "step_threshold": 3.0,
@@ -183,7 +189,7 @@
         "jagged_threshold": 5
       },
       "line_defect_new": {
-        "min_gap_fraction": 0.60,
+        "min_gap_fraction": 0.85,
         "split_min_fraction": 0.55,
         "dev_min_fraction": 0.60,
         "split_min_hollow": 3,
@@ -191,7 +197,13 @@
         "dev_thickness_factor": 0.6,
         "density_downsample": 16,
         "density_rel_threshold": 0.40,
-        "density_min_defects": 8
+        "density_min_defects": 8,
+        "expected_gap_px": 90.0,
+        "hazy_thickness_factor": 1.7,
+        "hazy_weak_factor": 0.55,
+        "stitch_rms_fraction": 0.05,
+        "stitch_score_ratio": 2.2,
+        "stitch_max_lines_per_zone": 2
       },
       "stripe_misalignment": {
         "step_threshold": 5.0,
@@ -273,7 +285,7 @@
         "jagged_threshold": 25
       },
       "line_defect_new": {
-        "min_gap_fraction": 1.20,
+        "min_gap_fraction": 1.10,
         "split_min_fraction": 0.90,
         "dev_min_fraction": 1.00,
         "split_min_hollow": 3,
@@ -281,7 +293,13 @@
         "dev_thickness_factor": 0.6,
         "density_downsample": 16,
         "density_rel_threshold": 0.40,
-        "density_min_defects": 8
+        "density_min_defects": 8,
+        "expected_gap_px": 90.0,
+        "hazy_thickness_factor": 1.7,
+        "hazy_weak_factor": 0.55,
+        "stitch_rms_fraction": 0.05,
+        "stitch_score_ratio": 2.2,
+        "stitch_max_lines_per_zone": 2
       },
       "stripe_misalignment": {
         "step_threshold": 10.0,
@@ -337,26 +355,11 @@
       }
     }
   },
-  "regions": [
-    {
-      "name": "KeyIsland",
-      "type": "island",
-      "bounding_box_pixels": {
-        "top_x": 0,
-        "top_y": 0,
-        "bottom_x": 5500,
-        "bottom_y": 33306
-      }
-    },
-    {
-      "name": "KeyStripe",
-      "type": "stripe",
-      "bounding_box_pixels": {
-        "top_x": 5500,
-        "top_y": 0,
-        "bottom_x": 6930,
-        "bottom_y": 33306
-      }
-    }
-  ]
+  "region_reference": {
+    "island_width": 5100,
+    "island_stripe_gap": 580,
+    "stripe_width": 1050,
+    "height": 33000,
+    "tolerance": 0.12
+  }
 }

@@ -387,17 +387,22 @@ class NewLineDefectAdapter(_BaseAdapter):
             sensitivity=settings.sensitivity, debug=settings.debug, clear=settings.clear
         )
         _apply(self._impl, params)
+        self._impl.num_heads = int(settings.config.geometry.num_heads)
+        self._impl.head_height = int(settings.config.geometry.head_height)
+        self._impl.ideal_spacing_px = float(settings.config.ideal_reference.line_spacing)
 
     def detect(self, ctx: ImageContext) -> List[Defect]:
         impl = self._impl
         extractions = ctx.extractor_per_band()
         all_missing: List[Dict[str, Any]] = []
         all_misaligned: List[Dict[str, Any]] = []
+        all_stitch: List[Dict[str, Any]] = []
         band_summaries: List[Dict[str, Any]] = []
         for band, result in extractions:
-            missing, misaligned = impl._evaluate_band(band, result)
+            missing, misaligned, stitch = impl._evaluate_band(band, result)
             all_missing.extend(missing)
             all_misaligned.extend(misaligned)
+            all_stitch.extend(stitch)
             band_summaries.append({
                 "index": band["index"],
                 "x0": band["x0"], "x1": band["x1"],
@@ -409,11 +414,13 @@ class NewLineDefectAdapter(_BaseAdapter):
                 "missing_defects": len(missing),
                 "missing_pixels": int(sum(d["missing_pixels"] for d in missing)),
                 "misaligned_defects": len(misaligned),
+                "stitch_defects": len(stitch),
             })
         spacing = float(np.median([b["spacing"] for b in band_summaries])) if band_summaries else 96.0
         density_regions = impl._find_density_regions(ctx.gray.shape, all_missing, spacing)
         self._vis = impl._create_visualization(
-            ctx.bgr, all_missing, all_misaligned, density_regions, spacing
+            ctx.bgr, all_missing, all_misaligned, density_regions, spacing,
+            stitch=all_stitch,
         )
         band_detector = ctx.debug.get("band_detector")
         if band_detector is not None:
@@ -421,5 +428,8 @@ class NewLineDefectAdapter(_BaseAdapter):
         else:
             impl.band_detector.last_vlines = ctx.vlines()
         impl._debug_lines_image = impl._create_lines_debug(ctx.bgr, extractions)
-        raw = impl._build_defects(band_summaries, all_missing, all_misaligned, density_regions)
+        raw = impl._build_defects(
+            band_summaries, all_missing, all_misaligned, density_regions,
+            stitch=all_stitch,
+        )
         return self._pack(ctx, raw)

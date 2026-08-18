@@ -54,8 +54,9 @@ python -m nike_detection -i path/to/scan.tif --extract --pattern new --clear
 # High sensitivity + PDF report
 python -m nike_detection -i path/to/scan.tif --extract --pattern new -s high --generate_report
 
-# Combined stripe+island TIFF (filename contains `full`) with region boxes
-python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
+# Combined stripe+island TIFF (filename contains `full`)
+# Island/stripe boxes are auto-detected from JSON seeds in detection_2400.json
+python -m nike_detection -i Cyan_full.tiff --pattern new
 ```
 
 `main_defect_detection.py` is a thin shim that calls the same `--extract` path.
@@ -84,8 +85,8 @@ python -m nike_detection -i "C:\path\CyanStripe.tiff" --only stripe_misalignment
 # Stripe: voids only
 python -m nike_detection -i "C:\path\CyanStripe.tiff" --only void
 
-# Combined TIFF with both patterns (requires --regions or a sibling JSON)
-python -m nike_detection -i "C:\path\Cyan_full.tiff" --pattern new --regions regions.json --only void line_defect
+# Combined TIFF with both patterns (boxes auto-detected from config seeds)
+python -m nike_detection -i "C:\path\Cyan_full.tiff" --pattern new --only void line_defect
 ```
 
 `scripts/defects_detection/run_all_detections.py` still works as a shim around this CLI.
@@ -223,7 +224,8 @@ python -m nike_detection -i <image-or-folder> [options]
 - `--pattern`: `legacy` \| `new` (default from config: `new`)
 - `--clear`: Clear scan material. **Requires `--pattern new`.**
 - `--only`: Subset of detector keys
-- `--regions`: Bounding boxes for a `full` TIFF
+- `--regions-only`: Measure the island/stripe boxes on a `full` scan and write the overlay + corner crops, without running detectors
+- `--regions`: Operator-supplied bounding boxes for a `full` TIFF (overrides automatic detection)
 - `--extract`: Extract regions from a press scan first
 - `--no-vis` / `--downscale-vis` / `--debug`
 - `--workers` / `--detector-threads`
@@ -239,7 +241,16 @@ python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
 python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment -s high
 python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
 python -m nike_detection -i extracted_folder --pattern new --workers 2 --no-vis
+
+# Check the island/stripe boxes on a folder of full scans before detecting
+python -m nike_detection -i full_scans_folder --pattern new --regions-only
 ```
+
+On a `full` scan the island and stripe boxes are measured from the print itself — no seed
+coordinates. The nominal layout (island 5100 px, gap 580 px, stripe 1050 px, height 33000 px
+at 2400 DPI) lives in `config/detection_2400.json` → `region_reference` and is used only to
+disambiguate, validate, and fill in an edge that failed to print. See
+[Algorithm.md §6.3](Algorithm.md).
 
 # Clear material + new pattern
 python main_defect_detection.py -i scan.tif -d 2400 --pattern new --clear

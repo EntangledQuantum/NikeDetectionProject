@@ -26,6 +26,8 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  python -m nike_detection -i Cyan_full.tiff --pattern new --regions-only
+  python -m nike_detection -i Cyan_full.tiff --pattern new
   python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
   python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
   python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment -s high
@@ -47,6 +49,8 @@ Examples:
     parser.add_argument("--only", nargs="+", metavar="DETECTOR",
                         help="Run only these detector keys")
     parser.add_argument("--regions", help="JSON with stripe/island bounding boxes for a 'full' TIFF")
+    parser.add_argument("--regions-only", action="store_true",
+                        help="Detect island/stripe boxes and write <color>_full_regions.jpg; skip detectors")
     parser.add_argument("--extract", action="store_true",
                         help="Extract regions from a full press scan before detection")
     parser.add_argument("--extract-config",
@@ -99,8 +103,9 @@ def _settings_from_args(args, config) -> RunSettings:
         write_crops=bool(args.write_crops or defaults.write_crops),
         regions_path=args.regions,
         recursive=not args.no_recursive,
-        include_unknown=args.include_unknown,
+        include_unknown=bool(args.include_unknown or args.regions_only),
         extract_config_path=args.extract_config,
+        regions_only=bool(args.regions_only),
     )
 
 
@@ -155,8 +160,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if kind == ImageType.FULL and not args.extract:
             try:
-                from nike_detection.pipeline.runner import resolve_regions
-                resolve_regions(settings, input_path)
+                from nike_detection.pipeline.runner import manual_regions
+                manual_regions(settings, input_path)
             except ValueError as exc:
                 logger.error("%s", exc)
                 return 1

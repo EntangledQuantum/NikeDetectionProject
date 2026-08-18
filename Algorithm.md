@@ -113,8 +113,8 @@ New-pattern island image
     │     run legacy debris / overspray helpers on the full cleaned image
     │
     └─ Line Defect
-          IslandLineExtractor per band (shear + per-column ink stats)
-          missing / misaligned / high-density regions
+          IslandLineExtractor per band (shear + per-line slope/intercept + local path)
+          missing (red) / hazy (yellow) / stitch (blue) / high-density regions
 ```
 
 ### 3.1 Vertical band detector (`utils/vertical_band_detector.py`)
@@ -184,8 +184,8 @@ Precursor for new-pattern **line defects** (and for clear-mode debris/overspray 
 2. **Global slope by shear search:** candidate slopes shear the binary image column-wise; the slope that maximizes sharpness (sum of squares) of the row ink profile wins. Coarse sweep (−0.005…0.035, step 0.002) then fine (step 0.0002). No calibration table.
 3. **Shear** so every line becomes a narrow horizontal row band.
 4. **Line rows:** runs of the sheared row profile above 25% of its P99; weighted centroids = line rows; median distance = **measured spacing**. Peak gaps ≈ 1.6× spacing get synthetic *inserted* rows so **fully missing lines are still evaluated**.
-5. **Per-line residual fit:** ±0.4·spacing window, per-column ink centroids, sigma-clipped least squares — each line gets its own slope correction.
-6. **Per-column statistics** inside ±0.3·spacing: ink presence/count, number of separate ink runs, hollow interior, centroid deviation from the fit. Mapped back to original coordinates via the stored shear shift.
+5. **Per-line residual fit + local trajectory:** ±0.45·spacing window, per-column ink centroids, sigma-clipped least squares — each line gets its own slope/intercept. A **local centroid path** (interpolated, lightly median-smoothed) is then used as the mask center so stitch zig-zags and roll stay inside the corridor.
+6. **Per-column statistics** inside ±0.3·spacing of that local path: ink presence/count, number of separate ink runs, hollow interior, centroid deviation from the *straight* fit (jaggedness). Mapped back to original coordinates via the stored shear shift. `line_y` follows the local path so debris/overspray paint-out uses the same mask.
 
 **Limitations**
 
@@ -253,11 +253,12 @@ Missing-nozzle detection runs **only inside the two bands** — never on the ver
 
 | Type | Color | Rule |
 |---|---|---|
-| `missing_line` | red | Stipple gap length is *measured* from healthy lines (P90 of intra-line ink-free runs). A 1-D close of ~3× that length bridges dotted texture; remaining ink-free runs longer than `min_gap` (0.35 / 0.60 / 1.20 × spacing for high / medium / low) are defects. `missing_pixels` = raw ink-free columns ≈ **missing nozzles**. |
-| `misaligned_line` | yellow | (a) *split*: 2+ ink runs/column with hollow interior ≥ 3 px, or (b) *offset*: centroid deviation > max(3 px, 0.6 × thickness). Must persist ≥ ~0.5 × spacing. Overlapping segments merged. |
+| `missing_line` | red | Corridor follows each line's **local** slope/intercept (not a single straight fit), so stitch zig-zag is not mistaken for a gap. Stipple gap length is *measured* from healthy lines. Remaining ink-free runs longer than `min_gap_fraction × expected_gap` are defects. `expected_gap` is **90 px at 2400 DPI**, scaled by `measured_spacing / ideal_spacing` (~100 px). |
+| `misaligned_line` | yellow | Jets fired but **hazy/smudged**: (a) *split* — 2+ ink runs/column with hollow interior, or (b) *hazy* — ink is vertically spread or persistently weak. Must persist ≥ ~0.5 × spacing. Overlapping segments merged. |
+| `stitch_error` | blue | Jagged zig-zag on the 1–2 print lines at a **vertical-head stitch**. Score = RMS of local trajectory vs the straight fit (plus high-frequency residual). Keep up to `num_heads − 1` clusters (3 heads → 2 zones, 4 heads → 3). Zig-zag itself is not scored as missing. |
 | `high_density_region` | orange | All missing pixels splatted into a 16×-downsampled accumulator, Gaussian-smoothed over ~2 spacings, thresholded at 40% of peak density. Blobs report defect count + missing-pixel sum. |
 
-A `*_newpattern_detected_lines.jpg` debug image is always saved (verticals magenta, fitted trajectories green/blue, inserted fully-missing lines red).
+A `*_newpattern_detected_lines.jpg` debug image is always saved (verticals magenta, local trajectories green/orange, inserted fully-missing lines red).
 
 **Limitations**
 
@@ -265,7 +266,8 @@ A `*_newpattern_detected_lines.jpg` debug image is always saved (verticals magen
 - `image_path` / exclusion zones unused; a stamp overlapping a band will be scored as missing ink.
 - Inserted whole-line defects depend on spacing regularity.
 - Density blobs are relative to the *peak* in that image, so a uniformly bad print may produce no hotspot (everything is equally dense).
-- Split detection can fire on legitimate stipple that looks like two runs inside the corridor.
+- Split/hazy detection can still fire on legitimate stipple that looks like two runs inside the corridor.
+- Stitch clustering is data-driven (jagged outliers). A crop that contains only one of two head joins will report one zone, not invent the other.
 - Clear-mode decisions are unchanged (spacing-relative), but extraction quality still gates everything.
 
 **Updates needed**
@@ -565,7 +567,47 @@ Parametric geometry from `regions_json/new_pattern_2400.json`:
 - Content-based column finding (chroma peaks) as a check against the template, with a warning on mismatch.
 - Measure and set a real `island_width` instead of relying on buffers.
 
+### 6.3 Full-scan region boxes (`nike_detection/geometry/full_region_detector.py`)
+
+When the input filename contains `full` (or `--regions-only` is used), the island and stripe rectangles are measured from the print. **There are no seed boxes**: the whole scan is searched.
+
+The nominal layout lives in `config/detection_2400.json` → `region_reference` and is only used to disambiguate candidates, validate the result, and predict an edge whose print is missing:
+
+```
+|<------- island 5100 ------->|<- gap 580 ->|<- stripe 1050 ->|
+| V  dashed jet lines  V | V ... V |        |#################|
+```
+
+both regions 33000 px tall, sharing one y range.
+
+**Step 1 — coarse ink map.** The scan is area-downsampled (÷8 at 2400 DPI) and converted to ink density, `0` = paper, `1` = the darkest ink on the scan. Paper level and contrast are measured per scan (p95 / p2), so a light color and a dense one behave the same.
+
+**Step 2 — the solid bar.** Column density near `1.0` over the full height happens nowhere else, so the stripe is found first and anchors the layout. A run only qualifies as the bar if its *mean* density is high, which is what rules out two island verticals whose low-ink gutter sits between them.
+
+**Step 3 — the four vertical lines.** On real scans these are faint, speckled and drift sideways over 33000 rows, so their raw column density is no better than the dashed horizontal print. Instead the coarse ink map is binarized and **opened along y** with a kernel far taller than a horizontal line (320 px) and far shorter than a region: the horizontal print disappears entirely, and what is left is per-column *vertical structure*. The island's x span is the envelope of the outermost pair whose separation matches the reference island width. Detection retries at 0.30 / 0.15 / 0.08 coverage before giving up.
+
+**Step 4 — completing the layout.** Any edge not measured confidently is predicted from one that was: `stripe left − gap` = island right, `island right − island width` = island left. An edge measured from a vertical line is never overridden, so the head labels printed inside the gap cannot drag the island box across it.
+
+**Step 5 — shared y.** Both regions are printed in one pass, so they get one y range: the union of the island's horizontal-line cluster and the bar's row edges, taken only when the two agree to within 2% of the reference height (otherwise the bar wins, since overspray above the island can fake a first line). Clusters are validated against the 33000 px reference.
+
+**Step 6 — full-resolution snap.** Every boundary chosen coarsely is re-measured at full resolution in a ±250 px (x) / ±400 px (y) window. The threshold sits 40% of the way from the window's paper level to its strongest ink, which keeps a half-printed vertical line above the print it borders and keeps stray specks below both. Finally `geometry.buffer` (50 px) is applied.
+
+Measured widths, the gap, the height, the per-edge `sources`, and any `warnings` are written to `{Color}_full_regions.json` so a bad scan is visible without opening an image.
+
+`--regions-only` skips detectors and writes, per scan:
+
+| File | Contents |
+|---|---|
+| `{Color}_full_regions.json` | boxes, measurements vs reference, per-edge source, warnings |
+| `{Color}_full_regions.jpg` | whole-scan overlay: island green, stripe blue, verticals magenta |
+| `{Color}_full_regions_corners.jpg` | full-resolution crops of each region's top-left and bottom-right corner |
+
+`--regions` (or a sibling `<image>.json`) still overrides detection with operator-supplied boxes.
+
+**Accuracy.** On synthetic 6900×33400 scans every edge lands within 1 px, unchanged when the outer vertical is missing over 4000 px, the first horizontal line is missing at the left, and overspray specks surround the print. With an outer vertical that never printed at all, that edge falls back to the first printed column (16 px inside) and a warning is raised.
+
 ---
+
 
 ## 7. Clear scan material (`--clear`)
 
@@ -812,7 +854,7 @@ python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
 python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment
 
 # Combined stripe+island TIFF (filename contains `full`)
-python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
+python -m nike_detection -i Cyan_full.tiff --pattern new
 ```
 
 Operator CLI details: `USER_STORY_README.md`. Pipeline overview: `README.md`.
@@ -833,6 +875,7 @@ Unified thresholds: `config/detection_2400.json`.
 | Stripe algorithms | `nike_detection/detectors/stripe/` |
 | Legacy island algorithms | `nike_detection/detectors/island_legacy/` |
 | Dual-band island algorithms | `nike_detection/detectors/island_new/` |
+| Full-scan island/stripe boxes | `nike_detection/geometry/full_region_detector.py` |
 | Vertical bands | `nike_detection/geometry/vertical_band_detector.py` |
 | Line extract (new) | `nike_detection/geometry/island_line_extractor.py` |
 | Legacy line scan | `nike_detection/geometry/line_detector.py` |

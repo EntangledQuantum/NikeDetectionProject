@@ -98,6 +98,26 @@ class GeometryConfig:
 
 
 @dataclass
+class RegionReference:
+    """Nominal full-scan layout at 2400 DPI, left to right.
+
+    ``[ island_width ][ island_stripe_gap ][ stripe_width ]``, both regions
+    ``height`` tall. Used to disambiguate and validate detected edges, and
+    to predict an edge whose print is missing. Never used as a search seed.
+    """
+
+    island_width: int = 5100
+    island_stripe_gap: int = 580
+    stripe_width: int = 1050
+    height: int = 33000
+    tolerance: float = 0.12
+
+    @property
+    def color_span(self) -> int:
+        return self.island_width + self.island_stripe_gap + self.stripe_width
+
+
+@dataclass
 class IdealReference:
     width: int
     height: int
@@ -137,6 +157,7 @@ class AppConfig:
     material: MaterialConfig
     vertical_band: VerticalBandConfig
     sensitivity: Dict[str, Dict[str, Dict[str, Any]]]
+    region_reference: RegionReference = field(default_factory=RegionReference)
     regions: List[RegionSpec] = field(default_factory=list)
     source_path: Optional[str] = None
 
@@ -172,6 +193,7 @@ class RunSettings:
     recursive: bool
     include_unknown: bool
     extract_config_path: Optional[str] = None
+    regions_only: bool = False
 
     def detector_params(self, key: str) -> Dict[str, Any]:
         return self.config.params_for(key, self.sensitivity)

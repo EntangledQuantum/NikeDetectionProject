@@ -22,7 +22,7 @@ def main() -> int:
     )
     parser.add_argument("--input", "-i", dest="input_path", default=None)
     parser.add_argument("--input_folder", dest="input_path_alias", default=None,
-                        help=argparse.SUPPRESS)
+                       help=argparse.SUPPRESS)
     parser.add_argument("--output", "-o")
     parser.add_argument("--generate_report", action="store_true")
     parser.add_argument("--sensitivity", choices=["low", "medium", "high"], default="medium")

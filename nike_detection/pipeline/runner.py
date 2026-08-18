@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -11,9 +13,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import cv2
 
 from nike_detection.config.loader import load_regions_file
 from nike_detection.config.schema import RegionSpec, RunSettings
+from nike_detection.geometry.full_region_detector import (
+    color_prefix_from_path,
+    detect_full_regions,
+    draw_corner_montage,
+    draw_region_overlay,
+)
 from nike_detection.io.image_loader import load_bgr_gray
 from nike_detection.io.region_views import RegionView, slice_views
 from nike_detection.io.results import save_image_result, save_summary_report
@@ -38,6 +47,8 @@ logger = logging.getLogger(__name__)
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp")
 BYTES_PER_BGR_PIXEL = 3
 MAX_RAM_BUDGET = 8 * 1024 ** 3
+RUN_OUTPUT_DIR_RE = re.compile(r"^output_\d{8}_\d{6}$", re.IGNORECASE)
+GENERATED_NAME_TOKENS = ("_full_regions", "_visualization", "_corners")
 
 
 def cap_image_workers(requested: int, sample_shape: Optional[Tuple[int, ...]] = None) -> int:
@@ -57,7 +68,13 @@ def cap_image_workers(requested: int, sample_shape: Optional[Tuple[int, ...]] = 
     return min(requested, fit)
 
 
-def resolve_regions(settings: RunSettings, image_path: str) -> List[RegionSpec]:
+def manual_regions(settings: RunSettings, image_path: str) -> Optional[List[RegionSpec]]:
+    """Operator-supplied boxes for a full scan, if any.
+
+    Only ``--regions`` or a sibling JSON override detection; there are no
+    seed boxes, so without an override the regions are measured from the
+    print itself.
+    """
     if settings.regions_path:
         specs = load_regions_file(settings.regions_path)
         if not specs:
@@ -68,23 +85,36 @@ def resolve_regions(settings: RunSettings, image_path: str) -> List[RegionSpec]:
         try:
             specs = load_regions_file(str(sibling))
             if specs:
+                logger.info("Using operator regions from %s", sibling)
                 return specs
         except Exception:
             logger.debug("Sibling JSON %s is not a regions file", sibling)
-    if settings.config.regions:
-        return list(settings.config.regions)
-    raise ValueError(
-        "A 'full' image requires region boxes via --regions, a sibling JSON, "
-        "or a 'regions' block in detection_2400.json"
-    )
+    return None
+
+
+def _is_run_output_dir(name: str) -> bool:
+    """True for a directory this pipeline itself created (``output_<stamp>``)."""
+    return bool(RUN_OUTPUT_DIR_RE.match(name)) or name.lower().endswith("_crops")
+
+
+def _is_generated_artifact(name: str) -> bool:
+    lowered = name.lower()
+    return any(token in lowered for token in GENERATED_NAME_TOKENS)
 
 
 def collect_image_files(
     folder: str, recursive: bool = True, include_unknown: bool = False
 ) -> List[str]:
+    """Input scans under ``folder``, never this pipeline's own output.
+
+    A previous run's overlays and visualizations are images sitting in a
+    sub-folder, so without this filter a second run would "detect" regions
+    on its own JPEGs.
+    """
     found: List[str] = []
     if recursive:
-        for root, _dirs, files in os.walk(folder):
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in dirs if not _is_run_output_dir(d)]
             for name in files:
                 if name.lower().endswith(IMAGE_EXTENSIONS):
                     found.append(os.path.join(root, name))
@@ -95,12 +125,19 @@ def collect_image_files(
                 found.append(path)
     kept = []
     skipped = []
+    generated = []
     for path in found:
+        name = os.path.basename(path)
+        if _is_generated_artifact(name):
+            generated.append(name)
+            continue
         kind = classify_image(path)
         if kind in (ImageType.STRIPE, ImageType.ISLAND, ImageType.FULL) or include_unknown:
             kept.append(path)
         else:
-            skipped.append(os.path.basename(path))
+            skipped.append(name)
+    if generated:
+        logger.info("Skipping %s previously generated artifact(s)", len(generated))
     if skipped:
         logger.info("Skipping %s non-stripe/island/full file(s)", len(skipped))
     return sorted(kept)
@@ -278,6 +315,8 @@ def process_image_path(
 ) -> List[ImageResult]:
     image_path = os.path.abspath(image_path)
     kind = classify_image(image_path)
+    if settings.regions_only and kind == ImageType.UNKNOWN:
+        kind = ImageType.FULL
     logger.info("Processing %s (%s)", os.path.basename(image_path), kind.value)
 
     load_t0 = time.perf_counter()
@@ -287,7 +326,31 @@ def process_image_path(
     stem = Path(image_path).stem
 
     if kind == ImageType.FULL:
-        specs = resolve_regions(settings, image_path)
+        override = manual_regions(settings, image_path)
+        if override is not None:
+            specs = override
+            region_debug = {
+                "prefix": color_prefix_from_path(image_path),
+                "sources": {"regions": "operator-supplied"},
+            }
+        else:
+            specs, region_debug = detect_full_regions(
+                gray, settings.config, image_path=image_path,
+            )
+        _write_region_artifacts(bgr, specs, region_debug, output_root, stem)
+        if settings.regions_only:
+            prefix = region_debug.get("prefix") or stem
+            return [ImageResult(
+                image_name=f"{prefix}_full_regions",
+                image_path=image_path,
+                image_type=ImageType.FULL,
+                processing_time=datetime.now().isoformat(),
+                file_size_mb=file_size_mb,
+                detectors_used=[],
+                detections={},
+                load_seconds=round(load_seconds, 3),
+                elapsed_seconds=round(load_seconds, 3),
+            )]
         views = slice_views(bgr, gray, specs)
         if settings.write_crops:
             crop_dir = os.path.join(output_root, f"{stem}_crops")
@@ -334,6 +397,53 @@ def process_image_path(
         (result.elapsed_seconds or 0) + load_seconds + (result.write_seconds or 0), 3
     )
     return [result]
+
+
+def _write_region_artifacts(
+    bgr: np.ndarray,
+    specs: List[RegionSpec],
+    debug: Dict[str, Any],
+    output_root: str,
+    stem: str,
+) -> None:
+    os.makedirs(output_root, exist_ok=True)
+    prefix = str(debug.get("prefix") or Path(stem).stem)
+    payload = {
+        "image_stem": stem,
+        "measured": debug.get("measured"),
+        "reference": debug.get("reference"),
+        "sources": debug.get("sources"),
+        "warnings": debug.get("warnings") or [],
+        "vertical_lines": debug.get("vertical_lines"),
+        "regions": [
+            {
+                "name": spec.name,
+                "type": spec.type,
+                "bounding_box_pixels": {
+                    "top_x": spec.bounding_box_pixels.top_x,
+                    "top_y": spec.bounding_box_pixels.top_y,
+                    "bottom_x": spec.bounding_box_pixels.bottom_x,
+                    "bottom_y": spec.bounding_box_pixels.bottom_y,
+                },
+            }
+            for spec in specs
+        ],
+    }
+    json_path = os.path.join(output_root, f"{prefix}_full_regions.json")
+    with open(json_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    overlay_path = os.path.join(output_root, f"{prefix}_full_regions.jpg")
+    cv2.imwrite(
+        overlay_path, draw_region_overlay(bgr, specs, debug=debug),
+        [cv2.IMWRITE_JPEG_QUALITY, 90],
+    )
+    corners = draw_corner_montage(bgr, specs)
+    if corners is not None:
+        cv2.imwrite(
+            os.path.join(output_root, f"{prefix}_full_regions_corners.jpg"),
+            corners, [cv2.IMWRITE_JPEG_QUALITY, 92],
+        )
+    logger.info("Wrote region boxes to %s and %s", json_path, overlay_path)
 
 
 def _process_image_job(args: Tuple[str, str, RunSettings]) -> List[ImageResult]:

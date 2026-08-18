@@ -18,6 +18,7 @@ from nike_detection.config.schema import (
     GeometryConfig,
     IdealReference,
     MaterialConfig,
+    RegionReference,
     RegionSpec,
     VerticalBandConfig,
 )
@@ -136,6 +137,21 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         buffer=dict(_require(raw_geo, "buffer", "geometry")),
     )
 
+    raw_region_ref = data.get("region_reference") or {}
+    defaults_region = RegionReference()
+    region_reference = RegionReference(
+        island_width=int(raw_region_ref.get("island_width", defaults_region.island_width)),
+        island_stripe_gap=int(
+            raw_region_ref.get("island_stripe_gap", defaults_region.island_stripe_gap)
+        ),
+        stripe_width=int(raw_region_ref.get("stripe_width", defaults_region.stripe_width)),
+        height=int(raw_region_ref.get("height", defaults_region.height)),
+        tolerance=float(raw_region_ref.get("tolerance", defaults_region.tolerance)),
+    )
+    for field_name in ("island_width", "island_stripe_gap", "stripe_width", "height"):
+        if getattr(region_reference, field_name) <= 0:
+            raise ConfigError(f"region_reference.{field_name} must be positive")
+
     raw_ideal = _require(data, "ideal_reference")
     ideal_reference = IdealReference(
         width=int(_require(raw_ideal, "width", "ideal_reference")),
@@ -179,6 +195,7 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         material=material,
         vertical_band=vertical_band,
         sensitivity=sensitivity,
+        region_reference=region_reference,
         regions=regions,
         source_path=str(config_path),
     )

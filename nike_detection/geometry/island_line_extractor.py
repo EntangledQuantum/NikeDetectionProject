@@ -23,17 +23,22 @@ locally sparse. This extractor instead:
      peak distance gives the line spacing. Rows where a whole line is missing
      (gap ~2x spacing between peaks) are inserted so fully-dead lines are
      still evaluated.
-  5. Per line, slices a window (+-0.4 spacing) around its row, fits the
+  5. Per line, slices a window (~0.45 spacing) around its row, fits a
      residual slope/intercept from per-column ink centroids (sigma-clipped
-     least squares - each line gets its own correction, so per-line
-     calibration drift is handled), then computes per-column statistics
-     inside a tight corridor around the fitted center:
+     least squares — each line gets its own correction for roll), then
+     builds a **local trajectory** by interpolating those centroids. The
+     tight ink corridor follows the local path, not just the straight fit,
+     so stitch zig-zags and head-to-head calibration error do not throw
+     printed ink outside the mask (which previously looked like missing
+     nozzles).
+  6. Per-column statistics inside that corridor:
        - ink presence / ink pixel count
        - number of separate ink runs (2+ = the line splits in two)
-       - ink extent minus ink count (large = hollow/split line)
-       - centroid deviation from the fit
-  6. Maps everything back to original (unsheared) image coordinates via the
-     stored per-column shift.
+       - ink extent minus ink count (large = hollow/split / hazy)
+       - centroid deviation from the straight fit (jaggedness)
+  7. Maps everything back to original (unsheared) image coordinates via the
+     stored per-column shift. `line_y` uses the local trajectory when present
+     so paint-out for debris/overspray follows the same mask.
 
 The returned structure is geometry + raw per-column evidence; deciding what
 constitutes a defect (gap length thresholds, split persistence, etc.) is the
@@ -57,7 +62,7 @@ class IslandLineExtractor:
                  coarse_slope_step=0.002,
                  fine_slope_step=0.0002,
                  peak_rel_threshold=0.25,
-                 window_half_fraction=0.40,
+                 window_half_fraction=0.45,
                  corridor_half_fraction=0.30,
                  missing_line_gap_factor=1.6,
                  clip_sigma=2.5,
@@ -148,12 +153,17 @@ class IslandLineExtractor:
                  'row'            sheared row center (float)
                  'res_slope'      residual slope on top of the global slope
                  'res_intercept'  residual intercept at x=0 (sheared coords)
+                 'local_center'   float32[W] sheared-Y offset of the mask
+                                  center (follows stitch/roll; used by line_y)
+                 'jagged_rms'     RMS of local_center vs the straight fit
+                 'jagged_hf'      RMS of high-frequency residual (zig-zag)
                  'inserted'       True if synthesized for a missing peak
                  'thickness'      median ink thickness (px)
                  'ink_cols'       bool[W]  ink present in corridor
                  'ink_count'      int16[W] ink pixels per column
                  'n_runs'         int16[W] separate ink runs per column
                  'hollow'         int16[W] extent minus ink count
+                 'extent'         int16[W] vertical ink span in the corridor
                  'centroid_dev'   float32[W] centroid minus fit (NaN = no ink)
             Returns None when the band contains no usable ink.
         """
@@ -200,10 +210,27 @@ class IslandLineExtractor:
 
     @staticmethod
     def line_y(result, line, x):
-        """True (unsheared) y of a line at column x (scalar or array)."""
+        """True (unsheared) y of a line at column x (scalar or array).
+
+        Prefers the per-column local trajectory so stitch zig-zags and roll
+        stay inside the print mask. Falls back to the straight residual fit.
+        """
         x = np.asarray(x)
+        idx = np.clip(np.rint(x).astype(np.int32), 0, len(result['shift']) - 1)
+        local = line.get('local_center')
+        if local is not None and np.shape(local)[0] == len(result['shift']):
+            y_sheared = line['row'] + local[idx]
+        else:
+            y_sheared = line['row'] + line['res_intercept'] + line['res_slope'] * x
+        return y_sheared + result['shift'][idx]
+
+    @staticmethod
+    def line_y_fit(result, line, x):
+        """Straight-fit y (unsheared), ignoring local stitch zig-zag."""
+        x = np.asarray(x)
+        idx = np.clip(np.rint(x).astype(np.int32), 0, len(result['shift']) - 1)
         y_sheared = line['row'] + line['res_intercept'] + line['res_slope'] * x
-        return y_sheared + result['shift'][np.clip(x, 0, len(result['shift']) - 1)]
+        return y_sheared + result['shift'][idx]
 
     # ------------------------------------------------------------------
     # Stage 1: threshold + global slope
@@ -262,6 +289,16 @@ class IslandLineExtractor:
                          best + self.coarse_slope_step + 1e-9,
                          self.fine_slope_step)
         best = max(fine, key=score)
+
+        # If the peak sits on the search edge, widen once so a roll/stitch
+        # slant outside the default window is not silently clamped.
+        edge_eps = self.fine_slope_step * 2
+        if best <= self.slope_min + edge_eps or best >= self.slope_max - edge_eps:
+            lo = best - 4 * self.coarse_slope_step
+            hi = best + 4 * self.coarse_slope_step
+            extra = np.arange(lo, hi + 1e-9, self.fine_slope_step)
+            if extra.size:
+                best = max(extra, key=score)
 
         if debug:
             print(f"IslandLineExtractor: global slope search -> {best:.5f}")
@@ -331,6 +368,10 @@ class IslandLineExtractor:
 
         deltas = np.diff(centers)
         spacing = float(np.median(deltas))
+        if spacing > 0 and deltas.size >= 4:
+            inliers = deltas[(deltas > 0.55 * spacing) & (deltas < 1.55 * spacing)]
+            if inliers.size >= 2:
+                spacing = float(np.median(inliers))
 
         if debug:
             print(f"IslandLineExtractor: {len(centers)} line rows, "
@@ -361,6 +402,33 @@ class IslandLineExtractor:
     # Stage 3: per-line analysis
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _interp_nan(values):
+        """Linear-interpolate NaNs; edge values hold."""
+        filled = np.array(values, dtype=np.float64, copy=True)
+        n = filled.size
+        if n == 0:
+            return filled.astype(np.float32)
+        valid = np.isfinite(filled)
+        if not valid.any():
+            return np.zeros(n, dtype=np.float32)
+        if valid.all():
+            return filled.astype(np.float32)
+        xs = np.arange(n, dtype=np.float64)
+        filled[~valid] = np.interp(xs[~valid], xs[valid], filled[valid])
+        return filled.astype(np.float32)
+
+    @staticmethod
+    def _smooth_1d(values, ksize):
+        """Odd-length median filter with edge padding."""
+        k = max(1, int(ksize) | 1)
+        if k <= 1 or values.size < 3:
+            return np.asarray(values, dtype=np.float32)
+        pad = k // 2
+        padded = np.pad(np.asarray(values, dtype=np.float64), pad, mode='edge')
+        windows = np.lib.stride_tricks.sliding_window_view(padded, k)
+        return np.median(windows, axis=1).astype(np.float32)
+
     def _analyze_line(self, sheared, center, spacing):
         """Fit one line's residual trajectory and gather per-column stats."""
         height, width = sheared.shape
@@ -386,14 +454,29 @@ class IslandLineExtractor:
             res_slope, res_intercept = self._robust_fit(
                 xs.astype(np.float64), centroid[xs].astype(np.float64))
             # A residual should be a small correction; reject wild fits
-            if abs(res_slope) * width > spacing:
+            if spacing > 0 and abs(res_slope) * width > spacing:
                 res_slope, res_intercept = 0.0, float(np.nanmedian(centroid))
 
-        # Tight corridor around the fitted center for the final statistics
+        xs_f = np.arange(width, dtype=np.float32)
+        fit_rel = (res_intercept + res_slope * xs_f).astype(np.float32)
+
+        # Local trajectory: follow actual ink (stitch zig-zag / roll) with a
+        # light median so stipple noise does not yank the corridor.
+        local_center = self._interp_nan(centroid)
+        if not np.isfinite(centroid).any():
+            local_center = fit_rel.copy()
+        else:
+            smooth_k = max(3, int(round(0.06 * spacing)) | 1) if spacing > 0 else 3
+            local_center = self._smooth_1d(local_center, smooth_k)
+            lo, hi = float(rows_rel[0] + 1), float(rows_rel[-1] - 1)
+            if hi > lo:
+                local_center = np.clip(local_center, lo, hi)
+
+        # Tight corridor around the LOCAL center so printed ink stays in-mask
+        # even when the straight fit is a poor model of a stitch zone.
         corridor = max(3, int(round(spacing * self.corridor_half_fraction))) \
             if spacing > 0 else 6
-        fit_rel = (res_intercept + res_slope * np.arange(width)).astype(np.float32)
-        dist = np.abs(rows_rel[:, None] - fit_rel[None, :])
+        dist = np.abs(rows_rel[:, None] - local_center[None, :])
         in_corridor = window & (dist <= corridor)
 
         ink_count = in_corridor.sum(axis=0).astype(np.int16)
@@ -403,19 +486,22 @@ class IslandLineExtractor:
         # counted on the vertically eroded corridor so a run must be at least
         # 2 px thick: single-pixel specks (scanner noise, stray dots) can
         # never fake a "second line".
-        thick = in_corridor[:-1] & in_corridor[1:]
-        starts = thick[0].astype(np.int16) + \
-            (thick[1:] & ~thick[:-1]).sum(axis=0).astype(np.int16)
+        if in_corridor.shape[0] >= 2:
+            thick = in_corridor[:-1] & in_corridor[1:]
+            starts = thick[0].astype(np.int16) + \
+                (thick[1:] & ~thick[:-1]).sum(axis=0).astype(np.int16)
+        else:
+            starts = in_corridor[0].astype(np.int16)
 
-        # Vertical extent minus ink pixels (hollow = split / double line)
+        # Vertical extent minus ink pixels (hollow = split / double / hazy)
         n_rows = in_corridor.shape[0]
         first = np.where(ink_cols, in_corridor.argmax(axis=0), 0)
         last = np.where(ink_cols,
                         n_rows - 1 - in_corridor[::-1].argmax(axis=0), 0)
-        extent = np.where(ink_cols, last - first + 1, 0)
+        extent = np.where(ink_cols, last - first + 1, 0).astype(np.int16)
         hollow = (extent - ink_count).astype(np.int16)
 
-        # Centroid deviation from the fit (recomputed inside the corridor)
+        # Centroid deviation from the *straight* fit (recomputed in corridor)
         centroid_dev = np.full(width, np.nan, dtype=np.float32)
         xs2 = np.flatnonzero(ink_cols)
         if xs2.size:
@@ -424,15 +510,30 @@ class IslandLineExtractor:
 
         thickness = float(np.median(ink_count[xs2])) if xs2.size else 0.0
 
+        residual = local_center - fit_rel
+        if xs2.size >= 10:
+            r = residual[xs2]
+            jagged_rms = float(np.sqrt(np.mean(r * r)))
+            hf_k = max(9, int(round(0.25 * spacing)) | 1) if spacing > 0 else 9
+            hf = residual - self._smooth_1d(residual, hf_k)
+            jagged_hf = float(np.sqrt(np.mean(hf[xs2] ** 2)))
+        else:
+            jagged_rms = 0.0
+            jagged_hf = 0.0
+
         return {
             'row': float(center),
             'res_slope': float(res_slope),
             'res_intercept': float(res_intercept),
+            'local_center': local_center,
+            'jagged_rms': jagged_rms,
+            'jagged_hf': jagged_hf,
             'thickness': thickness,
             'ink_cols': ink_cols,
             'ink_count': ink_count,
             'n_runs': starts,
             'hollow': hollow,
+            'extent': extent,
             'centroid_dev': centroid_dev,
         }
 
