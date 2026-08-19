@@ -122,6 +122,7 @@ def _parse_regions(raw_regions: Any) -> List[RegionSpec]:
                 name=str(_require(item, "name", ctx)),
                 type=str(_require(item, "type", ctx)).lower(),
                 bounding_box_pixels=bbox,
+                corners=item.get("corners"),
             )
         )
     return regions

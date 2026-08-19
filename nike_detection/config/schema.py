@@ -54,6 +54,7 @@ class RegionSpec:
     name: str
     type: str
     bounding_box_pixels: BoundingBox
+    corners: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.type not in REGION_TYPES:

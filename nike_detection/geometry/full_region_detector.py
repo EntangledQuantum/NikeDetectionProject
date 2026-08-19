@@ -91,6 +91,8 @@ class _Block:
     y: Tuple[int, int] = (0, 0)
     sources: Dict[str, str] = field(default_factory=dict)
     vlines: List[Dict[str, Any]] = field(default_factory=list)
+    corners: Dict[str, Any] = field(default_factory=dict)
+    edge_stations: Dict[str, Any] = field(default_factory=dict)
 
 
 def color_token_from_path(path: str) -> Optional[str]:
@@ -153,9 +155,12 @@ def detect_full_regions(
     vertical_profile = _vertical_structure_profile(ink, scale, peak, ref)
     vlines = _find_vertical_lines(vertical_profile, scale, ref, bars)
 
-    blocks = _blocks_from_bars(bars, vlines, ref, island_front, warnings)
+    ltr = _blocks_from_bars(bars, vlines, ref, island_front, warnings)
+    rtl = _blocks_from_verticals_rtl(bars, vlines, ref, island_front, warnings)
+    blocks = _merge_directional_blocks(ltr, rtl, ref, island_front, warnings)
     blocks += _blocks_from_orphan_verticals(vlines, blocks, ref, island_front, warnings)
     blocks.sort(key=lambda b: b.island[0])
+    blocks = _dedupe_overlapping_blocks(blocks, ref)
     blocks = _complete_lattice(blocks, ref, island_front, warnings)
     if not blocks:
         raise RegionDetectionError(
@@ -175,6 +180,9 @@ def detect_full_regions(
         _refine_block(
             image, bg, contrast, block, ref,
             bounds=_neighbour_bounds(blocks, index, ref, width),
+            island_front=island_front,
+            geometry=config.geometry,
+            warnings=warnings,
         )
     for index in ghosts:
         blocks[index].y = _borrow_y(blocks, index, ghosts, ref, height)
@@ -188,8 +196,14 @@ def detect_full_regions(
         island_box = _pad_box(block.island, block.y, buffer_h, buffer_v, width, height)
         stripe_box = _pad_box(block.stripe, block.y, buffer_h, buffer_v, width, height)
         island_box, stripe_box = _split_overlap(island_box, stripe_box, island_front)
-        specs.append(_spec(f"{name}Island", "island", island_box))
-        specs.append(_spec(f"{name}Stripe", "stripe", stripe_box))
+        specs.append(_spec(
+            f"{name}Island", "island", island_box,
+            (block.corners or {}).get("island"),
+        ))
+        specs.append(_spec(
+            f"{name}Stripe", "stripe", stripe_box,
+            (block.corners or {}).get("stripe"),
+        ))
         colors.append({
             "name": name,
             "island_x": list(block.island),
@@ -198,6 +212,8 @@ def detect_full_regions(
             "measured": _block_measurements(block, island_front),
             "sources": block.sources,
             "vertical_lines": block.vlines,
+            "corners": block.corners,
+            "edge_stations": block.edge_stations,
         })
 
     prefix = color_prefix_from_path(image_path)
@@ -431,6 +447,154 @@ def _best_vertical_pair(
     return best
 
 
+def _blocks_from_verticals_rtl(
+    bars: Sequence[Tuple[int, int]],
+    vlines: Sequence[Dict[str, Any]],
+    ref: RegionReference,
+    island_front: bool,
+    warnings: List[str],
+) -> List[_Block]:
+    """Right-to-left: island verticals first, then attach or predict the stripe."""
+    tol_width = max(150.0, ref.tolerance * ref.island_width)
+    extra: List[_Block] = []
+    free = list(vlines)
+    claimed_bars = set()
+    while len(free) >= 2:
+        pair = _best_vertical_pair(free, ref, None, tol_width, 0.0, island_front)
+        if pair is None:
+            break
+        outer_v, inner_v = pair
+        outer = outer_v["x0"] if island_front else outer_v["x1"]
+        inner = inner_v["x1"] if island_front else inner_v["x0"]
+        island = (
+            (int(outer), int(inner)) if island_front else (int(inner), int(outer))
+        )
+        if island_front:
+            sx0 = island[1] + ref.island_stripe_gap
+            predicted = (sx0, sx0 + ref.stripe_width - 1)
+        else:
+            sx1 = island[0] - ref.island_stripe_gap
+            predicted = (sx1 - ref.stripe_width + 1, sx1)
+        matched = None
+        for index, bar in enumerate(bars):
+            if index in claimed_bars:
+                continue
+            overlap = min(bar[1], predicted[1]) - max(bar[0], predicted[0])
+            if overlap > 0.4 * ref.stripe_width:
+                matched = index
+                break
+        if matched is not None:
+            stripe = bars[matched]
+            claimed_bars.add(matched)
+            stripe_src = "solid-bar"
+        else:
+            stripe = predicted
+            stripe_src = "predicted-from-island"
+        extra.append(_Block(
+            island=island,
+            stripe=stripe,
+            sources={
+                "island_inner": "vertical-line",
+                "island_outer": "vertical-line",
+                "stripe": stripe_src,
+                "direction": "rtl",
+            },
+            vlines=[outer_v, inner_v],
+        ))
+        lo, hi = min(island[0], stripe[0]), max(island[1], stripe[1])
+        free = [v for v in free if not lo <= v["center"] <= hi]
+    return extra
+
+
+def _dedupe_overlapping_blocks(blocks: Sequence[_Block], ref: RegionReference) -> List[_Block]:
+    """Keep one block when dual-band verticals or a stitch duplicate a colour."""
+    kept: List[_Block] = []
+    for block in blocks:
+        lo = min(block.island[0], block.stripe[0])
+        hi = max(block.island[1], block.stripe[1])
+        replaced = False
+        for index, other in enumerate(kept):
+            olo = min(other.island[0], other.stripe[0])
+            ohi = max(other.island[1], other.stripe[1])
+            overlap = min(hi, ohi) - max(lo, olo)
+            if overlap > 0.4 * ref.island_width:
+                if _measured(block, "stripe") and not _measured(other, "stripe"):
+                    kept[index] = block
+                replaced = True
+                break
+        if not replaced:
+            kept.append(block)
+    return kept
+
+
+def _merge_directional_blocks(
+    ltr: Sequence[_Block],
+    rtl: Sequence[_Block],
+    ref: RegionReference,
+    island_front: bool,
+    warnings: List[str],
+) -> List[_Block]:
+    """Prefer a measured edge; among measured edges take the outer one."""
+    used = set()
+    merged: List[_Block] = []
+    for left in ltr:
+        match = None
+        width_a = max(1, left.island[1] - left.island[0])
+        for index, right in enumerate(rtl):
+            if index in used:
+                continue
+            overlap = min(left.island[1], right.island[1]) - max(left.island[0], right.island[0])
+            width_b = max(1, right.island[1] - right.island[0])
+            if overlap > 0.5 * min(width_a, width_b):
+                match = index
+                break
+        if match is None:
+            left.sources.setdefault("direction", "ltr")
+            merged.append(left)
+            continue
+        used.add(match)
+        merged.append(_cover_merge_blocks(left, rtl[match], island_front))
+    for index, right in enumerate(rtl):
+        if index not in used:
+            merged.append(right)
+    _ = (ref, warnings)
+    return merged
+
+
+def _measured(block: _Block, key: str) -> bool:
+    return not str(block.sources.get(key, "")).startswith("predicted")
+
+
+def _cover_merge_blocks(left: _Block, right: _Block, island_front: bool) -> _Block:
+    def pick_left(a: int, a_ok: bool, b: int, b_ok: bool) -> int:
+        measured = [v for v, ok in ((a, a_ok), (b, b_ok)) if ok]
+        return min(measured) if measured else a
+
+    def pick_right(a: int, a_ok: bool, b: int, b_ok: bool) -> int:
+        measured = [v for v, ok in ((a, a_ok), (b, b_ok)) if ok]
+        return max(measured) if measured else a
+
+    outer_ok_l = _measured(left, "island_outer")
+    outer_ok_r = _measured(right, "island_outer")
+    inner_ok_l = _measured(left, "island_inner")
+    inner_ok_r = _measured(right, "island_inner")
+    stripe_ok_l = _measured(left, "stripe")
+    stripe_ok_r = _measured(right, "stripe")
+    if island_front:
+        i0 = pick_left(left.island[0], outer_ok_l, right.island[0], outer_ok_r)
+        i1 = pick_right(left.island[1], inner_ok_l, right.island[1], inner_ok_r)
+    else:
+        i0 = pick_left(left.island[0], inner_ok_l, right.island[0], inner_ok_r)
+        i1 = pick_right(left.island[1], outer_ok_l, right.island[1], outer_ok_r)
+    s0 = pick_left(left.stripe[0], stripe_ok_l, right.stripe[0], stripe_ok_r)
+    s1 = pick_right(left.stripe[1], stripe_ok_l, right.stripe[1], stripe_ok_r)
+    sources = dict(left.sources)
+    sources.update({k: v for k, v in right.sources.items() if not str(v).startswith("predicted")})
+    sources["direction"] = "ltr+rtl"
+    vlines = left.vlines or right.vlines
+    return _Block(island=(i0, i1), stripe=(s0, s1), sources=sources, vlines=list(vlines))
+
+
 def _blocks_from_orphan_verticals(
     vlines: Sequence[Dict[str, Any]],
     blocks: Sequence[_Block],
@@ -559,14 +723,13 @@ def _solve_y_extent(
     stripe_ok = stripe_y is not None and abs((stripe_y[1] - stripe_y[0] + 1) - ref.height) <= tol
 
     if island_ok and stripe_ok:
-        aligned = (
-            abs(island_y[0] - stripe_y[0]) <= 0.02 * ref.height
-            and abs(island_y[1] - stripe_y[1]) <= 0.02 * ref.height
-        )
-        if aligned:
+        outer_top = min(island_y[0], stripe_y[0])
+        outer_bot = max(island_y[1], stripe_y[1])
+        grown = outer_bot - outer_top + 1
+        if abs(grown - ref.height) <= tol:
             block.sources["y"] = "island+stripe"
-            return min(island_y[0], stripe_y[0]), max(island_y[1], stripe_y[1])
-        warnings.append("an island and its stripe disagree on the y range; using the stripe")
+            return outer_top, outer_bot
+        warnings.append("an island y would inflate the box; using the stripe")
         block.sources["y"] = "stripe"
         return stripe_y
     if stripe_ok:
@@ -712,59 +875,399 @@ def _refine_block(
     block: _Block,
     ref: RegionReference,
     bounds: Tuple[int, int],
+    island_front: bool = True,
+    geometry: Any = None,
+    warnings: Optional[List[str]] = None,
 ) -> None:
-    """Snap every coarse boundary of one colour onto the real ink edge."""
-    height = image.shape[0]
-    x_window = max(24, ref.island_stripe_gap // 2)
+    """Snap boundaries from edge stations, then cover with layout constraints."""
+    warnings = warnings if warnings is not None else []
+    height, width = image.shape[:2]
+    x_window = max(24, ref.island_stripe_gap // 2, 160, int(0.04 * ref.island_width))
     y_window = max(24, int(ref.height / 80.0))
     y0, y1 = block.y
-    core_y0 = int(np.clip(y0, 0, height - 2))
-    core_y1 = int(np.clip(y1 + 1, core_y0 + 1, height))
+    band = max(32, int(ref.height / 250.0))
 
-    def snap_x(guess: int, edge: str) -> Optional[int]:
-        return _snap_x(
-            image, bg, contrast, guess, core_y0, core_y1, x_window, edge, bounds
+    ys = np.unique(np.clip(
+        np.round(np.linspace(y0, y1, 12)).astype(int), 0, height - 1,
+    ))
+    stitch_ys: List[int] = []
+    n_heads = int(getattr(geometry, "num_heads", 0) or 0) if geometry is not None else 0
+    if n_heads > 1:
+        for k in range(1, n_heads):
+            stitch_ys.append(int(np.clip(y0 + k * (y1 - y0) / n_heads, y0, y1)))
+        ys = np.unique(np.concatenate([ys, np.asarray(stitch_ys, dtype=int)]))
+
+    def x_stations(guess: int, edge: str) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for y in ys:
+            local = _local_edges_at_y(
+                image, bg, contrast, int(y), band, block, ref, bounds, island_front,
+            )
+            island_left, island_right, stripe_left, stripe_right = local
+            if island_front:
+                mapping = {
+                    ("first", True): island_left,
+                    ("last", True): island_right,
+                    ("first", False): stripe_left,
+                    ("last", False): stripe_right,
+                }
+                on_island = guess <= (block.island[1] + block.stripe[0]) // 2
+            else:
+                mapping = {
+                    ("first", True): stripe_left,
+                    ("last", True): stripe_right,
+                    ("first", False): island_left,
+                    ("last", False): island_right,
+                }
+                on_island = guess >= (block.stripe[1] + block.island[0]) // 2
+            x = mapping[(edge, on_island)]
+            if x is not None and abs(int(x) - int(guess)) > max(200, x_window):
+                x = None
+            out.append({"y": int(y), "x": None if x is None else int(x)})
+        return out
+
+    left_i = x_stations(block.island[0], "first")
+    right_i = x_stations(block.island[1], "last")
+    left_s = x_stations(block.stripe[0], "first")
+    right_s = x_stations(block.stripe[1], "last")
+
+    i0 = _cover_x_edge(left_i, "first", block.island[0])
+    i1 = _cover_x_edge(right_i, "last", block.island[1])
+    s0 = _cover_x_edge(left_s, "first", block.stripe[0])
+    s1 = _cover_x_edge(right_s, "last", block.stripe[1])
+    counts = {
+        "i0": sum(1 for s in left_i if s.get("x") is not None),
+        "i1": sum(1 for s in right_i if s.get("x") is not None),
+        "s0": sum(1 for s in left_s if s.get("x") is not None),
+        "s1": sum(1 for s in right_s if s.get("x") is not None),
+    }
+    i0, i1, s0, s1 = _constraint_solve_x(
+        (i0, i1), (s0, s1), block.sources, ref, island_front, warnings, counts,
+    )
+
+    vband = max(4, ref.island_width // 250)
+    reliable_x = [
+        (s0, s1 + 1),
+        (i0, i0 + vband),
+        (max(i0, i1 - vband), i1 + 1),
+        (s0, min(s1 + 1, s0 + vband)),
+        (max(s0, s1 - vband), s1 + 1),
+    ]
+    island_x = (i0, i1 + 1)
+
+    def snap_y(guess: int, xa: int, xb: int, edge: str, nearest: bool = True) -> Optional[int]:
+        return _snap_y(
+            image, bg, contrast, guess, xa, xb, y_window, edge,
+            nearest=nearest, min_run=1 if not nearest else 2,
         )
 
-    island = (snap_x(block.island[0], "first"), snap_x(block.island[1], "last"))
-    stripe = (snap_x(block.stripe[0], "first"), snap_x(block.stripe[1], "last"))
-    island = (island[0] if island[0] is not None else block.island[0],
-              island[1] if island[1] is not None else block.island[1])
-    stripe = (stripe[0] if stripe[0] is not None else block.stripe[0],
-              stripe[1] if stripe[1] is not None else block.stripe[1])
-    if island[1] > island[0]:
-        block.island = island
-    if stripe[1] > stripe[0]:
-        block.stripe = stripe
+    reliable_tops = [snap_y(y0, xa, xb, "first") for xa, xb in reliable_x]
+    reliable_bots = [snap_y(y1, xa, xb, "last") for xa, xb in reliable_x]
+    island_top = snap_y(y0, island_x[0], island_x[1], "first")
+    island_bot = snap_y(y1, island_x[0], island_x[1], "last")
 
-    # The island and the stripe share one box, so the y range is the union
-    # of what each of them printed. The two outer vertical lines are read on
-    # their own narrow bands as well: they run the full height, whereas the
-    # island as a whole only reaches its true top at the first dashed line,
-    # half a line spacing in. That matters most for a colour whose stripe is
-    # missing, since then nothing else spans the region.
-    band = max(4, ref.island_width // 250)
-    strips = [
-        (block.island[0], block.island[0] + band),
-        (block.island[1] - band, block.island[1] + 1),
-        (block.island[0], block.island[1] + 1),
-        (block.stripe[0], block.stripe[1] + 1),
-    ]
-    spread = max(8, ref.height // 200)
-    tops = _consensus(
-        [_snap_y(image, bg, contrast, y0, x0, x1, y_window, "first") for x0, x1 in strips],
-        spread, take=min, fallback=y0,
-    )
-    bottoms = _consensus(
-        [_snap_y(image, bg, contrast, y1, x0, x1, y_window, "last") for x0, x1 in strips],
-        spread, take=max, fallback=y1,
-    )
-    refined = (tops, bottoms)
-    if refined[1] > refined[0]:
-        block.y = refined
+    x_points = np.unique(np.concatenate([
+        np.round(np.linspace(i0, i1, 8)).astype(int),
+        np.round(np.linspace(s0, s1, 4)).astype(int),
+        np.array([i0, i1, s0, s1], dtype=int),
+    ]))
+    xband = max(8, ref.island_width // 80)
+
+    def y_across(guess: int, edge: str) -> List[Optional[int]]:
+        votes: List[Optional[int]] = []
+        for x in x_points:
+            xa = int(x) - xband
+            xb = int(x) + xband
+            votes.append(snap_y(guess, xa, xb, edge))
+        return votes
+
+    reliable_tops = list(reliable_tops) + y_across(y0, "first")
+    reliable_bots = list(reliable_bots) + y_across(y1, "last")
+    corner_xs = []
+    for stations, reverse in ((left_i, False), (right_i, False), (left_i, True), (right_i, True)):
+        seq = reversed(list(stations)) if reverse else stations
+        for item in seq:
+            if item.get("x") is not None:
+                corner_xs.append(int(item["x"]))
+                break
+    for x in (i0, i1, s0, s1, *corner_xs):
+        reliable_tops.append(snap_y(y0, int(x) - xband, int(x) + xband, "first", nearest=False))
+        reliable_bots.append(snap_y(y1, int(x) - xband, int(x) + xband, "last", nearest=False))
+    top = _cover_y_edge(reliable_tops, island_top, "first", y0, ref)
+    bot = _cover_y_edge(reliable_bots, island_bot, "last", y1, ref)
+
+    want = ref.height - 1
+    if bot - top + 1 < ref.height * (1.0 - ref.tolerance):
+        stripe_top = reliable_tops[0]
+        stripe_bot = reliable_bots[0]
+        if stripe_top is not None and abs((stripe_top + want) - bot) >= abs(top + want - bot):
+            bot = min(height - 1, stripe_top + want)
+            top = stripe_top
+            block.sources["y"] = "predicted-from-height"
+            warnings.append("y was short of the reference height; extended from the stripe top")
+        elif stripe_bot is not None:
+            top = max(0, stripe_bot - want)
+            bot = stripe_bot
+            block.sources["y"] = "predicted-from-height"
+            warnings.append("y was short of the reference height; extended from the stripe bottom")
+        else:
+            bot = min(height - 1, top + want)
+            block.sources["y"] = "predicted-from-height"
+
+    if i1 > i0:
+        block.island = (i0, i1)
+    if s1 > s0:
+        block.stripe = (s0, s1)
+    if bot > top:
+        block.y = (top, bot)
+
+    def x_at(stations: Sequence[Dict[str, Any]], y: int, fallback: int) -> int:
+        valid = [(int(s["y"]), int(s["x"])) for s in stations if s.get("x") is not None]
+        if not valid:
+            return fallback
+        return min(valid, key=lambda item: abs(item[0] - y))[1]
+
+    block.corners = {
+        "island": {
+            "tl": [x_at(left_i, top, i0), top],
+            "tr": [x_at(right_i, top, i1), top],
+            "bl": [x_at(left_i, bot, i0), bot],
+            "br": [x_at(right_i, bot, i1), bot],
+        },
+        "stripe": {
+            "tl": [x_at(left_s, top, s0), top],
+            "tr": [x_at(right_s, top, s1), top],
+            "bl": [x_at(left_s, bot, s0), bot],
+            "br": [x_at(right_s, bot, s1), bot],
+        },
+    }
+    block.island = _span_from_stations(left_i, right_i, block.island)
+    block.stripe = _span_from_stations(left_s, right_s, block.stripe)
+    block.edge_stations = {
+        "island_left": left_i,
+        "island_right": right_i,
+        "stripe_left": left_s,
+        "stripe_right": right_s,
+        "stitch_y": stitch_ys,
+    }
+    _flag_edge_defects(block, warnings)
     block.sources["refinement"] = (
-        f"full-resolution snap (+/-{x_window}px in x, +/-{y_window}px in y)"
+        f"station snap + constraint cover (+/-{x_window}px in x, +/-{y_window}px in y)"
     )
+
+
+def _local_edges_at_y(
+    image: np.ndarray,
+    bg: float,
+    contrast: float,
+    y: int,
+    band: int,
+    block: _Block,
+    ref: RegionReference,
+    bounds: Tuple[int, int],
+    island_front: bool,
+) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    """Island and stripe x-edges in a narrow y-band, anchored on the local bar.
+
+    A mid-height stitch shifts the whole block, so a window around the coarse
+    guess can sit on the wrong vertical. Measuring the solid bar in this band
+    and walking back by the nominal gap recovers the true inner/outer pair.
+    """
+    height, width = image.shape[:2]
+    ya = int(np.clip(y - band, 0, height - 2))
+    yb = int(np.clip(y + band, ya + 1, height))
+    xa = int(np.clip(min(bounds[0], block.island[0], block.stripe[0]) - 160, 0, width - 2))
+    xb = int(np.clip(max(bounds[1], block.island[1], block.stripe[1]) + 160, xa + 1, width))
+    strip = _min_channel(image[ya:yb:2, xa:xb])
+    dens = _density(strip, bg, contrast).mean(axis=0)
+    if dens.size == 0 or float(dens.max()) <= 0.02:
+        return None, None, None, None
+
+    peak = float(np.percentile(dens, 99.5))
+    bar_runs = _bool_runs(dens >= max(0.30, 0.55 * peak), min_len=1, merge_gap=2)
+    stripe_w = ref.stripe_width
+    bars = []
+    for start, end in bar_runs:
+        run_w = end - start + 1
+        if 0.45 * stripe_w <= run_w <= 2.6 * stripe_w and float(dens[start:end + 1].mean()) >= 0.5 * peak:
+            bars.append((xa + start, xa + end))
+    stripe_guess = (block.stripe[0] + block.stripe[1]) // 2
+    bar = None
+    if bars:
+        bar = min(bars, key=lambda b: abs((b[0] + b[1]) // 2 - stripe_guess))
+    ink_runs = _bool_runs(dens >= max(0.08, 0.2 * peak), min_len=2, merge_gap=3)
+
+    def last_before(limit: int) -> Optional[int]:
+        candidates = [xa + r[1] for r in ink_runs if xa + r[1] < limit]
+        return max(candidates) if candidates else None
+
+    def first_after(limit: int) -> Optional[int]:
+        candidates = [xa + r[0] for r in ink_runs if xa + r[0] > limit]
+        return min(candidates) if candidates else None
+
+    s0 = s1 = i0 = i1 = None
+    if bar is not None:
+        s0, s1 = int(bar[0]), int(bar[1])
+        if island_front:
+            i1 = last_before(s0 - max(8, ref.island_stripe_gap // 4))
+            if i1 is None:
+                i1 = s0 - ref.island_stripe_gap
+            i0 = first_after(i1 - ref.island_width - max(40, int(0.08 * ref.island_width)))
+            if i0 is None or abs((i1 - i0 + 1) - ref.island_width) > max(80, 0.2 * ref.island_width):
+                # Prefer a run near the outer vertical rather than the first speck.
+                target = i1 - ref.island_width + 1
+                outer = min(
+                    (xa + r[0] for r in ink_runs),
+                    key=lambda x: abs(x - target),
+                    default=target,
+                )
+                i0 = int(outer)
+        else:
+            i0 = first_after(s1 + max(8, ref.island_stripe_gap // 4))
+            if i0 is None:
+                i0 = s1 + ref.island_stripe_gap
+            target = i0 + ref.island_width - 1
+            i1 = min(
+                (xa + r[1] for r in ink_runs),
+                key=lambda x: abs(x - target),
+                default=target,
+            )
+    return (
+        None if i0 is None else int(i0),
+        None if i1 is None else int(i1),
+        None if s0 is None else int(s0),
+        None if s1 is None else int(s1),
+    )
+
+
+def _drop_sparse_outliers(values: Sequence[int], min_count: int = 2, radius: int = 25) -> List[int]:
+    kept = [
+        x for x in values
+        if sum(1 for y in values if abs(y - x) <= radius) >= min_count
+    ]
+    return kept or list(values)
+
+
+def _cover_x_edge(stations: Sequence[Dict[str, Any]], edge: str, guess: int) -> int:
+    xs = [int(s["x"]) for s in stations if s.get("x") is not None]
+    if not xs:
+        return int(guess)
+    clustered = _drop_sparse_outliers(xs)
+    return int(min(clustered) if edge == "first" else max(clustered))
+
+
+def _cover_y_edge(
+    reliable: Sequence[Optional[int]],
+    island_vote: Optional[int],
+    edge: str,
+    guess: int,
+    ref: RegionReference,
+) -> int:
+    values = [int(v) for v in reliable if v is not None]
+    spread = max(8, ref.height // 200)
+    if not values:
+        return int(island_vote if island_vote is not None else guess)
+    clustered = _drop_sparse_outliers(values, radius=spread)
+    middle = float(np.median(clustered))
+    outer = min(values) if edge == "first" else max(values)
+    if abs(outer - middle) > spread:
+        near_outer = [v for v in values if abs(v - outer) <= spread]
+        if len(near_outer) < 2:
+            outer = min(clustered) if edge == "first" else max(clustered)
+    _ = island_vote
+    return int(outer)
+
+
+def _constraint_solve_x(
+    island: Tuple[int, int],
+    stripe: Tuple[int, int],
+    sources: Dict[str, str],
+    ref: RegionReference,
+    island_front: bool,
+    warnings: List[str],
+    counts: Optional[Dict[str, int]] = None,
+) -> Tuple[int, int, int, int]:
+    """Fill an edge that failed to measure; do not override a well-sampled one.
+
+    Real islands are a bit narrower than the nominal 5100 px, so applying the
+    reference width to a measured outer vertical would expand the box.
+    """
+    i0, i1 = island
+    s0, s1 = stripe
+    iw, sw, gap = ref.island_width, ref.stripe_width, ref.island_stripe_gap
+    counts = counts or {}
+
+    def weak(key: str) -> bool:
+        return int(counts.get(key, 0)) < 3
+
+    def fill_left(measured: int, predicted: int, key: str, name: str) -> int:
+        if not weak(key):
+            return int(measured)
+        inward = measured - predicted
+        if inward > 15:
+            warnings.append(f"{name} had too few stations; using layout prediction")
+            sources[name] = "predicted-cover"
+            return int(predicted)
+        return int(measured)
+
+    def fill_right(measured: int, predicted: int, key: str, name: str) -> int:
+        if not weak(key):
+            return int(measured)
+        inward = predicted - measured
+        if inward > 15:
+            warnings.append(f"{name} had too few stations; using layout prediction")
+            sources[name] = "predicted-cover"
+            return int(predicted)
+        return int(measured)
+
+    if island_front:
+        ltr_i1 = s0 - gap
+        ltr_i0 = ltr_i1 - iw + 1
+        rtl_s0 = i1 + gap
+        rtl_s1 = rtl_s0 + sw - 1
+        i0 = fill_left(i0, ltr_i0, "i0", "island_outer")
+        i1 = fill_right(i1, ltr_i1, "i1", "island_inner")
+        s0 = fill_left(s0, rtl_s0, "s0", "stripe_left")
+        s1 = fill_right(s1, rtl_s1, "s1", "stripe_right")
+    else:
+        ltr_i0 = s1 + gap
+        ltr_i1 = ltr_i0 + iw - 1
+        rtl_s1 = i0 - gap
+        rtl_s0 = rtl_s1 - sw + 1
+        i0 = fill_left(i0, ltr_i0, "i0", "island_inner")
+        i1 = fill_right(i1, ltr_i1, "i1", "island_outer")
+        s0 = fill_left(s0, rtl_s0, "s0", "stripe_left")
+        s1 = fill_right(s1, rtl_s1, "s1", "stripe_right")
+    return i0, i1, s0, s1
+
+
+def _span_from_stations(
+    left: Sequence[Dict[str, Any]],
+    right: Sequence[Dict[str, Any]],
+    fallback: Tuple[int, int],
+) -> Tuple[int, int]:
+    xs_l = _drop_sparse_outliers([int(s["x"]) for s in left if s.get("x") is not None])
+    xs_r = _drop_sparse_outliers([int(s["x"]) for s in right if s.get("x") is not None])
+    x0 = min(xs_l) if xs_l else fallback[0]
+    x1 = max(xs_r) if xs_r else fallback[1]
+    return min(x0, fallback[0]), max(x1, fallback[1])
+
+
+def _flag_edge_defects(block: _Block, warnings: List[str]) -> None:
+    for name, stations in (block.edge_stations or {}).items():
+        if name == "stitch_y" or not isinstance(stations, list):
+            continue
+        xs = [int(s["x"]) for s in stations if isinstance(s, dict) and s.get("x") is not None]
+        missing = sum(1 for s in stations if isinstance(s, dict) and s.get("x") is None)
+        if missing:
+            block.sources[f"{name}_missing"] = str(missing)
+            warnings.append(f"{missing} station(s) on {name} had no ink")
+        if len(xs) >= 2:
+            spread = max(xs) - min(xs)
+            if spread > 40:
+                block.sources["slant_px"] = str(max(int(block.sources.get("slant_px") or 0), spread))
+                block.sources["stitch_offset_px"] = block.sources["slant_px"]
+                warnings.append(f"{name} varies by {spread}px (slant or stitch)")
 
 
 def _consensus(
@@ -808,7 +1311,7 @@ def _snap_x(
     b = int(np.clip(guess + window + 1, a + 1, high + 1))
     strip = _min_channel(image[y0:y1:4, a:b])
     density = _density(strip, bg, contrast).mean(axis=0)
-    index = _edge_index(density, edge, min_run=2)
+    index = _edge_index(density, edge, min_run=2, nearest=int(guess - a))
     return None if index is None else a + index
 
 
@@ -821,6 +1324,8 @@ def _snap_y(
     x1: int,
     window: int,
     edge: str,
+    nearest: bool = True,
+    min_run: int = 2,
 ) -> Optional[int]:
     height, width = image.shape[:2]
     x0 = int(np.clip(x0, 0, width - 1))
@@ -829,17 +1334,22 @@ def _snap_y(
     b = int(np.clip(guess + window + 1, a + 1, height))
     strip = _min_channel(image[a:b, x0:x1:4])
     density = _density(strip, bg, contrast).mean(axis=1)
-    index = _edge_index(density, edge, min_run=2)
+    index = _edge_index(
+        density, edge, min_run=min_run,
+        nearest=int(guess - a) if nearest else None,
+    )
     return None if index is None else a + index
 
 
-def _edge_index(density: np.ndarray, edge: str, min_run: int) -> Optional[int]:
+def _edge_index(
+    density: np.ndarray, edge: str, min_run: int, nearest: Optional[int] = None,
+) -> Optional[int]:
     """First/last index of real structure inside a refinement window.
 
     The threshold sits 40% of the way from the window's paper level to its
-    strongest ink. A refinement window always straddles an edge, so its low
-    quantile is paper: that keeps a partly-missing vertical line above the
-    dashed print it borders, and keeps stray specks below both.
+    strongest ink. When ``nearest`` is set, the run closest to the coarse
+    guess is used so a wide window that also contains a neighbour (the
+    stripe, an overspray blob) does not steal the edge.
     """
     if density.size == 0:
         return None
@@ -853,7 +1363,10 @@ def _edge_index(density: np.ndarray, edge: str, min_run: int) -> Optional[int]:
     runs = _bool_runs(density >= threshold, min_len=min_run, merge_gap=0)
     if not runs:
         return None
-    return runs[0][0] if edge == "first" else runs[-1][1]
+    if nearest is None:
+        return runs[0][0] if edge == "first" else runs[-1][1]
+    best = min(runs, key=lambda r: abs(0.5 * (r[0] + r[1]) - nearest))
+    return best[0] if edge == "first" else best[1]
 
 
 # ----------------------------------------------------------------------
@@ -907,20 +1420,37 @@ def draw_corner_montage(
     specs: Sequence[RegionSpec],
     crop: int = 900,
 ) -> Optional[np.ndarray]:
-    """Full-resolution crops of each region's top-left and bottom-right.
-
-    This is the only view that shows whether a corner is actually on the
-    print; a whole-scan overlay is far too small to reveal it.
-    """
+    """Full-resolution crops of each region's four corners."""
     image = _pixels(scan)
     swap_rb = _is_rgb(scan)
     rows: List[np.ndarray] = []
     for spec in specs:
         x0, y0, x1, y1 = spec.bounding_box_pixels.as_int_xyxy()
         color = ISLAND_BGR if spec.type == "island" else STRIPE_BGR
-        rows.append(np.hstack([
-            _corner_panel(image, x0, y0, crop, color, f"{spec.name} top-left", swap_rb),
-            _corner_panel(image, x1, y1, crop, color, f"{spec.name} bottom-right", swap_rb),
+        corners = spec.corners or {
+            "tl": [x0, y0], "tr": [x1, y0], "bl": [x0, y1], "br": [x1, y1],
+        }
+        panels = [
+            _corner_panel(
+                image, int(corners["tl"][0]), int(corners["tl"][1]),
+                crop, color, f"{spec.name} top-left", swap_rb,
+            ),
+            _corner_panel(
+                image, int(corners["tr"][0]), int(corners["tr"][1]),
+                crop, color, f"{spec.name} top-right", swap_rb,
+            ),
+            _corner_panel(
+                image, int(corners["bl"][0]), int(corners["bl"][1]),
+                crop, color, f"{spec.name} bottom-left", swap_rb,
+            ),
+            _corner_panel(
+                image, int(corners["br"][0]), int(corners["br"][1]),
+                crop, color, f"{spec.name} bottom-right", swap_rb,
+            ),
+        ]
+        rows.append(np.vstack([
+            np.hstack(panels[:2]),
+            np.hstack(panels[2:]),
         ]))
     if not rows:
         return None
@@ -962,7 +1492,12 @@ def _corner_panel(
 # Small helpers
 # ----------------------------------------------------------------------
 
-def _spec(name: str, kind: str, xyxy: Tuple[int, int, int, int]) -> RegionSpec:
+def _spec(
+    name: str,
+    kind: str,
+    xyxy: Tuple[int, int, int, int],
+    corners: Optional[Dict[str, Any]] = None,
+) -> RegionSpec:
     x0, y0, x1, y1 = xyxy
     return RegionSpec(
         name=name,
@@ -971,6 +1506,7 @@ def _spec(name: str, kind: str, xyxy: Tuple[int, int, int, int]) -> RegionSpec:
             top_x=float(x0), top_y=float(y0),
             bottom_x=float(x1), bottom_y=float(y1),
         ),
+        corners=corners,
     )
 
 

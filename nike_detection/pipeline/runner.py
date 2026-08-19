@@ -175,7 +175,10 @@ def collect_image_files(
     found: List[str] = []
     if recursive:
         for root, dirs, files in os.walk(folder):
-            dirs[:] = [d for d in dirs if not _is_run_output_dir(d)]
+            dirs[:] = [
+                d for d in dirs
+                if not _is_run_output_dir(d) and d.lower() not in {"synthetic", "previews"}
+            ]
             for name in files:
                 if name.lower().endswith(IMAGE_EXTENSIONS):
                     found.append(os.path.join(root, name))
@@ -639,6 +642,7 @@ def _write_region_artifacts(
                     "bottom_x": spec.bounding_box_pixels.bottom_x,
                     "bottom_y": spec.bounding_box_pixels.bottom_y,
                 },
+                **({"corners": spec.corners} if spec.corners else {}),
             }
             for spec in specs
         ],

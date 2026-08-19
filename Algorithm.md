@@ -579,33 +579,67 @@ Both regions of one colour are 33000 px tall and share a y range. Colours are na
 
 **Step 3 — the vertical lines.** On real scans these are faint, speckled and drift sideways over 33000 rows, so their raw column density is no better than the dashed horizontal print. Instead the coarse ink map is binarized and **opened along y** with a kernel far taller than a horizontal line (~height/100) and far shorter than a region: the horizontal print disappears entirely, and what is left is per-column *vertical structure*. Candidates are collected at a permissive floor so a faint colour is not lost beside a strong one, but each line's extent is taken at half of its own peak, which keeps the envelope tight.
 
-**Step 4 — assembling the colour blocks.** For each bar, the island is the vertical pair whose separation matches `island_width` *and* whose inner edge sits `gap` from that bar. Both constraints are needed on a multi-colour sheet: one colour's inner line and the next colour's outer line are also roughly an island apart, so matching on width alone would straddle two colours. Then, for robustness against defects:
+**Step 4 — assembling the colour blocks, both directions.** Two independent pairings are merged:
+
+- **Left-to-right:** each solid bar anchors a colour; the island is the vertical pair whose separation matches `island_width` *and* whose inner edge sits `gap` from that bar. Both constraints are needed on a multi-colour sheet: one colour's inner line and the next colour's outer line are also roughly an island apart, so matching on width alone would straddle two colours.
+- **Right-to-left:** island verticals are paired first, then a bar is attached if one sits where the stripe should be; otherwise the stripe is predicted from the island.
+
+Overlapping LTR/RTL blocks are merged by keeping **measured** edges (vertical-line / solid-bar) over predicted ones, and among measured edges taking the **outer** value so a missing corner cannot shrink the block. Duplicate blocks from dual-band inner verticals or a large stitch are collapsed. Then:
 
 - a colour whose **bar never printed** is recovered from any vertical pair not already claimed, and its stripe is predicted from its island;
-- a colour that **printed nothing at all** is inserted from the lattice pitch of its neighbours, so the remaining colours keep their correct names;
-- any edge not measured is predicted from one that was, and the per-edge `sources` record which.
+- a colour that **printed nothing at all** is inserted from the lattice pitch of its neighbours, so the remaining colours keep their correct names.
 
-**Step 5 — y extent, per colour.** A colour's island and stripe are printed in one pass, so they share one y range: the union of the island's horizontal-line cluster and the bar's row edges, taken only when the two agree to within 2% of the reference height (otherwise the bar wins, since overspray above the island can fake a first line). A colour recovered from the lattice borrows the median y of the colours that did print.
+**Step 5 — y extent, per colour.** A colour's island and stripe are printed in one pass, so they share one y range. The covering union of the island cluster and the bar is used when that height still matches the reference (tolerance `0.12`); if the union would *inflate* the box (overspray above the island), the bar wins. Missing dashed lines at the top or bottom make the island cluster shorter, not taller, so the union stays on the stripe/verticals. A colour recovered from the lattice borrows the median y of the colours that did print.
 
-**Step 6 — full-resolution snap.** Every coarse boundary is re-measured at full resolution in a ±(gap/2) px (x) / ±(height/80) px (y) window, clipped so it cannot reach across `color_gap` into a neighbouring colour. The threshold sits 40% of the way from the window's paper level to its strongest ink, which keeps a half-printed vertical line above the print it borders and stray specks below both. The top and bottom are read from four strips — the two outer vertical lines on their own narrow bands, the island as a whole, and the stripe — and combined by discarding any strip that disagrees with the majority by more than `height/200`; that is what stops a single ink drip below a region from stretching the box by 400 px. Finally `geometry.buffer` (50 px) is applied.
+**Step 6 — station snap, four corners, constraint cover.** Coarse axis-aligned edges are not trusted at the corners: a feeble vertical, a blank top strip of dashed lines, a slanted print, or a mid-height head stitch will pull a single full-height snap inward and clip the print. Instead:
 
-Measured widths, gaps, heights, per-edge `sources` and any `warnings` are written per colour to `{stem}_full_regions.json`, so a bad scan is visible without opening an image.
+1. **Edge stations.** Each of the four x-edges is re-measured in ~12 y-bands along the region, including the stitch rows implied by `geometry.num_heads`. In each band the **local solid bar** is found first, then the island inner/outer are walked from that bar by the nominal gap/width. A station more than ~200 px from the coarse guess is dropped (stray dual-band line or speck), not allowed to jump the box.
+2. **Covering x.** Sparse outliers are discarded; among the rest the **outer** value is kept (min of left stations, max of right). That is what covers a parallelogram and a dogleg stitch: four corners alone would miss a mid-height slant.
+3. **Covering y.** Stripe and vertical-line bands vote, plus snaps at the x-extremes of the station polylines (the true top-left / bottom-left of a rotated rectangle are not the same x). A singleton far outside the majority is treated as overspray; a singleton *within* `height/200` is treated as slant and kept. If the measured height is still short of the reference, it is extended from the stripe's reliable end, not from the remaining dashed lines.
+4. **Constraint fill, both ways, only when an edge failed to measure.** LTR: stripe → gap → island inner → width → island outer. RTL: island outer → width → island inner → gap → stripe. Layout prediction is **not** applied to a well-sampled edge: real islands are ~5028 px against the nominal 5100, and forcing the nominal would expand the box. Prediction is used only when fewer than three stations returned ink (the missing-corner case).
+5. **Covering AABB.** Downstream detectors still take a rectangle crop. `bounding_box_pixels` is the min/max of the four corners **and** the stitch stations, then `geometry.buffer` (50 px) is applied. Extra paper is acceptable; clipping print is not.
+
+Four corners and the station polylines are written per colour so a dogleg is visible in JSON. `sources` / `warnings` flag `corner_missing`, `slant_px` / `stitch_offset_px`, and `predicted-cover`.
 
 `--regions-only` skips detectors and writes, per scan:
 
 | File | Contents |
 |---|---|
-| `{prefix}_full_regions.json` | boxes and measurements vs reference for every colour, per-edge source, warnings |
+| `{prefix}_full_regions.json` | boxes, four corners, edge stations, measurements vs reference, per-edge source, warnings |
 | `{prefix}_full_regions.jpg` | whole-scan overlay: island green, stripe blue, verticals magenta |
-| `{prefix}_full_regions_corners.jpg` | full-resolution crops of every region's top-left and bottom-right corner |
+| `{prefix}_full_regions_corners.jpg` | full-resolution crops of every region's four corners (TL, TR, BL, BR) |
 
 `{prefix}` is the ink colour when the filename names one, otherwise the file stem.
 
 `--regions` (or a sibling `<image>.json`) still overrides detection with operator-supplied boxes.
 
-**Very large sheets.** A 2400 DPI four-colour scan is ~56000 × 40000 px (6.7 GB), past OpenCV's decode limit. Files above 1.5 GB are memory-mapped with `tifffile` instead, and every pass — the coarse profile, the edge snaps, the overlay, the corner crops, and the per-region crops handed to the detectors — reads only the rows it needs.
+**Very large sheets.** A 2400 DPI four-colour scan is ~56000 × 40000 px (6.7 GB), past OpenCV's decode limit. Files above 1.5 GB are memory-mapped with `tifffile` instead, and every pass — the coarse profile, the station snaps, the overlay, the corner crops, and the per-region crops handed to the detectors — reads only the rows it needs. Folder walks skip a `synthetic/` directory so generated fixtures are not processed as scans.
 
-**Accuracy.** On a synthetic four-colour sheet every one of the 24 edges lands exactly, including a colour whose stripe never printed, a colour with a blank top-left corner, a colour with voids through its second band, and a near-invisible yellow. With a colour that printed nothing at all, its boxes come from the neighbours' pitch to within 1 px in x and are flagged. On the real 6.7 GB KCMY scan the four blocks measure island 5027–5065 px, stripe 1023–1036 px, gap 559–588 px, colour gap 258–272 px and height 32842–32926 px against nominals of 5100 / 1050 / 580 / 250 / 33000.
+**Accuracy (layout).** On a synthetic four-colour sheet every one of the 24 edges lands exactly, including a colour whose stripe never printed, a colour with a blank top-left corner, a colour with voids through its second band, and a near-invisible yellow. With a colour that printed nothing at all, its boxes come from the neighbours' pitch to within 1 px in x and are flagged. On the real 6.7 GB KCMY scan the four blocks measure island 5027–5065 px, stripe 1023–1036 px, gap 559–588 px, colour gap 258–272 px and height 32842–32926 px against nominals of 5100 / 1050 / 580 / 250 / 33000.
+
+#### Validation (corner defects, slant, stitch)
+
+The failure modes this snap is built for are missing/feeble ink at island corners, overspray just outside an edge, a slanted rectangle, and a 3-head stitch that puts a dogleg in the middle of an otherwise rectangular region. Ground truth is the **original print corners**: a paper-coloured mask or added spray must not change the box.
+
+Catalog (no full-size mutated TIFFs — overlays are applied in memory on the memmapped original):
+
+- Generator: `scripts/utility/generate_region_synthetics.py`
+- Data: `data/20260617_P1_WhitePaper_KCM-updated-folder/synthetic/` (`ground_truth/`, `recipes/`, `geometric/`, `corner_crops/`, `manifest.json`)
+- Overlay loader: `nike_detection/geometry/synthetic_overlays.py`
+- Metrics / eval: `nike_detection/geometry/region_metrics.py`, `python -m nike_detection.tools.eval_regions`
+- Fast tests: `tests/geometry/test_region_synthetics.py`
+
+Pass rules: **inward clip > 15 px fails** (print would be cropped); outward expansion is capped (~80 px, buffer is already 50); print coverage ≥ 99.5% on missing-ink/overspray; IoU ≥ 0.95 on ±1° slant / stitch.
+
+```bash
+python scripts/utility/generate_region_synthetics.py
+python -m pytest tests/geometry/test_region_synthetics.py -m "not slow"
+python -m nike_detection.tools.eval_regions              # geometric canvases
+python -m nike_detection.tools.eval_regions --baselines  # unmodified key/cyan/magenta TIFFs
+python -m nike_detection.tools.eval_regions --full       # overlay recipes on the three TIFFs (slow)
+```
+
+Checked results: 10/10 fast geometric tests; 17/17 geometric eval cases (clean, missing top lines, missing TL, feeble outer vertical, overspray below, ±0.2/0.5/1.0° rotate, shear, stitch ±30/80/150 px); unmodified `key_full` / `cyan_full` / `magenta_full` vs frozen GT with no inward clip; overlay recipes on `key_full` (missing 20 top lines, 400 px TL mask, overspray blob 200 px below, feeble outer vertical, combined missing-TL + overspray-BR) all with 0 px inward clip.
 
 ### 6.2 Optional template extract (`--extract`)
 
@@ -676,10 +710,10 @@ Work that is **not** done:
 6. **Unify line finding** — use `IslandLineExtractor` for new-pattern debris/overspray on white paper too, not only `--clear`.
 7. **DPI-scaled stripe misalignment thresholds** (pixels → mm).
 8. **Physical nozzle reporting** — `missing_pixels` is columns, not calibrated nozzle IDs.
-9. **Automated regression set** — golden island/stripe crops for legacy, new-pattern white, and new-pattern clear.
+9. **Automated regression set** — golden *detector* crops for legacy, new-pattern white, and new-pattern clear. Region-*box* regression for corner defects / slant / stitch is in place (§6.1 Validation).
 10. **Vertical-line defect inspection** — currently structural only; breaks in the four boundary lines are invisible.
 
-Done since this list was first written: seed-free multi-colour region boxes (§6.1), shared `ImageContext` + parallel detectors (§10), memmap of multi-GB TIFFs, island stitch_error as its own class, surface treatment dropped from the default stripe set (still available via `--only surface_treatment`).
+Done since this list was first written: seed-free multi-colour region boxes (§6.1), bidirectional station snap + four-corner covering AABB with a synthetic catalog, shared `ImageContext` + parallel detectors (§10), memmap of multi-GB TIFFs, island stitch_error as its own class, surface treatment dropped from the default stripe set (still available via `--only surface_treatment`).
 
 ---
 
@@ -690,7 +724,7 @@ The runtime is `nike_detection/pipeline/runner.py`. `--workers` is a process poo
 ```
 folder / full scan
     │
-    ├─ collect files (skip previous result folders and *_full_regions / *_visualization artifacts)
+    ├─ collect files (skip previous result folders, synthetic/, and *_full_regions / *_visualization artifacts)
     ├─ if full sheet:
     │     open_scan (memmap if > 1.5 GB) → detect_full_regions
     │     process pool: one worker per colour region
@@ -792,7 +826,14 @@ python -m nike_detection -i data/rotated-KCMY-QualTest8Exp-BlkPt100-13.53.22.tif
     --config config/detection_2400.json --regions-only --workers 1
 ```
 
-Writes `{prefix}_full_regions.json`, `{prefix}_full_regions.jpg`, `{prefix}_full_regions_corners.jpg`. `{prefix}` is the ink colour when the filename names one, otherwise the file stem.
+Writes `{prefix}_full_regions.json` (boxes, four corners, edge stations), `{prefix}_full_regions.jpg`, `{prefix}_full_regions_corners.jpg` (TL/TR/BL/BR). `{prefix}` is the ink colour when the filename names one, otherwise the file stem.
+
+Region-box regression (geometric canvases + frozen WhitePaper GT):
+
+```bash
+python -m pytest tests/geometry/test_region_synthetics.py -m "not slow"
+python -m nike_detection.tools.eval_regions --baselines
+```
 
 Operator override (skip automatic detection):
 
@@ -883,7 +924,7 @@ Example: `data/rotated-KCMY-QualTest8Exp-BlkPt100-13.53.22.tif` → `data/rotate
 
 | File | Contents |
 |---|---|
-| `{prefix}_full_regions.jpg` / `.json` / `_corners.jpg` | Segmented island/stripe boxes (on `full` input) |
+| `{prefix}_full_regions.jpg` / `.json` / `_corners.jpg` | Segmented island/stripe boxes, four corners, edge stations (on `full` input) |
 | `{prefix}_full_defects.jpg` | Same scan with every finding annotated (on unless `--no-full-overlay`) |
 | `defect_summary.txt` | Readable per-region metrics (missing nozzles, stitch/calibration, roughness, voids) |
 | `defect_summary.csv` | Same metrics, one row per metric |
@@ -906,6 +947,10 @@ Example: `data/rotated-KCMY-QualTest8Exp-BlkPt100-13.53.22.tif` → `data/rotate
 | Legacy island algorithms | `nike_detection/detectors/island_legacy/` |
 | Dual-band island algorithms | `nike_detection/detectors/island_new/` (`line_defect.py` = missing nozzles + stitch) |
 | Seed-free island/stripe boxes | `nike_detection/geometry/full_region_detector.py` |
+| Region synthetic overlays / GT | `nike_detection/geometry/synthetic_overlays.py`, `region_metrics.py` |
+| Region eval CLI | `python -m nike_detection.tools.eval_regions` |
+| Region synthetic generator | `scripts/utility/generate_region_synthetics.py` |
+| Region box tests | `tests/geometry/test_region_synthetics.py` |
 | Vertical bands | `nike_detection/geometry/vertical_band_detector.py` |
 | Line extract (new) | `nike_detection/geometry/island_line_extractor.py` |
 | Legacy line scan | `nike_detection/geometry/line_detector.py` |
