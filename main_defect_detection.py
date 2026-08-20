@@ -11,14 +11,14 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from nike_detection.cli import main as package_main
+from digital_air_cv.cli import main as package_main
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Extract 2400-DPI regions then run defect detection",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="This entry point now delegates to `python -m nike_detection --extract`.",
+        epilog="This entry point now delegates to `python -m digital_air_cv --extract`.",
     )
     parser.add_argument("--image", "-i", required=True, help="Path to the TIFF scan")
     parser.add_argument("--dpi", "-d", choices=["2400"], default="2400",

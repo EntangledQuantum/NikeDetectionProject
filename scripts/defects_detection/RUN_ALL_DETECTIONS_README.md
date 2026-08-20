@@ -111,21 +111,21 @@ cd scripts/defects_detection
 
 # Recursive folder of mixed stripe + island crops (July visit layout)
 python run_all_detections.py \
-  -i /home/koushik/Nike/Digital_Air/data/July_26 \
-  -o /home/koushik/Nike/Digital_Air/NikeDetectionProject/tmp/july26_all \
+  -i /home/koushik/DigitalAirCv/data/July_26 \
+  -o /home/koushik/DigitalAirCv/DigitalAirCvProject/tmp/july26_all \
   --pattern new \
   --sensitivity medium
 
 # Same, with PDF summary that includes timing
 python run_all_detections.py \
-  -i /home/koushik/Nike/Digital_Air/data/July_26 \
-  -o /home/koushik/Nike/Digital_Air/NikeDetectionProject/tmp/july26_all \
+  -i /home/koushik/DigitalAirCv/data/July_26 \
+  -o /home/koushik/DigitalAirCv/DigitalAirCvProject/tmp/july26_all \
   --pattern new \
   --generate_report
 
 # Only the extracted_further subfolder, top-level files only
 python run_all_detections.py \
-  -i /home/koushik/Nike/Digital_Air/data/July_26/extracted_further \
+  -i /home/koushik/DigitalAirCv/data/July_26/extracted_further \
   --pattern new \
   --no-recursive
 ```

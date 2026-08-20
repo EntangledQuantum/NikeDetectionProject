@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from nike_detection.geometry.synthetic_overlays import (  # noqa: E402
+from digital_air_cv.geometry.synthetic_overlays import (  # noqa: E402
     GEO_LINE_SPACING,
     SYNTHETIC_DIR,
     WHITEPAPER_DIR,

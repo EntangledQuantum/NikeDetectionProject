@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Create an isolated Nike Detection environment OUTSIDE the repo (macOS / Linux).
+# Create an isolated DigitalAirCv environment OUTSIDE the repo (macOS / Linux).
 # Usage:
 #   chmod +x scripts/setup_env.sh
 #   ./scripts/setup_env.sh
-#   ENV_DIR=$HOME/.venvs/nike-detection ./scripts/setup_env.sh
+#   ENV_DIR=$HOME/.venvs/digital-air-cv ./scripts/setup_env.sh
 
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ENV_DIR="${ENV_DIR:-$HOME/.venvs/nike-detection}"
+ENV_DIR="${ENV_DIR:-$HOME/.venvs/digital-air-cv}"
 OS="$(uname -s)"
 
-echo "==> Nike Detection — environment setup ($OS)"
+echo "==> DigitalAirCv — environment setup ($OS)"
 echo "    Project: $PROJECT_ROOT"
 echo "    Env dir: $ENV_DIR"
 
@@ -37,7 +37,7 @@ if [[ "$OS" == "Darwin" ]]; then
   fi
 elif [[ "$OS" == "Linux" ]]; then
   if command -v conda >/dev/null 2>&1; then
-    echo "==> Linux: creating conda env 'nike-detection'"
+    echo "==> Linux: creating conda env 'digital-air-cv'"
     conda create -y -p "$ENV_DIR" python=3.11 pip
     # shellcheck disable=SC1091
     source "$ENV_DIR/bin/activate" 2>/dev/null || conda activate "$ENV_DIR"
@@ -65,4 +65,4 @@ echo ""
 echo "Done. Activate and run:"
 echo "  source \"$ENV_DIR/bin/activate\""
 echo "  cd \"$PROJECT_ROOT\""
-echo "  python -m nike_detection -i data/blackStripe.tiff --only stripe_misalignment --no-vis"
+echo "  python -m digital_air_cv -i data/blackStripe.tiff --only stripe_misalignment --no-vis"

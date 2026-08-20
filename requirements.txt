@@ -1,4 +1,4 @@
-# Nike Detection Project — runtime dependencies
+# DigitalAirCv Project — runtime dependencies
 # Python 3.10–3.13. Install with: pip install -r requirements.txt
 # Pip skips lines that do not match your OS / Python version (PEP 508 markers).
 

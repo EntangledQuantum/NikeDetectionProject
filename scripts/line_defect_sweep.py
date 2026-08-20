@@ -23,11 +23,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from nike_detection.detectors.island_new.line_defect import (  # noqa: E402
+from digital_air_cv.detectors.island_new.line_defect import (  # noqa: E402
     NewPatternLineDefectDetector,
 )
-from nike_detection.testing.scoring import merge, score_sample  # noqa: E402
-from nike_detection.testing.synthetic_island import IslandBuilder  # noqa: E402
+from digital_air_cv.testing.scoring import merge, score_sample  # noqa: E402
+from digital_air_cv.testing.synthetic_island import IslandBuilder  # noqa: E402
 
 COLORS = ("key", "cyan", "magenta", "yellow")
 MARGIN = 60.0

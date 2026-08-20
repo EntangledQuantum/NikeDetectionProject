@@ -70,22 +70,22 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 # Close and reopen PowerShell, then:
 
 # 2) Create env OUTSIDE the repo (example path)
-uv venv $env:USERPROFILE\.venvs\nike-detection --python 3.12
+uv venv $env:USERPROFILE\.venvs\digital-air-cv --python 3.12
 
 # 3) Activate
-.\$env:USERPROFILE\.venvs\nike-detection\Scripts\Activate.ps1
+.\$env:USERPROFILE\.venvs\digital-air-cv\Scripts\Activate.ps1
 
 # 4) Go to the project and install deps
-cd C:\path\to\NikeDetectionProject
+cd C:\path\to\DigitalAirCvProject
 uv pip install -r requirements.txt
 ```
 
 **Option B — built-in venv (no extra tools)**
 
 ```powershell
-python -m venv $env:USERPROFILE\.venvs\nike-detection
-.\$env:USERPROFILE\.venvs\nike-detection\Scripts\Activate.ps1
-cd C:\path\to\NikeDetectionProject
+python -m venv $env:USERPROFILE\.venvs\digital-air-cv
+.\$env:USERPROFILE\.venvs\digital-air-cv\Scripts\Activate.ps1
+cd C:\path\to\DigitalAirCvProject
 python -m pip install --upgrade pip wheel
 pip install -r requirements.txt
 ```
@@ -93,7 +93,7 @@ pip install -r requirements.txt
 **Automated script (Windows):**
 
 ```powershell
-cd C:\path\to\NikeDetectionProject
+cd C:\path\to\DigitalAirCvProject
 .\scripts\setup_env.ps1
 ```
 
@@ -109,22 +109,22 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Restart the terminal, then:
 
 # 2) Create env outside the repo
-uv venv ~/.venvs/nike-detection --python python3
+uv venv ~/.venvs/digital-air-cv --python python3
 
 # 3) Activate
-source ~/.venvs/nike-detection/bin/activate
+source ~/.venvs/digital-air-cv/bin/activate
 
 # 4) Install
-cd /path/to/NikeDetectionProject
+cd /path/to/DigitalAirCvProject
 uv pip install -r requirements.txt
 ```
 
 **Option B — built-in venv**
 
 ```bash
-python3 -m venv ~/.venvs/nike-detection
-source ~/.venvs/nike-detection/bin/activate
-cd /path/to/NikeDetectionProject
+python3 -m venv ~/.venvs/digital-air-cv
+source ~/.venvs/digital-air-cv/bin/activate
+cd /path/to/DigitalAirCvProject
 python -m pip install --upgrade pip wheel
 pip install -r requirements.txt
 ```
@@ -132,7 +132,7 @@ pip install -r requirements.txt
 **Automated script (macOS / Linux):**
 
 ```bash
-cd /path/to/NikeDetectionProject
+cd /path/to/DigitalAirCvProject
 chmod +x scripts/setup_env.sh
 ./scripts/setup_env.sh
 ```
@@ -147,11 +147,11 @@ chmod +x scripts/setup_env.sh
 # 1) Install Miniconda if needed: https://docs.anaconda.com/miniconda/
 
 # 2) Create env outside the repo
-conda create -y -p ~/.venvs/nike-detection python=3.11 pip
-conda activate ~/.venvs/nike-detection
+conda create -y -p ~/.venvs/digital-air-cv python=3.11 pip
+conda activate ~/.venvs/digital-air-cv
 
 # 3) Install
-cd /path/to/NikeDetectionProject
+cd /path/to/DigitalAirCvProject
 pip install -r requirements.txt
 ```
 
@@ -159,18 +159,18 @@ pip install -r requirements.txt
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv ~/.venvs/nike-detection --python python3
-source ~/.venvs/nike-detection/bin/activate
-cd /path/to/NikeDetectionProject
+uv venv ~/.venvs/digital-air-cv --python python3
+source ~/.venvs/digital-air-cv/bin/activate
+cd /path/to/DigitalAirCvProject
 uv pip install -r requirements.txt
 ```
 
 **Option C — built-in venv**
 
 ```bash
-python3 -m venv ~/.venvs/nike-detection
-source ~/.venvs/nike-detection/bin/activate
-cd /path/to/NikeDetectionProject
+python3 -m venv ~/.venvs/digital-air-cv
+source ~/.venvs/digital-air-cv/bin/activate
+cd /path/to/DigitalAirCvProject
 python -m pip install --upgrade pip wheel
 pip install -r requirements.txt
 ```
@@ -183,7 +183,7 @@ With the virtual environment **activated** and your shell in the project folder:
 
 ```bash
 python -c "import cv2, numpy, scipy, skimage, tifffile, matplotlib; print('OK')"
-python -m nike_detection -i data/blackStripe.tiff --only stripe_misalignment --no-vis
+python -m digital_air_cv -i data/blackStripe.tiff --only stripe_misalignment --no-vis
 ```
 
 If you see `OK` and a new timestamped output folder next to the TIFF, everything is working.
@@ -202,24 +202,24 @@ pytest tests/ -q
 ## Quick Start
 
 ```bash
-# Preferred: python -m nike_detection  (2400 DPI, --pattern new by default)
+# Preferred: python -m digital_air_cv  (2400 DPI, --pattern new by default)
 
 # 1) Inspect island/stripe boxes on a full scan (no detectors)
-python -m nike_detection -i Cyan_full.tiff --regions-only
-python -m nike_detection -i scan_KCMY.tif --regions-only --workers 1
+python -m digital_air_cv -i Cyan_full.tiff --regions-only
+python -m digital_air_cv -i scan_KCMY.tif --regions-only --workers 1
 
 # 2) Measure boxes, then run enabled detectors (see detector_sets in config)
-python -m nike_detection -i Cyan_full.tiff --pattern new
+python -m digital_air_cv -i Cyan_full.tiff --pattern new
 
 # 3) Already-extracted crop
-python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
-python -m nike_detection -i CyanStripe.tiff --only stripe_misalignment -s high
+python -m digital_air_cv -i KeyIsland.tiff --pattern new --only line_defect
+python -m digital_air_cv -i CyanStripe.tiff --only stripe_misalignment -s high
 
 # 4) Clear / gray paper (islands only)
-python -m nike_detection -i ClearIsland.tiff --pattern new --clear
+python -m digital_air_cv -i ClearIsland.tiff --pattern new --clear
 
 # 5) Template extract then detect (legacy path — not the seed-free boxes)
-python -m nike_detection -i path/to/scan.tif --extract --pattern new
+python -m digital_air_cv -i path/to/scan.tif --extract --pattern new
 ```
 
 Full flag table, detector keys, and every script shim: [Algorithm.md §11](Algorithm.md#11-how-to-invoke). Algorithms: [Algorithm.md](Algorithm.md). Thresholds: [`config/detection_2400.json`](config/detection_2400.json).
@@ -342,10 +342,10 @@ See `example_exclusion_zones.json` in project root for detailed exclusion zone e
 
 ## Usage
 
-### Command-Line Options (`python -m nike_detection`)
+### Command-Line Options (`python -m digital_air_cv`)
 
 ```bash
-python -m nike_detection -i <image-or-folder> [options]
+python -m digital_air_cv -i <image-or-folder> [options]
 ```
 
 **Required:**
@@ -368,18 +368,18 @@ python -m nike_detection -i <image-or-folder> [options]
 ### Usage Examples
 
 ```bash
-python -m nike_detection -i scan.tif --extract --pattern new
-python -m nike_detection -i scan.tif --extract --pattern new --clear
-python -m nike_detection -i KeyIsland.tiff --pattern new --only line_defect
-python -m nike_detection -i CyanStripe.tiff --only void stripe_misalignment -s high
-python -m nike_detection -i Cyan_full.tiff --pattern new --regions regions.json
-python -m nike_detection -i extracted_folder --pattern new --workers 2 --no-vis
+python -m digital_air_cv -i scan.tif --extract --pattern new
+python -m digital_air_cv -i scan.tif --extract --pattern new --clear
+python -m digital_air_cv -i KeyIsland.tiff --pattern new --only line_defect
+python -m digital_air_cv -i CyanStripe.tiff --only void stripe_misalignment -s high
+python -m digital_air_cv -i Cyan_full.tiff --pattern new --regions regions.json
+python -m digital_air_cv -i extracted_folder --pattern new --workers 2 --no-vis
 
 # Check the island/stripe boxes on a folder of full scans before detecting
-python -m nike_detection -i full_scans_folder --pattern new --regions-only
+python -m digital_air_cv -i full_scans_folder --pattern new --regions-only
 
 # Measure every colour's boxes on one multi-colour sheet (KCMY, 6.7 GB)
-python -m nike_detection -i scan_KCMY.tif --config config/detection_2400.json \
+python -m digital_air_cv -i scan_KCMY.tif --config config/detection_2400.json \
     --regions-only --workers 1
 ```
 
@@ -623,19 +623,19 @@ Algorithm notes: [`Algorithm.md`](Algorithm.md).
 ## Module Reference
 
 ### Core
-- **`python -m nike_detection`**: Single CLI — detect crops, `full` TIFFs, or `--extract` a press scan
+- **`python -m digital_air_cv`**: Single CLI — detect crops, `full` TIFFs, or `--extract` a press scan
 - **`config/detection_2400.json`**: All geometry, detector sets, and sensitivity tables
-- **`nike_detection/pipeline/runner.py`**: Load once → shared `ImageContext` → parallel detectors → JSON/vis
+- **`digital_air_cv/pipeline/runner.py`**: Load once → shared `ImageContext` → parallel detectors → JSON/vis
 - **`main_defect_detection.py`**: Shim that calls `--extract`
 - **`scripts/defects_detection/run_all_detections.py`**: Shim for already-extracted crops
 - **`scripts/utility/tiff_extractor.py`**: Legacy bbox extraction (used in-process)
 - **`scripts/utility/new_pattern_tiff_extractor.py`**: New-pattern extraction (used in-process)
 
 ### Detection
-- **`nike_detection/detectors/stripe/`**: Misalignment, roughness, void, debris, overspray, surface treatment
-- **`nike_detection/detectors/island_legacy/`**: Single-band debris / overspray / line defect
-- **`nike_detection/detectors/island_new/`**: Dual-band debris / overspray / line defect
-- **`nike_detection/geometry/`**: Vertical bands, island line extractor, legacy `LineDetector`
+- **`digital_air_cv/detectors/stripe/`**: Misalignment, roughness, void, debris, overspray, surface treatment
+- **`digital_air_cv/detectors/island_legacy/`**: Single-band debris / overspray / line defect
+- **`digital_air_cv/detectors/island_new/`**: Dual-band debris / overspray / line defect
+- **`digital_air_cv/geometry/`**: Vertical bands, island line extractor, legacy `LineDetector`
 
 Algorithm notes: [`Algorithm.md`](Algorithm.md).
 

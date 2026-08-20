@@ -1,16 +1,16 @@
-# Create an isolated Nike Detection environment OUTSIDE the repo (Windows).
+# Create an isolated DigitalAirCv environment OUTSIDE the repo (Windows).
 # Usage (PowerShell):
 #   .\scripts\setup_env.ps1
-#   .\scripts\setup_env.ps1 -EnvDir "C:\venvs\nike-detection"
+#   .\scripts\setup_env.ps1 -EnvDir "C:\venvs\digital-air-cv"
 
 param(
-    [string]$EnvDir = "$env:USERPROFILE\.venvs\nike-detection",
+    [string]$EnvDir = "$env:USERPROFILE\.venvs\digital-air-cv",
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "==> Nike Detection — Windows environment setup" -ForegroundColor Cyan
+Write-Host "==> DigitalAirCv — Windows environment setup" -ForegroundColor Cyan
 Write-Host "    Project: $ProjectRoot"
 Write-Host "    Env dir: $EnvDir"
 
@@ -47,4 +47,4 @@ Write-Host ""
 Write-Host "Done. Activate and run:" -ForegroundColor Green
 Write-Host "  . `"$activate`""
 Write-Host "  cd `"$ProjectRoot`""
-Write-Host "  python -m nike_detection -i data\blackStripe.tiff --only stripe_misalignment --no-vis"
+Write-Host "  python -m digital_air_cv -i data\blackStripe.tiff --only stripe_misalignment --no-vis"

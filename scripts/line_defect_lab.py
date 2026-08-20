@@ -21,7 +21,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from nike_detection.detectors.island_new.line_defect import (  # noqa: E402
+from digital_air_cv.detectors.island_new.line_defect import (  # noqa: E402
     NewPatternLineDefectDetector,
 )
 

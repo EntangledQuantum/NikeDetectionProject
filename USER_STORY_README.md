@@ -100,8 +100,8 @@ python run_all_detections.py -i /path/extracted_regions --pattern new -o /path/o
 
 # Recursive parent folder that contains stripe + island crops (skips full-scan color TIFFs)
 python run_all_detections.py \
-  -i /home/koushik/Nike/Digital_Air/data/July_26 \
-  -o /home/koushik/Nike/Digital_Air/NikeDetectionProject/tmp/july26_all \
+  -i /home/koushik/DigitalAirCv/data/July_26 \
+  -o /home/koushik/DigitalAirCv/DigitalAirCvProject/tmp/july26_all \
   --pattern new
 ```
 

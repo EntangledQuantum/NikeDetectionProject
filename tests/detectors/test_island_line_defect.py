@@ -12,10 +12,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from nike_detection.detectors.island_new.line_defect import NewPatternLineDefectDetector
-from nike_detection.geometry.ink_density import SCALE, measure_ink_field
-from nike_detection.testing.scoring import score_sample
-from nike_detection.testing.synthetic_island import (
+from digital_air_cv.detectors.island_new.line_defect import NewPatternLineDefectDetector
+from digital_air_cv.geometry.ink_density import SCALE, measure_ink_field
+from digital_air_cv.testing.scoring import score_sample
+from digital_air_cv.testing.synthetic_island import (
     INK_ABSORBANCE,
     IslandBuilder,
     healthy,

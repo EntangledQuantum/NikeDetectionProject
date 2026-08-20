@@ -7,15 +7,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from nike_detection.config.loader import load_config
-from nike_detection.geometry.full_region_detector import detect_full_regions
-from nike_detection.geometry.region_metrics import (
+from digital_air_cv.config.loader import load_config
+from digital_air_cv.geometry.full_region_detector import detect_full_regions
+from digital_air_cv.geometry.region_metrics import (
     INWARD_FAIL_PX,
     boxes_from_debug,
     max_inward,
     score_region,
 )
-from nike_detection.geometry.synthetic_overlays import (
+from digital_air_cv.geometry.synthetic_overlays import (
     GEO_LINE_SPACING,
     SYNTHETIC_DIR,
     GeometricLayout,
@@ -23,7 +23,7 @@ from nike_detection.geometry.synthetic_overlays import (
     covering_xyxy,
     render_geometric_sheet,
 )
-from nike_detection.tools.eval_regions import geometric_config, score_debug_against_gt
+from digital_air_cv.tools.eval_regions import geometric_config, score_debug_against_gt
 
 
 def _detect(layout: GeometricLayout):
@@ -134,7 +134,7 @@ def test_metrics_inward_and_outward():
     clipped = (20, 10, 100, 100)
     wide = (0, 10, 100, 100)
     assert max_inward({"left": 10, "top": 0, "right": 0, "bottom": 0}) == 10
-    from nike_detection.geometry.region_metrics import inward_offsets
+    from digital_air_cv.geometry.region_metrics import inward_offsets
     assert inward_offsets(clipped, gt)["left"] == 10
     assert inward_offsets(wide, gt)["left"] == -10
 
@@ -145,7 +145,7 @@ def test_unmodified_key_full_does_not_regress():
     tiff = Path(SYNTHETIC_DIR).parent / "key_full.tif"
     if not gt_path.exists() or not tiff.exists():
         pytest.skip("WhitePaper TIFF / GT not present")
-    from nike_detection.geometry.synthetic_overlays import load_gt, open_memmap_scan
+    from digital_air_cv.geometry.synthetic_overlays import load_gt, open_memmap_scan
     gt = load_gt(str(gt_path))
     scan = open_memmap_scan(str(tiff))
     cfg = load_config()

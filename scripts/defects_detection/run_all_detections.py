@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shim around ``python -m nike_detection`` for already-extracted crops."""
+"""Shim around ``python -m digital_air_cv`` for already-extracted crops."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from nike_detection.cli import main as package_main
-from nike_detection.pipeline.registry import ALL_DETECTOR_KEYS
+from digital_air_cv.cli import main as package_main
+from digital_air_cv.pipeline.registry import ALL_DETECTOR_KEYS
 
 
 def main() -> int:
