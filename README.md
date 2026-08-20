@@ -34,14 +34,170 @@ This system automatically detects critical printing defects in high-resolution s
 
 ## Installation
 
+You need **Python 3.10, 3.11, 3.12, or 3.13** and a **virtual environment kept outside this project folder** (so large TIFF outputs and git do not mix with your Python packages).
+
+`requirements.txt` uses **automatic OS detection**: when you run `pip install -r requirements.txt`, pip only installs the lines that match your operating system and Python version (for example, headless OpenCV on Linux, regular OpenCV on Windows and macOS).
+
+| OS | Recommended tool | Why |
+|---|---|---|
+| **Windows** | [uv](https://docs.astral.sh/uv/) or built-in `venv` | Fast installs, works well with OpenCV wheels |
+| **macOS** | [uv](https://docs.astral.sh/uv/) | Fastest setup; one command creates the env and installs deps |
+| **Linux** | [Conda](https://docs.conda.io/) (or uv / `venv`) | Conda handles system libraries on many distros; uv is a lighter alternative |
+
+### Step 0 — Get Python
+
+1. Download Python from [python.org/downloads](https://www.python.org/downloads/) (pick **3.11** or **3.12** if you can).
+2. During install on Windows, check **“Add python.exe to PATH”**.
+3. Open a **new** terminal and confirm:
+
 ```bash
-# Install dependencies
+python --version
+# or on macOS/Linux:
+python3 --version
+```
+
+You should see `Python 3.10` or newer.
+
+---
+
+### Windows
+
+**Option A — uv (recommended)**
+
+```powershell
+# 1) Install uv (one time)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+# Close and reopen PowerShell, then:
+
+# 2) Create env OUTSIDE the repo (example path)
+uv venv $env:USERPROFILE\.venvs\nike-detection --python 3.12
+
+# 3) Activate
+.\$env:USERPROFILE\.venvs\nike-detection\Scripts\Activate.ps1
+
+# 4) Go to the project and install deps
+cd C:\path\to\NikeDetectionProject
+uv pip install -r requirements.txt
+```
+
+**Option B — built-in venv (no extra tools)**
+
+```powershell
+python -m venv $env:USERPROFILE\.venvs\nike-detection
+.\$env:USERPROFILE\.venvs\nike-detection\Scripts\Activate.ps1
+cd C:\path\to\NikeDetectionProject
+python -m pip install --upgrade pip wheel
 pip install -r requirements.txt
 ```
 
-**Requirements:**
-- Python 3.8 or higher
-- OpenCV, NumPy, scikit-image, matplotlib, tifffile (see `requirements.txt`)
+**Automated script (Windows):**
+
+```powershell
+cd C:\path\to\NikeDetectionProject
+.\scripts\setup_env.ps1
+```
+
+---
+
+### macOS
+
+**Option A — uv (recommended)**
+
+```bash
+# 1) Install uv (one time)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Restart the terminal, then:
+
+# 2) Create env outside the repo
+uv venv ~/.venvs/nike-detection --python python3
+
+# 3) Activate
+source ~/.venvs/nike-detection/bin/activate
+
+# 4) Install
+cd /path/to/NikeDetectionProject
+uv pip install -r requirements.txt
+```
+
+**Option B — built-in venv**
+
+```bash
+python3 -m venv ~/.venvs/nike-detection
+source ~/.venvs/nike-detection/bin/activate
+cd /path/to/NikeDetectionProject
+python -m pip install --upgrade pip wheel
+pip install -r requirements.txt
+```
+
+**Automated script (macOS / Linux):**
+
+```bash
+cd /path/to/NikeDetectionProject
+chmod +x scripts/setup_env.sh
+./scripts/setup_env.sh
+```
+
+---
+
+### Linux
+
+**Option A — Conda (recommended on Linux)**
+
+```bash
+# 1) Install Miniconda if needed: https://docs.anaconda.com/miniconda/
+
+# 2) Create env outside the repo
+conda create -y -p ~/.venvs/nike-detection python=3.11 pip
+conda activate ~/.venvs/nike-detection
+
+# 3) Install
+cd /path/to/NikeDetectionProject
+pip install -r requirements.txt
+```
+
+**Option B — uv**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv ~/.venvs/nike-detection --python python3
+source ~/.venvs/nike-detection/bin/activate
+cd /path/to/NikeDetectionProject
+uv pip install -r requirements.txt
+```
+
+**Option C — built-in venv**
+
+```bash
+python3 -m venv ~/.venvs/nike-detection
+source ~/.venvs/nike-detection/bin/activate
+cd /path/to/NikeDetectionProject
+python -m pip install --upgrade pip wheel
+pip install -r requirements.txt
+```
+
+---
+
+### Verify the install
+
+With the virtual environment **activated** and your shell in the project folder:
+
+```bash
+python -c "import cv2, numpy, scipy, skimage, tifffile, matplotlib; print('OK')"
+python -m nike_detection -i data/blackStripe.tiff --only stripe_misalignment --no-vis
+```
+
+If you see `OK` and a new timestamped output folder next to the TIFF, everything is working.
+
+**Optional — run tests:**
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -q
+```
+
+**Requirements (from `requirements.txt`):**
+- Python 3.10+
+- NumPy, SciPy, OpenCV, scikit-image, matplotlib, tifffile, Pillow, tqdm
 
 ## Quick Start
 
@@ -402,7 +558,7 @@ With `--clear`, island detectors derive ink/debris/overspray thresholds from the
 → Ensure your input file has `.tif` or `.tiff` extension
 
 **"No module named cv2"**
-→ Install dependencies: `pip install -r requirements.txt`
+→ Activate your virtual environment, then run `pip install -r requirements.txt` (see [Installation](#installation))
 
 **"'sub_images' list is empty"**
 → Check your JSON configuration file has valid region definitions

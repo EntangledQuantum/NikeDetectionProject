@@ -1,0 +1,3 @@
+# Developer / test dependencies (install after requirements.txt)
+-r requirements.txt
+pytest>=8.0.0,<10.0.0
