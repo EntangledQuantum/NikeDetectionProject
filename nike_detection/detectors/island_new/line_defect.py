@@ -1,94 +1,99 @@
 """
 New-Pattern (Dual-Band) Line Defect Detection
 
-Detects print defects on the changed island pattern, where each image
-contains two horizontal-print bands separated by a gap, each flanked by
-vertical boundary lines (4 vertical lines total):
+Scores the three island line defects on the *normalized ink density* map from
+:mod:`nike_detection.geometry.ink_density` rather than on a thresholded
+grayscale image. Everything the detector looks at is therefore dimensionless
+and self-calibrated against the region it came from, which is what makes one
+parameter set work for Key, Cyan, Magenta and Yellow alike.
 
-    [V prints V]   gap   [V prints V]
+Two ratios carry all the evidence (see
+:mod:`nike_detection.geometry.line_profile`):
+
+    coverage(x) = ink mass / healthy mass       ~1 healthy, ~0 no ink
+    density(x)  = core density / healthy core   ~1 healthy, low = pale + spread
+
+and they separate the defects cleanly, because a missing nozzle and a smear
+differ in *kind*, not merely in degree:
+
+    ==================  ==========  =========  ============================
+    condition           coverage    density    verdict
+    ==================  ==========  =========  ============================
+    healthy print       ~1.0        ~1.0       -
+    nozzle not firing   ~0.0        ~0.0       missing_line   (red)
+    ink fired, smeared  ~0.5-1.0    low        misaligned_line (yellow)
+    thin but crisp      lower       ~1.0       - (not a defect)
+    ==================  ==========  =========  ============================
+
+That last row is the one the previous implementation could not express. It
+keyed haze off per-line ink *thickness* in pixels, so on Cyan and Magenta --
+where stipple makes thickness fluctuate -- normal print constantly tripped the
+test, while on Yellow almost nothing was detected at all because the grayscale
+ink threshold never matched yellow's 21-level luminance contrast. Coverage and
+density are immune to both effects.
 
 Defect types produced:
-  - ``missing_line``    (red)    a gap in a print line = missing nozzles.
-                                 At 2400 DPI a single missing-jet gap is
-                                 ~90 px wide; the threshold scales with the
-                                 measured line spacing. ``missing_pixels``
-                                 counts ink-free columns in the gap.
-  - ``misaligned_line`` (yellow) jets fired but the print is hazy/smudged
-                                 (spread or split droplets), not a true gap.
-  - ``stitch_error``    (blue)   jagged zig-zag on the 1-2 lines at a
-                                 vertical-head stitch. 3 heads → up to 2
-                                 zones; 4 heads → up to 3. Not scored as
-                                 missing just because the straight fit fails.
-  - ``high_density_region``      arbitrary-shape regions where the
-                                 missing-nozzle density is much higher than
-                                 the rest of the image.
+  - ``missing_line``    (red)    coverage collapses over a run longer than a
+                                 missing-jet gap (~90 px at 2400 DPI, scaled
+                                 by the measured line spacing).
+  - ``misaligned_line`` (yellow) ink present but pale/diffuse; carries a 0-1
+                                 ``severity`` so a faint haze and a heavy
+                                 smear are distinguishable.
+  - ``stitch_error``    (blue)   short-range zig-zag on the 1-2 lines where
+                                 two print heads join. Capped at
+                                 ``num_heads - 1`` zones by construction and
+                                 reported with a continuous ``severity``.
+  - ``high_density_region``      arbitrary-shape clusters of missing ink.
 
-Pipeline:
-  1. ``VerticalBandDetector`` finds the 4 vertical boundary lines and the two
-     print bands (morphology-based, tolerant of noisy lines).
-  2. ``IslandLineExtractor`` extracts EVERY horizontal line per band: global
-     slope via shear search, per-line slope/intercept, and a local centroid
-     trajectory so the ink corridor survives stitch/roll. Fully missing
-     lines are inserted from the spacing so they are still evaluated.
-  3. Missing nozzles are ink-free runs along that local corridor, longer
-     than a spacing-scaled ~90 px gap after a 1-D close that only bridges
-     healthy stipple.
-  4. Stitch errors are the strongest jagged-line clusters (high-frequency
-     deviation from the straight fit), capped at ``num_heads - 1`` zones
-     with at most two lines each.
-  5. Hazy/smudged segments (split or vertically spread ink) are yellow.
-  6. Missing pixels feed a density map for high-density regions.
-
-A "detected lines" debug image (vertical lines magenta, horizontal line
-trajectories green/blue, inserted lines red) is always produced and saved via
-``save_debug_images`` so the line-extraction precursor can be verified.
+Only five thresholds drive the three detectors, replacing the thirteen the
+previous version needed; each is a ratio, so none of them has to be retuned
+for a different ink, exposure or scan resolution.
 """
 
 import cv2
 import numpy as np
 
 from nike_detection.detectors.base_legacy import BaseDetector
+from nike_detection.geometry.ink_density import as_pseudo_gray, measure_ink_field
+from nike_detection.geometry.line_profile import BandProfiler, column_runs
 from nike_detection.geometry.vertical_band_detector import VerticalBandDetector
-from nike_detection.geometry.island_line_extractor import IslandLineExtractor
 from nike_detection.io.image_saver import save_image
 
-
-def _runs_of(mask, min_len=1):
-    """Contiguous True runs of a 1D bool mask as (start, end_inclusive)."""
-    idx = np.flatnonzero(mask)
-    if idx.size == 0:
-        return []
-    breaks = np.flatnonzero(np.diff(idx) > 1)
-    starts = np.concatenate(([idx[0]], idx[breaks + 1]))
-    ends = np.concatenate((idx[breaks], [idx[-1]]))
-    return [(int(s), int(e)) for s, e in zip(starts, ends) if e - s + 1 >= min_len]
+# Severity bands shared by haze and stitch reporting.
+_SEVERITY_EDGES = ((0.35, "mild"), (0.65, "moderate"))
 
 
-def _close_1d(mask, length):
-    """1D binary closing (fill False gaps up to `length`) via OpenCV."""
+def _severity_label(value):
+    for edge, name in _SEVERITY_EDGES:
+        if value < edge:
+            return name
+    return "severe"
+
+
+def _close(mask, length):
+    """1-D binary closing so healthy stipple does not fragment a run."""
     if length < 1:
         return mask.copy()
     arr = mask.astype(np.uint8).reshape(1, -1)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(length), 1))
-    closed = cv2.morphologyEx(arr, cv2.MORPH_CLOSE, kernel)
-    return closed.reshape(-1).astype(bool)
+    return cv2.morphologyEx(arr, cv2.MORPH_CLOSE, kernel).reshape(-1).astype(bool)
 
 
 class NewPatternLineDefectDetector(BaseDetector):
-    """Detect missing-nozzle / misalignment defects on a new-pattern island."""
+    """Detect missing-nozzle / haze / stitch defects on a new-pattern island."""
 
     def __init__(self, sensitivity='medium', debug=False, clear=False):
         """Initialize the detector.
 
         Args:
-            sensitivity: One of {'low', 'medium', 'high'}.
-            debug: If True, print stage information (the lines debug image is
-                always produced regardless).
-            clear: If True, adapt to the clear scan material (gray
-                background, fainter ink, lower SNR): all binarization
-                thresholds are derived from the measured background level and
-                the input is despeckled. Defect types, spacing-relative
-                decision thresholds, and reporting are unchanged.
+            sensitivity: One of {'low', 'medium', 'high'}. Shifts the two
+                decision levels and how long a defect must persist; it does
+                not change what is measured.
+            debug: If True, print stage information.
+            clear: Clear scan material (gray background, fainter ink). Only
+                band geometry needs telling: the ink field already calibrates
+                against whatever the measured background is, so the defect
+                thresholds are the same ones used on white paper.
         """
         super().__init__()
         self.sensitivity = sensitivity
@@ -96,49 +101,46 @@ class NewPatternLineDefectDetector(BaseDetector):
         self.clear = clear
 
         self.band_detector = VerticalBandDetector(clear=clear)
-        self.extractor = IslandLineExtractor(clear=clear)
+        self.profiler = BandProfiler()
 
-        # Gap threshold is a fraction of the scaled ~90 px missing-jet width.
+        # ---- the five decision thresholds -------------------------------
         if sensitivity == 'high':
+            self.missing_level = 0.28
+            self.haze_level = 0.68
             self.min_gap_fraction = 0.70
-            self.split_min_fraction = 0.40
-            self.dev_min_fraction = 0.40
+            self.haze_min_fraction = 0.45
+            self.stitch_wave = 0.024
         elif sensitivity == 'low':
+            self.missing_level = 0.12
+            self.haze_level = 0.44
             self.min_gap_fraction = 1.10
-            self.split_min_fraction = 0.90
-            self.dev_min_fraction = 1.00
+            self.haze_min_fraction = 0.90
+            self.stitch_wave = 0.040
         else:  # medium
+            self.missing_level = 0.20
+            self.haze_level = 0.55
             self.min_gap_fraction = 0.85
-            self.split_min_fraction = 0.55
-            self.dev_min_fraction = 0.60
+            self.haze_min_fraction = 0.60
+            self.stitch_wave = 0.030
 
-        self.split_min_hollow = 3
-        self.dev_abs_floor = 3.0
-        self.dev_thickness_factor = 0.6
-        self.hazy_thickness_factor = 1.7
-        self.hazy_weak_factor = 0.55
-        self.edge_ignore_fraction = 0.02
+        # ---- geometry / reporting (not defect sensitivity) --------------
         self.expected_gap_px = 90.0
         self.ideal_spacing_px = 100.0
         self.num_heads = 3
         self.head_height = 0
-        self.stitch_rms_fraction = 0.05
-        self.stitch_score_ratio = 2.2
-        self.stitch_max_lines_per_zone = 2
-
-        # Density-map parameters
+        self.edge_ignore_fraction = 0.02
         self.density_downsample = 16
         self.density_rel_threshold = 0.40
         self.density_min_defects = 8
 
         self._debug_lines_image = None
+        self._last_field = None
 
-        print(f"NewPattern Line Defect Detector ({sensitivity})"
-              f"{' [clear material]' if clear else ''}:")
-        print(f"  min gap: {self.min_gap_fraction:.2f} x expected ~{self.expected_gap_px:.0f}px jet")
-        print(f"  split/hazy persistence: {self.split_min_fraction:.2f} x spacing")
-        print(f"  stitch: up to {max(1, int(self.num_heads) - 1)} zone(s), "
-              f"{self.stitch_max_lines_per_zone} lines each")
+        if debug:
+            print(f"NewPattern Line Defect Detector ({sensitivity})"
+                  f"{' [clear material]' if clear else ''}: "
+                  f"missing<{self.missing_level:.2f} haze<{self.haze_level:.2f} "
+                  f"stitch>{self.stitch_wave:.3f}")
 
     # ------------------------------------------------------------------
     # Main entry
@@ -148,370 +150,319 @@ class NewPatternLineDefectDetector(BaseDetector):
         """Run line-defect detection.
 
         Args:
-            image: Input island image (BGR or grayscale).
+            image: Island image (BGR preferred; grayscale still works but
+                loses the per-ink channel separation).
             image_path: Accepted for interface compatibility (unused).
 
         Returns:
             tuple: (visualization_bgr, defects)
         """
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image
+        field = measure_ink_field(image)
+        # Band geometry runs on density too, not grayscale, so the vertical
+        # boundary lines of a Yellow island are as visible as a Key one.
+        bands = self.band_detector.detect(as_pseudo_gray(field), self.debug)
 
-        bands = self.band_detector.detect(gray, self.debug)
-
-        all_missing = []
-        all_misaligned = []
-        all_stitch = []
-        band_summaries = []
-        extractions = []  # (band, result) for debug drawing
-
+        profiles = []
         for band in bands:
-            x0, x1 = band['x0'], band['x1']
-            if x1 - x0 < 20:
-                continue
+            result = self.profiler.profile(field, band['x0'], band['x1'], self.debug)
+            if result is not None:
+                profiles.append((band, result))
 
-            result = self.extractor.extract(gray[:, x0:x1 + 1], self.debug)
-            if result is None:
-                continue
-            extractions.append((band, result))
+        return self.evaluate(image, profiles, field)
 
-            missing, misaligned, stitch = self._evaluate_band(band, result)
-            all_missing.extend(missing)
-            all_misaligned.extend(misaligned)
-            all_stitch.extend(stitch)
+    def evaluate(self, image, profiles, field):
+        """Score pre-built band profiles and render the overlay.
 
-            band_summaries.append({
+        Split out from :meth:`detect` so the pipeline can reuse geometry that
+        was already built once for the region.
+        """
+        self._last_field = field
+        missing, hazy, stitch, summaries = [], [], [], []
+
+        for band, profile in profiles:
+            band_missing, band_hazy, band_stitch = self._evaluate_band(band, profile)
+            missing.extend(band_missing)
+            hazy.extend(band_hazy)
+            stitch.extend(band_stitch)
+            summaries.append({
                 'index': band['index'],
-                'x0': x0, 'x1': x1,
-                'vline_xs': band['vline_xs'],
-                'line_count': len(result['lines']),
-                'inserted_line_count': sum(1 for l in result['lines'] if l['inserted']),
-                'slope': result['slope'],
-                'spacing': result['spacing'],
-                'missing_defects': len(missing),
-                'missing_pixels': int(sum(d['missing_pixels'] for d in missing)),
-                'misaligned_defects': len(misaligned),
-                'stitch_defects': len(stitch),
+                'x0': band['x0'], 'x1': band['x1'],
+                'vline_xs': band.get('vline_xs', []),
+                'line_count': profile.n_lines,
+                'inserted_line_count': int(profile.inserted.sum()),
+                'slope': profile.slope,
+                'spacing': profile.spacing,
+                'base_mass': round(profile.base_mass, 3),
+                'base_peak': round(profile.base_peak, 3),
+                'missing_defects': len(band_missing),
+                'missing_pixels': int(sum(d['missing_pixels'] for d in band_missing)),
+                'misaligned_defects': len(band_hazy),
+                'stitch_defects': len(band_stitch),
             })
 
-        spacing = float(np.median([b['spacing'] for b in band_summaries])) \
-            if band_summaries else 96.0
-
-        density_regions = self._find_density_regions(gray.shape, all_missing,
-                                                     spacing)
+        spacing = float(np.median([s['spacing'] for s in summaries])) if summaries else 96.0
+        shape = image.shape[:2]
+        regions = self._find_density_regions(shape, missing, spacing)
 
         visualization = self._create_visualization(
-            image, all_missing, all_misaligned, density_regions, spacing,
-            stitch=all_stitch)
-        self._debug_lines_image = self._create_lines_debug(
-            image, extractions)
+            image, missing, hazy, regions, spacing, stitch)
+        self._debug_lines_image = self._create_lines_debug(image, profiles)
 
-        defects = self._build_defects(band_summaries, all_missing,
-                                      all_misaligned, density_regions,
-                                      stitch=all_stitch)
+        defects = self._build_defects(summaries, missing, hazy, regions, stitch, field)
 
         if self.debug:
-            print(f"NewPatternLineDefect: {len(all_missing)} missing, "
-                  f"{len(all_misaligned)} hazy, {len(all_stitch)} stitch, "
-                  f"{len(density_regions)} high-density regions")
-
+            print(f"NewPatternLineDefect: {len(missing)} missing, {len(hazy)} hazy, "
+                  f"{len(stitch)} stitch, {len(regions)} density regions")
         return visualization, defects
 
     # ------------------------------------------------------------------
-    # Per-band defect evaluation
+    # Per-band evaluation
     # ------------------------------------------------------------------
 
-    def _expected_gap(self, spacing):
-        """Missing-jet width at this image's scale (~90 px at 2400 DPI)."""
-        ideal = max(1.0, float(self.ideal_spacing_px or 100.0))
-        return float(self.expected_gap_px) * (float(spacing) / ideal)
-
-    def _evaluate_band(self, band, result):
-        """Derive missing / hazy / stitch defects from a band's line statistics."""
+    def _evaluate_band(self, band, profile):
+        """Derive missing / hazy / stitch defects from one band's profile."""
+        spacing = profile.spacing or 96.0
         x0 = band['x0']
-        spacing = result['spacing'] or 96.0
-        lines = result['lines']
-        expected = self._expected_gap(spacing)
-        min_gap = max(8, int(round(self.min_gap_fraction * expected)))
-        split_min = max(8, int(round(self.split_min_fraction * spacing)))
-        hazy_min = max(8, int(round(self.split_min_fraction * spacing)))
+        width = profile.width
 
-        close_len = self._measure_stipple_close_len(lines, min_gap, expected)
-        stitch_idx = self._select_stitch_lines(lines, spacing)
+        expected_gap = self.expected_gap_px * spacing / max(1.0, self.ideal_spacing_px)
+        min_gap = max(6, int(round(self.min_gap_fraction * expected_gap)))
+        min_haze = max(6, int(round(self.haze_min_fraction * spacing)))
+        # Bridge only the healthy stipple, never a real jet gap.
+        bridge = max(3, int(round(0.25 * expected_gap)))
+        edge = max(2, int(round(self.edge_ignore_fraction * width)))
 
-        missing, misaligned, stitch = [], [], []
-        for line_idx, line in enumerate(lines):
-            width = line['ink_cols'].shape[0]
-            xs = np.arange(width)
-            y_true = IslandLineExtractor.line_y(result, line, xs)
-            edge = max(2, int(round(self.edge_ignore_fraction * width)))
+        stitch_lines = self._select_stitch(profile)
+        xs = np.arange(width)
 
-            ink_closed = _close_1d(line['ink_cols'], close_len)
-            is_stitch = line_idx in stitch_idx
-            ink_frac = float(line['ink_cols'].mean())
-            # First/last rows in a crop are often clipped lines, not missing jets.
-            clipped_edge = (
-                line_idx in (0, len(lines) - 1) and ink_frac < 0.70
-            )
-            if not is_stitch and not clipped_edge:
-                for s, e in _runs_of(~ink_closed, min_len=min_gap):
-                    s_c = max(s, edge)
-                    e_c = min(e, width - 1 - edge)
-                    if e_c - s_c + 1 < min_gap:
-                        continue
-                    raw_missing = int((~line['ink_cols'][s_c:e_c + 1]).sum())
-                    mid = (s_c + e_c) // 2
-                    yc = int(y_true[mid])
-                    missing.append({
-                        'type': 'missing_line',
-                        'band': band['index'],
-                        'line_index': line_idx,
-                        'start_x': int(s_c + x0),
-                        'end_x': int(e_c + x0),
-                        'y': yc,
-                        'location': (int(mid + x0), yc),
-                        'size': int(e_c - s_c + 1),
-                        'missing_pixels': raw_missing,
-                        'whole_line': bool(line['inserted']),
-                    })
+        missing, hazy, stitch = [], [], []
+        for line in range(profile.n_lines):
+            coverage = profile.coverage[line]
+            density = profile.density[line]
+            true_y = profile.true_y(line, xs)
 
-            if line['inserted']:
-                continue
-
-            if line_idx in stitch_idx:
+            if line in stitch_lines:
+                severity, waviness = stitch_lines[line]
                 stitch.append(self._stitch_record(
-                    band, line_idx, line, y_true, x0, width, spacing))
+                    band, line, profile, true_y, severity, waviness))
+
+            # A stitch line is still scored for ink defects. The corridor is
+            # built around each line's measured trajectory rather than a
+            # straight fit, so printed zig-zag stays inside the mask and a
+            # join no longer hides a real gap or smear sitting on it.
+
+            # ---- missing nozzles: ink mass collapses --------------------
+            gone = _close(coverage < self.missing_level, bridge)
+            for start, end in column_runs(gone, min_len=min_gap):
+                start, end = max(start, edge), min(end, width - 1 - edge)
+                if end - start + 1 < min_gap:
+                    continue
+                raw = int((coverage[start:end + 1] < self.missing_level).sum())
+                mid = (start + end) // 2
+                missing.append({
+                    'type': 'missing_line',
+                    'band': band['index'],
+                    'line_index': line,
+                    'start_x': int(start + x0),
+                    'end_x': int(end + x0),
+                    'y': int(true_y[mid]),
+                    'location': (int(mid + x0), int(true_y[mid])),
+                    'size': int(end - start + 1),
+                    'missing_pixels': raw,
+                    'whole_line': bool(profile.inserted[line]),
+                })
+
+            if profile.inserted[line]:
                 continue
 
-            # ---- Hazy / smudged (yellow): ink is present but split or spread
-            split_mask = (line['n_runs'] >= 2) & \
-                         (line['hollow'] >= self.split_min_hollow)
-            split_mask = _close_1d(split_mask, max(5, close_len))
-            split_runs = _runs_of(split_mask, min_len=split_min)
+            # ---- haze: ink landed, but pale and spread ------------------
+            smeared = _close(
+                (density < self.haze_level) & (coverage >= self.missing_level),
+                bridge)
+            for start, end in column_runs(smeared, min_len=min_haze):
+                segment = density[start:end + 1]
+                severity = float(np.clip(1.0 - segment.mean() / self.haze_level, 0.0, 1.0))
+                mid = (start + end) // 2
+                hazy.append({
+                    'type': 'misaligned_line',
+                    'kind': 'hazy',
+                    'band': band['index'],
+                    'line_index': line,
+                    'start_x': int(start + x0),
+                    'end_x': int(end + x0),
+                    'y': int(true_y[mid]),
+                    'location': (int(mid + x0), int(true_y[mid])),
+                    'size': int(end - start + 1),
+                    'severity': round(severity, 3),
+                    'grade': _severity_label(severity),
+                    'mean_density': round(float(segment.mean()), 3),
+                })
 
-            med_thick = max(1.0, float(line['thickness'] or 1.0))
-            extent = line.get('extent', line['ink_count'])
-            thick_smear = line['ink_cols'] & (
-                line['ink_count'] >= self.hazy_thickness_factor * med_thick)
-            # Weak/faint ink is only meaningful when a healthy line is several
-            # pixels thick (2400 DPI). On downscaled snippets thickness is ~2
-            # and single-pixel stipple would flood yellow.
-            if med_thick >= 4.0:
-                weak = line['ink_cols'] & (
-                    line['ink_count'] <= self.hazy_weak_factor * med_thick)
-            else:
-                weak = np.zeros_like(line['ink_cols'])
-            spread = line['ink_cols'] & (
-                extent >= max(int(med_thick) + 3, int(np.ceil(2.2 * med_thick))))
-            hazy_mask = _close_1d(thick_smear | weak | spread, max(5, close_len))
-            hazy_runs = _runs_of(hazy_mask, min_len=hazy_min)
+        return missing, hazy, stitch
 
-            for kind, runs in (('split', split_runs), ('hazy', hazy_runs)):
-                for s, e in runs:
-                    yc = int(y_true[(s + e) // 2])
-                    misaligned.append({
-                        'type': 'misaligned_line',
-                        'kind': kind,
-                        'band': band['index'],
-                        'line_index': line_idx,
-                        'start_x': int(s + x0),
-                        'end_x': int(e + x0),
-                        'y': yc,
-                        'location': (int((s + e) // 2 + x0), yc),
-                        'size': int(e - s + 1),
-                    })
-
-        misaligned = self._merge_overlaps(misaligned)
-        return missing, misaligned, stitch
-
-    def _stitch_record(self, band, line_idx, line, y_true, x0, width, spacing):
-        """One jagged line at a vertical-head stitch."""
-        yc = int(np.median(y_true))
+    def _stitch_record(self, band, line, profile, true_y, severity, waviness):
+        width = profile.width
         return {
             'type': 'stitch_error',
             'band': band['index'],
-            'line_index': line_idx,
-            'start_x': int(x0),
-            'end_x': int(x0 + width - 1),
-            'y': yc,
-            'location': (int(x0 + width // 2), yc),
+            'line_index': line,
+            'start_x': int(band['x0']),
+            'end_x': int(band['x0'] + width - 1),
+            'y': int(np.median(true_y)),
+            'location': (int(band['x0'] + width // 2), int(np.median(true_y))),
             'size': int(width),
-            'jagged_rms': float(line.get('jagged_rms', 0.0)),
-            'jagged_hf': float(line.get('jagged_hf', 0.0)),
-            'spacing': float(spacing),
+            'waviness': round(float(waviness), 4),
+            'amplitude_px': round(float(waviness * profile.spacing), 2),
+            'severity': round(float(severity), 3),
+            'grade': _severity_label(severity),
+            'spacing': round(float(profile.spacing), 2),
         }
 
-    def _select_stitch_lines(self, lines, spacing):
-        """Pick up to (num_heads-1) clusters of 1-2 jagged lines."""
-        if not lines:
-            return set()
-        scores = np.array([
-            max(float(line.get('jagged_rms', 0.0)), float(line.get('jagged_hf', 0.0)))
-            if not line.get('inserted') else 0.0
-            for line in lines
-        ], dtype=np.float64)
-        positive = scores[scores > 0]
-        if positive.size < 4:
-            return set()
-        med = float(np.median(positive))
-        mad = float(np.median(np.abs(positive - med))) + 1e-6
-        abs_thr = max(0.6, float(self.stitch_rms_fraction) * spacing)
-        rel_thr = med + max(2.0 * 1.4826 * mad, self.stitch_score_ratio * med)
-        thr = max(abs_thr, rel_thr)
+    def _waviness(self, profile):
+        """Short-range trajectory wander per line, in units of line spacing.
 
-        flags = scores >= thr
-        if not flags.any():
-            return set()
-
-        clusters = []
-        i = 0
-        n = len(lines)
-        max_lines = max(1, int(self.stitch_max_lines_per_zone))
-        while i < n:
-            if flags[i]:
-                j = i
-                while j + 1 < n and (
-                    flags[j + 1]
-                    or (j - i + 1 < max_lines and scores[j + 1] >= 0.65 * thr)
-                ):
-                    j += 1
-                if (j - i + 1) <= max_lines + 1:
-                    clusters.append((i, j, float(scores[i:j + 1].max())))
-                i = j + 1
-            else:
-                i += 1
-
-        n_expect = max(1, int(self.num_heads) - 1)
-        clusters.sort(key=lambda item: -item[2])
-        chosen = set()
-        for start, end, _score in clusters[:n_expect]:
-            order = sorted(range(start, end + 1), key=lambda k: -scores[k])[:max_lines]
-            chosen.update(order)
-            # A stitch zone is typically two adjacent lines; the second may be
-            # hazy/low-ink rather than the peak-jagged one.
-            if len(order) < max_lines:
-                seed = order[0]
-                neighbors = [nb for nb in (seed - 1, seed + 1)
-                             if 0 <= nb < n and nb not in chosen
-                             and not lines[nb].get('inserted')
-                             and float(lines[nb]['ink_cols'].mean()) < 0.80]
-                neighbors.sort(key=lambda nb: -scores[nb])
-                for nb in neighbors[:max_lines - len(order)]:
-                    chosen.add(nb)
-        return chosen
-
-    @staticmethod
-    def _measure_stipple_close_len(lines, min_gap, expected=None):
-        """Measured 1-D closing length that bridges the healthy stipple.
-
-        Collects the ink-free run lengths INSIDE each line's printed extent
-        and returns ~3x their 90th percentile, capped well below the expected
-        missing-jet width so real ~90 px gaps are never closed.
+        Only columns with healthy ink contribute. Haze spreads a line's ink
+        sideways and drags its centroid around without the printed core
+        actually moving, so measuring wander across smeared columns reports a
+        zig-zag that is not there -- which is precisely how a hazy band gets
+        mistaken for a head join. Restricting to healthy ink asks the right
+        question: did the *well-printed* part of this line wander?
         """
-        texture_cap = 0.45 * float(expected if expected else min_gap)
-        gaps = []
-        for line in lines:
-            if line['inserted']:
-                continue
-            ink = line['ink_cols']
-            idx = np.flatnonzero(ink)
-            if idx.size < 20:
-                continue
-            deltas = np.diff(idx) - 1
-            gaps.extend(deltas[(deltas > 0) & (deltas < texture_cap)].tolist())
+        healthy = ((profile.coverage >= self.missing_level)
+                   & (profile.density >= self.haze_level))
+        counts = healthy.sum(axis=1)
+        residual = profile.residual * healthy
+        energy = np.einsum("ij,ij->i", residual, residual)
 
-        if not gaps:
-            return max(4, min(min_gap // 4, max(4, int(texture_cap))))
-        p90 = float(np.percentile(gaps, 90))
-        return int(np.clip(3 * p90, 4, max(4, texture_cap)))
+        wave = np.zeros(profile.n_lines, dtype=np.float32)
+        usable = counts >= 16
+        wave[usable] = np.sqrt(energy[usable] / counts[usable]) / profile.spacing
+        return wave
 
-    @staticmethod
-    def _merge_overlaps(defects):
-        """Merge misaligned segments that overlap on the same line."""
-        by_line = {}
-        for d in defects:
-            by_line.setdefault((d['band'], d['line_index']), []).append(d)
+    def _select_stitch(self, profile):
+        """Pick the lines where two heads join.
 
-        merged = []
-        for group in by_line.values():
-            group.sort(key=lambda d: d['start_x'])
-            current = group[0]
-            for d in group[1:]:
-                if d['start_x'] <= current['end_x'] + 5:
-                    current['end_x'] = max(current['end_x'], d['end_x'])
-                    current['size'] = current['end_x'] - current['start_x'] + 1
-                    if current['kind'] != d['kind']:
-                        current['kind'] = 'hazy+split'
-                else:
-                    merged.append(current)
-                    current = d
-            merged.append(current)
-        return merged
+        A stitch is physically constrained: with ``num_heads`` heads there are
+        at most ``num_heads - 1`` joins, spaced evenly down the region. Rather
+        than trusting that geometry blindly (head heights drift, and a crop may
+        contain only part of a head) the waviness outliers are found first and
+        the expected positions only break ties. The count is capped, so a
+        uniformly wavy band can never report eight stitch zones.
+
+        Returns:
+            dict mapping line index -> severity in 0..1.
+        """
+        wave = self._waviness(profile)
+        real = np.flatnonzero(~profile.inserted)
+        if real.size < 2:
+            return {}
+
+        # With enough lines the band supplies its own baseline, and a join
+        # stands out from merely textured print by a wide margin -- so the
+        # band-relative test leads and the absolute floor only guards against
+        # a band that is uniformly, implausibly smooth. A short crop cannot
+        # estimate that spread at all, so it falls back to the floor rather
+        # than trusting a MAD taken over three samples.
+        if real.size >= 6:
+            values = wave[real]
+            median = float(np.median(values))
+            mad = float(np.median(np.abs(values - median))) + 1e-9
+            threshold = max(0.5 * self.stitch_wave,
+                            median + 3.0 * 1.4826 * mad,
+                            1.6 * median)
+        else:
+            threshold = self.stitch_wave
+
+        candidates = [int(i) for i in real if wave[i] >= threshold]
+        if not candidates:
+            return {}
+
+        # Collapse neighbouring lines into one zone; a join disturbs one or two
+        # adjacent lines, not a broad span.
+        zones = []
+        current = [candidates[0]]
+        for index in candidates[1:]:
+            if index - current[-1] <= 2:
+                current.append(index)
+            else:
+                zones.append(current)
+                current = [index]
+        zones.append(current)
+
+        rows = profile.rows
+        span = float(rows[-1] - rows[0]) or 1.0
+        expected = [k / self.num_heads for k in range(1, max(2, self.num_heads))]
+
+        ranked = []
+        for zone in zones:
+            best = max(zone, key=lambda i: wave[i])
+            position = float(rows[best] - rows[0]) / span
+            nearest = min(abs(position - e) for e in expected)
+            # Soft preference only: a real join anywhere still outranks noise.
+            bonus = 1.0 + 0.5 * float(np.exp(-(nearest / 0.12) ** 2))
+            ranked.append((wave[best] * bonus, best))
+
+        ranked.sort(reverse=True)
+        keep = max(1, int(self.num_heads) - 1)
+
+        selected = {}
+        for _score, line in ranked[:keep]:
+            excess = wave[line] / max(threshold, 1e-6) - 1.0
+            selected[line] = (float(np.clip(excess / 1.5, 0.0, 1.0)),
+                              float(wave[line]))
+        return selected
 
     # ------------------------------------------------------------------
     # High-density regions
     # ------------------------------------------------------------------
 
-    def _find_density_regions(self, shape, missing_defects, spacing=96.0):
-        """Find arbitrary-shape regions with unusually dense missing ink.
-
-        Missing pixels are splatted into a downsampled accumulator, smoothed
-        with a wide Gaussian (~2 measured line spacings), and thresholded
-        relative to the peak density. Blob contours are reported in
-        full-image coords.
-        """
-        if len(missing_defects) < self.density_min_defects:
+    def _find_density_regions(self, shape, missing, spacing=96.0):
+        """Arbitrary-shape clusters where missing ink is unusually dense."""
+        if len(missing) < self.density_min_defects:
             return []
 
         height, width = shape[:2]
         ds = self.density_downsample
-        map_h = (height + ds - 1) // ds
-        map_w = (width + ds - 1) // ds
+        map_h, map_w = (height + ds - 1) // ds, (width + ds - 1) // ds
         density = np.zeros((map_h, map_w), dtype=np.float32)
 
-        spacing_guess = np.median([d['size'] for d in missing_defects]) or 60
-        for d in missing_defects:
-            row = min(map_h - 1, d['y'] // ds)
-            c0 = d['start_x'] // ds
-            c1 = min(map_w - 1, d['end_x'] // ds)
-            per_cell = d['missing_pixels'] / max(1, c1 - c0 + 1)
-            density[row, c0:c1 + 1] += per_cell
+        for defect in missing:
+            row = min(map_h - 1, defect['y'] // ds)
+            c0 = defect['start_x'] // ds
+            c1 = min(map_w - 1, defect['end_x'] // ds)
+            density[row, c0:c1 + 1] += defect['missing_pixels'] / max(1, c1 - c0 + 1)
 
         sigma = max(1.5, 2.0 * spacing / ds)
         ksize = int(sigma * 6) | 1
         blurred = cv2.GaussianBlur(density, (ksize, ksize), sigma)
-
         peak = float(blurred.max())
         if peak <= 0:
             return []
-        threshold = self.density_rel_threshold * peak
 
-        mask = (blurred >= threshold).astype(np.uint8)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
+        mask = (blurred >= self.density_rel_threshold * peak).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         regions = []
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
-            if w * h < 9:  # tiny blobs in map cells
+            if w * h < 9:
                 continue
             bbox = (int(x * ds), int(y * ds), int(w * ds), int(h * ds))
-            inside = [d for d in missing_defects
-                      if bbox[0] <= d['location'][0] < bbox[0] + bbox[2]
-                      and bbox[1] <= d['y'] < bbox[1] + bbox[3]]
+            inside = [
+                d for d in missing
+                if bbox[0] <= d['location'][0] < bbox[0] + bbox[2]
+                and bbox[1] <= d['y'] < bbox[1] + bbox[3]
+            ]
             if len(inside) < self.density_min_defects:
                 continue
             regions.append({
                 'type': 'high_density_region',
                 'bbox': bbox,
-                'contour': (contour.astype(np.int32) * ds),
+                'contour': contour.astype(np.int32) * ds,
                 'defect_count': len(inside),
                 'missing_pixels': int(sum(d['missing_pixels'] for d in inside)),
                 'peak_density': float(blurred[y:y + h, x:x + w].max()),
             })
-
         regions.sort(key=lambda r: r['missing_pixels'], reverse=True)
         return regions
 
@@ -519,103 +470,123 @@ class NewPatternLineDefectDetector(BaseDetector):
     # Output assembly
     # ------------------------------------------------------------------
 
-    def _build_defects(self, band_summaries, missing, misaligned, regions,
-                       stitch=None):
-        """Assemble the structured defect output list."""
-        stitch = stitch or []
+    def _build_defects(self, summaries, missing, hazy, regions, stitch, field=None):
         total_missing_px = int(sum(d['missing_pixels'] for d in missing))
-        defects = [{
+        header = {
             'type': 'bands_detected',
-            'band_count': len(band_summaries),
-            'bands': band_summaries,
-            'total_lines': int(sum(b['line_count'] for b in band_summaries)),
+            'band_count': len(summaries),
+            'bands': summaries,
+            'total_lines': int(sum(s['line_count'] for s in summaries)),
             'total_missing_defects': len(missing),
             'total_missing_pixels': total_missing_px,
             'estimated_missing_nozzles': total_missing_px,
-            'total_misaligned_defects': len(misaligned),
+            'total_misaligned_defects': len(hazy),
             'total_stitch_defects': len(stitch),
-        }]
+        }
+        if field is not None:
+            header['ink'] = {
+                'axis_bgr': [round(float(v), 3) for v in field.axis],
+                'paper_bgr': [round(float(v), 1) for v in field.paper],
+                'contrast': round(float(field.contrast), 1),
+                'noise': round(float(field.noise), 4),
+            }
+        if hazy:
+            header['haze_severity_mean'] = round(
+                float(np.mean([d['severity'] for d in hazy])), 3)
+        if stitch:
+            header['stitch_severity_max'] = round(
+                float(max(d['severity'] for d in stitch)), 3)
+
+        defects = [header]
         defects.extend(missing)
-        defects.extend(misaligned)
+        defects.extend(hazy)
         defects.extend(stitch)
-        for r in regions:
-            entry = dict(r)
-            entry.pop('contour', None)  # keep JSON small
+        for region in regions:
+            entry = dict(region)
+            entry.pop('contour', None)  # keep the JSON small
             defects.append(entry)
         return defects
 
-    def _create_visualization(self, image, missing, misaligned, regions,
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _create_visualization(self, image, missing, hazy, regions,
                               spacing=96.0, stitch=None):
-        """Red = missing nozzles, yellow = hazy, blue = stitch, orange = density."""
+        """Red = missing nozzles, yellow = haze, blue = stitch, orange = cluster."""
         stitch = stitch or []
-        if len(image.shape) == 2:
-            vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        else:
-            vis = image.copy()
+        vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
 
         half = max(3, int(round(0.15 * spacing)))
-        stitch_half = max(half + 1, int(round(0.22 * spacing)))
+        stitch_half = max(half + 2, int(round(0.30 * spacing)))
+        # Keep the legend legible on a small crop without burying it.
+        scale = float(np.clip(image.shape[1] / 1600.0, 0.35, 2.0))
+        weight = max(1, int(round(2 * scale)))
 
         overlay = vis.copy()
-        for d in missing:
-            cv2.rectangle(overlay, (d['start_x'], d['y'] - half),
-                          (d['end_x'], d['y'] + half), (0, 0, 255), -1)
-        for d in misaligned:
-            cv2.rectangle(overlay, (d['start_x'], d['y'] - half),
-                          (d['end_x'], d['y'] + half), (0, 255, 255), -1)
-        for d in stitch:
-            cv2.rectangle(overlay, (d['start_x'], d['y'] - stitch_half),
-                          (d['end_x'], d['y'] + stitch_half), (255, 80, 0), -1)
-        cv2.addWeighted(vis, 0.65, overlay, 0.35, 0, dst=vis)
+        for defect in missing:
+            cv2.rectangle(overlay, (defect['start_x'], defect['y'] - half),
+                          (defect['end_x'], defect['y'] + half), (0, 0, 255), -1)
+        for defect in hazy:
+            # Heavier smears render more opaque than faint haze.
+            shade = int(round(120 + 135 * defect.get('severity', 0.5)))
+            cv2.rectangle(overlay, (defect['start_x'], defect['y'] - half),
+                          (defect['end_x'], defect['y'] + half), (0, shade, shade), -1)
+        cv2.addWeighted(vis, 0.6, overlay, 0.4, 0, dst=vis)
 
-        for r in regions:
-            cv2.drawContours(vis, [r['contour']], -1, (0, 128, 255), 8)
-            x, y, w, h = r['bbox']
-            cv2.putText(vis, f"HIGH DENSITY: {r['missing_pixels']}px missing",
+        # Stitch spans a whole line, so it is outlined rather than filled --
+        # a filled bar would hide the missing/haze marks sitting inside it.
+        for defect in stitch:
+            cv2.rectangle(vis, (defect['start_x'], defect['y'] - stitch_half),
+                          (defect['end_x'], defect['y'] + stitch_half),
+                          (255, 80, 0), max(2, weight))
+            cv2.putText(vis, f"stitch {defect['grade']} "
+                        f"{defect['amplitude_px']:.1f}px",
+                        (defect['start_x'] + 8, defect['y'] - stitch_half - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale, (255, 80, 0), weight)
+
+        for region in regions:
+            cv2.drawContours(vis, [region['contour']], -1, (0, 128, 255), 8)
+            x, y, _w, _h = region['bbox']
+            cv2.putText(vis, f"HIGH DENSITY: {region['missing_pixels']}px missing",
                         (x, max(30, y - 12)), cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2, (0, 128, 255), 3)
+                        1.2 * scale, (0, 128, 255), weight + 1)
 
         total_px = sum(d['missing_pixels'] for d in missing)
         text = (f"Missing: {len(missing)} gaps / {total_px} px "
-                f"| Hazy: {len(misaligned)} "
-                f"| Stitch: {len(stitch)} "
+                f"| Hazy: {len(hazy)} | Stitch: {len(stitch)} "
                 f"| Density regions: {len(regions)}")
-        cv2.putText(vis, text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0, (0, 0, 255), 3)
+        cv2.putText(vis, text, (10, int(28 * scale) + 6), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9 * scale, (0, 0, 255), weight + 1)
         return vis
 
-    def _create_lines_debug(self, image, extractions):
-        """Debug image: vertical lines magenta, line trajectories colored."""
-        if len(image.shape) == 2:
-            vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        else:
-            vis = image.copy()
+    def _create_lines_debug(self, image, profiles):
+        """Debug image: verticals magenta, trajectories green/orange, inserted red."""
+        vis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
 
-        for v in self.band_detector.last_vlines:
-            cv2.rectangle(vis, (v['x0'] - 2, v['y0']), (v['x1'] + 2, v['y1']),
-                          (255, 0, 255), -1)
+        for vline in self.band_detector.last_vlines:
+            cv2.rectangle(vis, (vline['x0'] - 2, vline['y0']),
+                          (vline['x1'] + 2, vline['y1']), (255, 0, 255), -1)
 
         palette = [(0, 200, 0), (255, 128, 0)]
-        for band, result in extractions:
-            x0, x1 = band['x0'], band['x1']
-            xs = np.arange(0, x1 - x0 + 1, 8)
-            for i, line in enumerate(result['lines']):
-                ys = IslandLineExtractor.line_y(result, line, xs).astype(np.int32)
-                color = (0, 0, 255) if line['inserted'] else palette[i % 2]
-                pts = np.stack([xs + x0, ys], axis=1).reshape(-1, 1, 2).astype(np.int32)
-                cv2.polylines(vis, [pts], False, color, 3)
+        for band, profile in profiles:
+            xs = np.arange(0, profile.width, 8)
+            for line in range(profile.n_lines):
+                ys = profile.true_y(line, xs).astype(np.int32)
+                color = (0, 0, 255) if profile.inserted[line] else palette[line % 2]
+                pts = np.stack([xs + band['x0'], ys], axis=1)
+                cv2.polylines(vis, [pts.reshape(-1, 1, 2).astype(np.int32)],
+                              False, color, 3)
 
-        cv2.putText(vis, "Magenta: verticals | Green/Orange: local trajectories | "
+        cv2.putText(vis, "Magenta: verticals | Green/Orange: trajectories | "
                     "Red: inserted (fully missing) lines", (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 3)
         return vis
 
     def save_debug_images(self, output_dir, base_name):
-        """Always save the detected-lines debug image; more when debug=True."""
-        debug_paths = []
-        if self._debug_lines_image is not None:
-            saved = save_image(output_dir, base_name, self._debug_lines_image,
-                               'newpattern_detected_lines')
-            if saved:
-                debug_paths.append(saved)
-        return debug_paths if debug_paths else None
+        """Always save the detected-lines debug image."""
+        if self._debug_lines_image is None:
+            return None
+        saved = save_image(output_dir, base_name, self._debug_lines_image,
+                           'newpattern_detected_lines')
+        return [saved] if saved else None

@@ -357,6 +357,19 @@ class VerticalBandDetector:
         _, ink = cv2.threshold(gray, binary_threshold, 255,
                                cv2.THRESH_BINARY_INV)
 
+        # The vertical structures span the full height and the kernels that
+        # isolate them are all sized in *rows*, so decimating rows shrinks
+        # both the image and every kernel. Column resolution is untouched,
+        # which is what fixes the line positions, and averaging rows only
+        # helps the OPEN step that exists to erase horizontal crossings.
+        decimate = int(np.clip(spacing // 12, 1, 8))
+        if decimate > 1:
+            ink = cv2.resize(ink, (width, max(1, height // decimate)),
+                             interpolation=cv2.INTER_AREA)
+            _, ink = cv2.threshold(ink, 64, 255, cv2.THRESH_BINARY)
+        work_height = ink.shape[0]
+        spacing = spacing / decimate
+
         drift = max(3, int(round(width * self.drift_dilate_fraction)))
         if drift % 2 == 0:
             drift += 1
@@ -385,7 +398,7 @@ class VerticalBandDetector:
         k_drift = cv2.getStructuringElement(cv2.MORPH_RECT, (drift, 1))
         vmask_drift = cv2.dilate(vmask, k_drift)
 
-        coverage = (vmask_drift > 0).sum(axis=0).astype(np.float64) / max(1, height)
+        coverage = (vmask_drift > 0).sum(axis=0).astype(np.float64) / max(1, work_height)
         peak = float(coverage.max()) if coverage.size else 0.0
 
         if debug:
@@ -418,7 +431,8 @@ class VerticalBandDetector:
                 x0 = run_x0 + int(cols[0])
                 x1 = run_x0 + int(cols[-1])
                 rows = np.flatnonzero((seg > 0).any(axis=1))
-                y0, y1 = int(rows[0]), int(rows[-1])
+                y0 = int(rows[0]) * decimate
+                y1 = min(height - 1, (int(rows[-1]) + 1) * decimate - 1)
                 col_weights = (seg > 0).sum(axis=0).astype(np.float64)
 
             thickness = x1 - x0 + 1

@@ -252,49 +252,93 @@ Clear mode: color threshold `bg − 35/45/60`; 5×5 median before region growing
 
 ### 3.7 New-pattern line defect (`nike_detection/detectors/island_new/line_defect.py`)
 
-Missing-nozzle and stitch scoring run **only inside the two print bands** — never on the verticals or the gap. This is the replacement for the legacy kernel-ratio walk. Config `geometry.num_heads` (3) is what caps how many stitch zones can be reported.
+Scoring runs **only inside the two print bands** — never on the verticals or the gap. Config `geometry.num_heads` (3) caps how many stitch zones can be reported.
 
-**Why two classes instead of one.** A vertical-head stitch looks like a zig-zag on one or two successive print lines. The straight-line fit fails there, so an older missing-nozzle rule treated the zig-zag as a gap. That is wrong: the jets *did* fire; the two heads just do not line up. The extractor therefore keeps a **local centroid path** as the ink corridor (so printed zig-zag stays inside the mask) and a **straight fit** only as a jaggedness score. Missing nozzles and stitch error are then decided separately.
+#### Why this is measured in ink density, not grayscale
+
+Every earlier version thresholded grayscale, which quietly made the detector colour dependent. On white paper the luminance contrast between paper and a saturated line is:
+
+| Ink | Grayscale contrast | Contrast in the channel it absorbs |
+|---|---|---|
+| Key | ~180 | ~180 (neutral) |
+| Magenta | 127 | 188 (green) |
+| Cyan | 85 | 219 (red) |
+| **Yellow** | **21** | **155 (blue)** |
+
+Yellow is the pathological case: its Otsu threshold lands *above* the `[120, 200]` clamp the extractor applied, so it marked **0.06%** of yellow pixels as ink — the region was effectively invisible. Meanwhile the same settings flooded Cyan and Magenta with false haze. No single grayscale number can serve both.
+
+`nike_detection/geometry/ink_density.py` removes colour from the problem instead of tuning around it. Per region it measures the paper white, fits the ink's own **absorbance direction** from the darkest pixels, and normalizes by the saturated-core level, producing
 
 ```
-per band, for every extracted line
-    │
-    ├─ 1-D close of ink_cols  (bridges healthy stipple, never a ~90 px jet)
-    ├─ missing_line (red)     ink-free run ≥ min_gap_fraction × expected_gap
-    │                         skipped on stitch-zone lines and clipped crop edges
-    ├─ stitch_error (blue)    1–2 most jagged lines at each head join
-    │                         (up to num_heads − 1 zones)
-    └─ misaligned_line (yellow)  ink present but split / vertically spread / weak
+alpha = 0.0  paper          alpha = 1.0  healthy, fully saturated line core
 ```
 
-**Defect decisions (spacing-relative, resolution-independent)**
+Because paper, direction and core are all *measured per region*, thresholds expressed in alpha carry the same meaning on every ink — **there is no per-colour constant anywhere in the detector.** The map is stored as uint8 (`SCALE` counts per unit alpha), so it costs exactly what the binary mask it replaced cost, while carrying 256 density levels instead of 1 bit. Band and vertical-line geometry run on the same map (via `as_pseudo_gray`), so a Yellow island's boundary lines are as findable as a Key island's.
+
+#### The two ratios that decide everything
+
+`nike_detection/geometry/line_profile.py` reduces each line to three per-column series in alpha units — `mass` (total ink), `peak` (densest pixel) and `center` (ink-weighted row) — then normalizes the first two against a baseline measured from the band itself:
+
+```
+coverage = mass / baseline_mass     ~1 healthy, ~0 no ink
+density  = peak / baseline_peak     ~1 healthy, low = pale and spread
+```
+
+Two ratios separate the defects because a missing nozzle and a smear differ in *kind*, not degree:
+
+| Condition | coverage | density | Verdict |
+|---|---|---|---|
+| healthy print | ~1.0 | ~1.0 | — |
+| nozzle not firing | ~0.0 | ~0.0 | `missing_line` (red) |
+| ink fired, smeared | ~0.5–1.0 | low | `misaligned_line` (yellow) |
+| thin but crisp | lower | ~1.0 | — (not a defect) |
+
+That last row is what the previous rule could not express: it keyed haze off ink *thickness*, so Cyan and Magenta stipple constantly tripped it. Peak density does not care how much ink landed, only whether it stayed concentrated — which is exactly what a smear destroys.
+
+The baseline is the band's own upper-quartile level with a bounded per-line correction, so slow drift in illumination or ink laydown cancels out, while a *globally* faint line is still flagged rather than normalizing itself into looking healthy.
+
+#### Defect decisions
 
 | Type | Color | Rule |
 |---|---|---|
-| `missing_line` | red | Corridor follows each line's **local** path, so stitch zig-zag is not a gap. Stipple-gap length is *measured* from healthy lines (~3× their 90th percentile, capped at 0.45× expected jet). Remaining ink-free runs longer than `min_gap_fraction × expected_gap` are defects. `expected_gap` is **90 px at 2400 DPI**, scaled by `measured_spacing / 100`. `missing_pixels` is the count of ink-free columns in that run (the nozzle estimate). Fully missing lines are inserted from spacing and scored as a whole-line gap. |
-| `misaligned_line` | yellow | Jets fired but **hazy/smudged**: (a) *split* — 2+ ink runs/column with a hollow interior, or (b) *hazy* — ink is vertically spread or persistently weak. Must persist ≥ ~0.5 × spacing. Overlapping segments merged. Weak-ink is only used when median thickness ≥ 4 px, so a downscaled snippet cannot flood yellow from single-pixel stipple. |
-| `stitch_error` | blue | Jagged zig-zag on the 1–2 print lines at a **vertical-head stitch**. Score = `max(jagged_rms, jagged_hf)`. A line is a candidate if that score is both above `0.05 × spacing` and an outlier vs the band median (MAD + 2.2× median). Adjacent candidates are clustered; keep the strongest `num_heads − 1` clusters, at most two lines each (a second neighbouring line that is hazy/low-ink is pulled in even if it is not the peak). Those lines are **not** scored as missing. |
-| `high_density_region` | orange | All missing pixels splatted into a 16×-downsampled accumulator, Gaussian-smoothed over ~2 spacings, thresholded at 40% of peak density. Blobs report defect count + missing-pixel sum. |
+| `missing_line` | red | `coverage < missing_level` over a run longer than `min_gap_fraction × expected_gap`. `expected_gap` is **90 px at 2400 DPI**, scaled by `measured_spacing / 100`. Because coverage is a *continuous* ink measure, a faint ghost line that a binary threshold counted as "ink present" now correctly reads as missing — this is what fixed the previous false misses. Fully missing lines are inserted from spacing and scored as a whole-line gap. |
+| `misaligned_line` | yellow | Ink landed but lost its core: `density < haze_level` while `coverage ≥ missing_level`, persisting ≥ `haze_min_fraction × spacing`. Carries a continuous `severity` (0–1) and a `mild`/`moderate`/`severe` grade, so a faint haze and a heavy smear are separable downstream. |
+| `stitch_error` | blue | Short-range trajectory wander at a head join. Waviness is the RMS of the trajectory residual (anything slower than ~4 spacings removed, so paper roll does not count), normalized by spacing, and **measured only over healthy columns** — smeared ink drags the centroid about without the printed core moving, which is how a hazy band used to be mistaken for a join. A line qualifies by standing out from its own band (`median + 3×MAD`, and ≥1.6× median); the absolute `stitch_wave` floor only applies to crops too short to estimate that spread. Adjacent candidates are clustered and at most `num_heads − 1` are kept, so the physical constraint is enforced by construction. Expected 1/3 and 2/3 positions act as a tie-break only, never a hard gate. |
+| `high_density_region` | orange | Missing pixels splatted into a 16×-downsampled accumulator, Gaussian-smoothed over ~2 spacings, thresholded at 40% of peak density. |
 
-Sensitivity only changes how long a gap / haze must persist (`min_gap_fraction` 0.70 / 0.85 / 1.10 for high / medium / low). Stitch clustering does not change with sensitivity.
+**Five thresholds, down from thirteen.** `missing_level`, `haze_level`, `min_gap_fraction`, `haze_min_fraction`, `stitch_wave` — every one a dimensionless ratio, so none needs retuning for a different ink, exposure or scan resolution. (Replaced: `split_min_fraction`, `dev_min_fraction`, `split_min_hollow`, `dev_abs_floor`, `dev_thickness_factor`, `hazy_thickness_factor`, `hazy_weak_factor`, `stitch_rms_fraction`, `stitch_score_ratio`, `stitch_max_lines_per_zone`.)
 
 A `*_newpattern_detected_lines.jpg` debug image is always saved (verticals magenta, local trajectories green/orange, inserted fully-missing lines red).
 
+#### Validation
+
+Synthetic islands with known defects (`nike_detection/testing/synthetic_island.py`, scored by `testing/scoring.py`) sweep all four inks — run `python scripts/line_defect_sweep.py`. Results are **identical across Key / Cyan / Magenta / Yellow**, which is the colour-independence claim tested directly rather than inferred:
+
+| Defect | Precision | Recall |
+|---|---|---|
+| missing | 1.00 | 1.00 |
+| haze | 0.92 | 1.00 |
+| stitch | 1.00 | 1.00 |
+
+Healthy print reports **zero** defects on every ink. Stitch detection starts at ~2 px of wander with severity rising smoothly (2 px → 0.07, 3 px → 0.34, 5 px → 0.91).
+
+On the real 2400-DPI scans all three colours independently place both stitch zones at lines 113 and 229 of ~343 — positions **0.33 and 0.67**, the expected head joins — and both bands of each scan agree. Haze on the Cyan island fell from **1405 undifferentiated marks to 411, of which 22 are moderate-or-severe**. Runtime for a 169-megapixel region is **~1.0 s, down from ~29.7 s**.
+
+`python scripts/line_defect_lab.py <folder>` renders annotated overlays for eyeballing real crops.
+
 **Limitations**
 
-- Vertical lines and the central gap are never inspected (by design) — a defect that only lives there is invisible.
+- Vertical lines and the central gap are never inspected (by design).
 - `image_path` / exclusion zones unused; a stamp overlapping a band will be scored as missing ink.
 - Inserted whole-line defects depend on spacing regularity.
-- Density blobs are relative to the *peak* in that image, so a uniformly bad print may produce no hotspot (everything is equally dense).
-- Split/hazy detection can still fire on legitimate stipple that looks like two runs inside the corridor.
-- Stitch clustering is data-driven (jagged outliers). A crop that contains only one of two head joins will report one zone, not invent the other.
-- Clear-mode decisions are unchanged (spacing-relative), but extraction quality still gates everything.
+- Density blobs are relative to the *peak* in that image, so a uniformly bad print may produce no hotspot.
+- A crop with fewer than ~6 lines per band cannot estimate its own waviness spread, so stitch falls back to the absolute floor and is correspondingly less reliable there.
+- Very long defects (beyond a whole line) are bounded by the per-line baseline correction; a band that is uniformly hazy end to end normalizes partly against itself.
 
 **Updates needed**
 
 - Exclusion zones and optional ignore-margins.
 - Absolute density floor so uniformly bad bands still report a hotspot.
-- Per-color validation, especially Yellow and clear.
 - Report nozzle estimates in physical units (need DPI + nozzle pitch calibration).
 - Consider scoring the vertical boundary lines for breaks (currently structural only).
 

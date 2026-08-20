@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 
 from nike_detection.config.schema import RunSettings
+from nike_detection.geometry.ink_density import InkField, as_pseudo_gray, measure_ink_field
+from nike_detection.geometry.line_profile import BandProfile, BandProfiler
 from nike_detection.geometry.material_profile import estimate_background_level
 from nike_detection.io.image_loader import apply_clahe
 from nike_detection.pipeline.preprocess_island import (
@@ -36,6 +38,7 @@ STRIPE_CLAHE_LAYERS = frozenset({"clahe"})
 ISLAND_NEW_BANDS = frozenset({"bands", "vlines"})
 ISLAND_NEW_EXTRACT = frozenset({"extractor_per_band"})
 ISLAND_NEW_PAINT = frozenset({"lines_removed_gray"})
+ISLAND_INK_PROFILES = frozenset({"ink_field", "ink_profiles"})
 ISLAND_LEGACY_LINES = frozenset({"matched_lines", "binary_127"})
 
 
@@ -157,6 +160,34 @@ class ImageContext:
             self._cache["stripe_edges"] = extract_stripe_edges(self.gray, median_window)
         return self._cache["stripe_edges"]
 
+    def ink_field(self) -> InkField:
+        """Normalized ink density for this region, measured once.
+
+        Shared by band geometry and line profiling so a region is calibrated
+        against its own paper and ink exactly once, whatever colour it is.
+        """
+        if "ink_field" not in self._cache:
+            self._cache["ink_field"] = measure_ink_field(self.bgr)
+        return self._cache["ink_field"]
+
+    def ink_profiles(self) -> List[Tuple[Dict[str, Any], BandProfile]]:
+        """Per-band line geometry plus normalized per-column ink statistics."""
+        if "ink_profiles" not in self._cache:
+            field = self.ink_field()
+            profiler = BandProfiler()
+            profiles: List[Tuple[Dict[str, Any], BandProfile]] = []
+            for band in self.bands():
+                result = profiler.profile(
+                    field, band["x0"], band["x1"], debug=self.settings.debug)
+                if result is not None:
+                    profiles.append((band, result))
+            if not profiles:
+                raise GeometryError(
+                    f"No band produced a usable line profile for {self.name}"
+                )
+            self._cache["ink_profiles"] = profiles
+        return self._cache["ink_profiles"]
+
     def bands(self) -> List[Dict[str, Any]]:
         self._ensure_bands()
         return self._cache["bands"]
@@ -208,8 +239,11 @@ class ImageContext:
         if "bands" in self._cache:
             return
         vb = self.settings.config.vertical_band
+        # Band geometry runs on inverted ink density rather than grayscale, so
+        # the boundary lines of a Yellow island (about 21 levels of luminance
+        # contrast) are as easy to find as those of a Key island.
         bands, vlines, detector = detect_bands(
-            self.bgr,
+            as_pseudo_gray(self.ink_field()),
             clear=self.settings.clear,
             debug=self.settings.debug,
             binary_threshold=vb.binary_threshold,
@@ -249,8 +283,11 @@ class ImageContext:
             self.clahe()
         if self.settings.clear:
             self.background_level()
-        if layers & ISLAND_NEW_BANDS or layers & ISLAND_NEW_EXTRACT or layers & ISLAND_NEW_PAINT:
+        if (layers & ISLAND_NEW_BANDS or layers & ISLAND_NEW_EXTRACT
+                or layers & ISLAND_NEW_PAINT or layers & ISLAND_INK_PROFILES):
             self.bands()
+        if layers & ISLAND_INK_PROFILES:
+            self.ink_profiles()
         if layers & ISLAND_NEW_EXTRACT or layers & ISLAND_NEW_PAINT:
             self.extractor_per_band()
         if layers & ISLAND_NEW_PAINT:

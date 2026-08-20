@@ -378,7 +378,7 @@ class NewOversprayIslandAdapter(_BaseAdapter):
 
 class NewLineDefectAdapter(_BaseAdapter):
     key = "line_defect"
-    layers = frozenset({"bands", "vlines", "extractor_per_band"})
+    layers = frozenset({"bands", "vlines", "ink_field", "ink_profiles"})
 
     def __init__(self, settings: RunSettings) -> None:
         super().__init__(settings)
@@ -393,43 +393,12 @@ class NewLineDefectAdapter(_BaseAdapter):
 
     def detect(self, ctx: ImageContext) -> List[Defect]:
         impl = self._impl
-        extractions = ctx.extractor_per_band()
-        all_missing: List[Dict[str, Any]] = []
-        all_misaligned: List[Dict[str, Any]] = []
-        all_stitch: List[Dict[str, Any]] = []
-        band_summaries: List[Dict[str, Any]] = []
-        for band, result in extractions:
-            missing, misaligned, stitch = impl._evaluate_band(band, result)
-            all_missing.extend(missing)
-            all_misaligned.extend(misaligned)
-            all_stitch.extend(stitch)
-            band_summaries.append({
-                "index": band["index"],
-                "x0": band["x0"], "x1": band["x1"],
-                "vline_xs": band["vline_xs"],
-                "line_count": len(result["lines"]),
-                "inserted_line_count": sum(1 for line in result["lines"] if line["inserted"]),
-                "slope": result["slope"],
-                "spacing": result["spacing"],
-                "missing_defects": len(missing),
-                "missing_pixels": int(sum(d["missing_pixels"] for d in missing)),
-                "misaligned_defects": len(misaligned),
-                "stitch_defects": len(stitch),
-            })
-        spacing = float(np.median([b["spacing"] for b in band_summaries])) if band_summaries else 96.0
-        density_regions = impl._find_density_regions(ctx.gray.shape, all_missing, spacing)
-        self._vis = impl._create_visualization(
-            ctx.bgr, all_missing, all_misaligned, density_regions, spacing,
-            stitch=all_stitch,
-        )
         band_detector = ctx.debug.get("band_detector")
         if band_detector is not None:
             impl.band_detector = band_detector
         else:
             impl.band_detector.last_vlines = ctx.vlines()
-        impl._debug_lines_image = impl._create_lines_debug(ctx.bgr, extractions)
-        raw = impl._build_defects(
-            band_summaries, all_missing, all_misaligned, density_regions,
-            stitch=all_stitch,
-        )
+
+        self._vis, raw = impl.evaluate(
+            ctx.bgr, ctx.ink_profiles(), ctx.ink_field())
         return self._pack(ctx, raw)

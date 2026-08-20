@@ -96,21 +96,16 @@
         "jagged_threshold": 10
       },
       "line_defect_new": {
+        "missing_level": 0.28,
+        "haze_level": 0.68,
         "min_gap_fraction": 0.70,
-        "split_min_fraction": 0.40,
-        "dev_min_fraction": 0.40,
-        "split_min_hollow": 3,
-        "dev_abs_floor": 3.0,
-        "dev_thickness_factor": 0.6,
+        "haze_min_fraction": 0.45,
+        "stitch_wave": 0.024,
+        "expected_gap_px": 90.0,
+        "edge_ignore_fraction": 0.02,
         "density_downsample": 16,
         "density_rel_threshold": 0.40,
-        "density_min_defects": 8,
-        "expected_gap_px": 90.0,
-        "hazy_thickness_factor": 1.7,
-        "hazy_weak_factor": 0.55,
-        "stitch_rms_fraction": 0.05,
-        "stitch_score_ratio": 2.2,
-        "stitch_max_lines_per_zone": 2
+        "density_min_defects": 8
       },
       "stripe_misalignment": {
         "step_threshold": 3.0,
@@ -192,21 +187,16 @@
         "jagged_threshold": 5
       },
       "line_defect_new": {
+        "missing_level": 0.20,
+        "haze_level": 0.55,
         "min_gap_fraction": 0.85,
-        "split_min_fraction": 0.55,
-        "dev_min_fraction": 0.60,
-        "split_min_hollow": 3,
-        "dev_abs_floor": 3.0,
-        "dev_thickness_factor": 0.6,
+        "haze_min_fraction": 0.60,
+        "stitch_wave": 0.030,
+        "expected_gap_px": 90.0,
+        "edge_ignore_fraction": 0.02,
         "density_downsample": 16,
         "density_rel_threshold": 0.40,
-        "density_min_defects": 8,
-        "expected_gap_px": 90.0,
-        "hazy_thickness_factor": 1.7,
-        "hazy_weak_factor": 0.55,
-        "stitch_rms_fraction": 0.05,
-        "stitch_score_ratio": 2.2,
-        "stitch_max_lines_per_zone": 2
+        "density_min_defects": 8
       },
       "stripe_misalignment": {
         "step_threshold": 5.0,
@@ -288,21 +278,16 @@
         "jagged_threshold": 25
       },
       "line_defect_new": {
+        "missing_level": 0.12,
+        "haze_level": 0.44,
         "min_gap_fraction": 1.10,
-        "split_min_fraction": 0.90,
-        "dev_min_fraction": 1.00,
-        "split_min_hollow": 3,
-        "dev_abs_floor": 3.0,
-        "dev_thickness_factor": 0.6,
+        "haze_min_fraction": 0.90,
+        "stitch_wave": 0.040,
+        "expected_gap_px": 90.0,
+        "edge_ignore_fraction": 0.02,
         "density_downsample": 16,
         "density_rel_threshold": 0.40,
-        "density_min_defects": 8,
-        "expected_gap_px": 90.0,
-        "hazy_thickness_factor": 1.7,
-        "hazy_weak_factor": 0.55,
-        "stitch_rms_fraction": 0.05,
-        "stitch_score_ratio": 2.2,
-        "stitch_max_lines_per_zone": 2
+        "density_min_defects": 8
       },
       "stripe_misalignment": {
         "step_threshold": 10.0,
